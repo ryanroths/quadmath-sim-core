@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- quadmath-sim-core browser harness: runs the D2 scenario matrix (and a D3
+     cadence check) in the browser and leaves the results on window.__harness
+     for tests/browser/node-vs-chrome.test.mjs. Open it by hand from any static
+     server at the repo root to see the same table.
+     This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>sim-core harness</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 16px; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>sim-core harness</h1>
+<pre id="log">running...</pre>
+<script>
+  // Set before the module loads: if harness.mjs or anything it imports fails
+  // to load or parse, the page reports that at once instead of never finishing.
+  window.__harness = { done: false, started: false, error: null, results: [], cadence: [] };
+  const loadFailed = (what) => {
+    if (window.__harness.started) return;
+    window.__harness.error = what;
+    window.__harness.done = true;
+  };
+  window.addEventListener('error', (ev) => loadFailed(`load: ${ev.message || ev.type}`));
+</script>
+<script type="module" src="harness.mjs" onerror="loadFailed('load: harness.mjs or a module it imports did not load')"></script>
+</body>
+</html>

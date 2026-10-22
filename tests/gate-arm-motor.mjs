@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { SimCore } from '../src/js/sim-core.js';
+import { SimCore, sticksToChannels as ch } from '../src/js/sim-core.js';
 
 const rootUrl = new URL('..', import.meta.url);
 const root = fileURLToPath(rootUrl);
@@ -75,46 +75,47 @@ assert.equal(report.errors, 0);
 
 // Boot timeline straight from the ABI (no SimCore helpers): sticks neutral,
 // throttle 1000, ARM channel 1000.
-console.log('\n== boot timeline (raw sc_state, ARM channel 1000, throttle 1000)');
+console.log('\n== boot timeline (raw sc_fc_ptr block, ARM channel 1000, throttle 1000)');
 {
   const e = new WebAssembly.Instance(module, {}).exports;
   e._initialize();
   new Uint8Array(e.memory.buffer, e.sc_eeprom_ptr(), e.sc_eeprom_size()).set(core.eeprom);
-  console.log(`   sc_boot() -> ${e.sc_boot()}  sc_rx_rate(250) -> ${e.sc_rx_rate(250)}  loop ${e.sc_loop_hz()} Hz`);
+  console.log(`   sc_boot() -> ${e.sc_boot()}  sc_set_rx_rate(250) -> ${e.sc_set_rx_rate(250)}  loop ${e.sc_loop_hz()} Hz`);
   let done = 0;
   for (const m of [0, 10, 500, 1000, 2000, 3000, 3990, 4000, 4010, 4100]) {
     e.sc_step(m - done);
     done = m;
-    const s = new Float64Array(e.memory.buffer, e.sc_state(), 64);
-    console.log(`   t=${t(s[0])} armed=${s[1]} armingDisableFlags=${flags(s[2])} rxSignal=${s[31]} bfVbat=${s[28].toFixed(2)}V cells=${s[29]}`);
+    // Betaflight readouts v1 (src/glue/abi.c): 0 armed, 1 armingDisableFlags,
+    // 4 vbat, 7 cells, 43 rxSignal; the sim clock from sc_time().
+    const f = new Float64Array(e.memory.buffer, e.sc_fc_ptr(), e.sc_fc_len());
+    console.log(`   t=${t(e.sc_time())} armed=${f[0]} armingDisableFlags=${flags(f[1])} rxSignal=${f[43]} bfVbat=${f[4].toFixed(2)}V cells=${f[7]}`);
   }
 }
 
 // Arming: flags before and after the ARM channel goes high.
 console.log('\n== arming (AUX1 = ARM, 1700..2100)');
-core.boot();
-let s = core.state();
-console.log(`   before: t=${t(s.tUs)} armed=${s.armed} armingDisableFlags=${flags(s.armingDisableFlags)} rcData[T]=${s.rcData[3]} AUX1=${s.rcAux[0]}`);
+let s = core.fc;
+console.log(`   before: t=${t(core.simTimeUs)} armed=${s.armed} armingDisableFlags=${flags(s.armingDisableFlags)} rcData[T]=${s.rcData[3]} AUX1=${s.rcData[4]}`);
 assert.equal(s.armed, false);
 assert.equal(s.armingDisableFlags, 0);
-core.input({ throttle: 0 }, [2000, 1000, 1000, 1000]);
+core.input(ch({ throttle: 0 }, [2000, 1000, 1000, 1000]));
 core.step(8);
-s = core.state();
-console.log(`   ARM 2000 +8 ms: t=${t(s.tUs)} armed=${s.armed} armingDisableFlags=${flags(s.armingDisableFlags)} AUX1=${s.rcAux[0]}`);
+s = core.fc;
+console.log(`   ARM 2000 +8 ms: t=${t(core.simTimeUs)} armed=${s.armed} armingDisableFlags=${flags(s.armingDisableFlags)} AUX1=${s.rcData[4]}`);
 core.step(42);
-s = core.state();
-console.log(`   ARM 2000 +50 ms: t=${t(s.tUs)} armed=${s.armed} armingDisableFlags=${flags(s.armingDisableFlags)} AUX1=${s.rcAux[0]}`);
+s = core.fc;
+console.log(`   ARM 2000 +50 ms: t=${t(core.simTimeUs)} armed=${s.armed} armingDisableFlags=${flags(s.armingDisableFlags)} AUX1=${s.rcData[4]}`);
 assert.equal(s.armed, true);
 
 // Motors at throttle channel 1000 and 1500 (armed, sticks centred).
 console.log('\n== motors vs throttle (armed; motor = Betaflight motor[], dshot = value sent to the ESC)');
 const atThrottle = {};
 for (const thr of [0, 0.5]) {
-  core.input({ throttle: thr }, [2000, 1000, 1000, 1000]);
+  core.input(ch({ throttle: thr }, [2000, 1000, 1000, 1000]));
   core.step(200);
-  s = core.state();
-  atThrottle[s.rcData[3]] = s.motorMix.slice();
-  console.log(`   throttle ch ${s.rcData[3]}: rcCommand[T]=${s.rcCommand[3].toFixed(1)} motor[0..3]=${fmt(s.motorMix)} dshot[0..3]=${fmt(s.motorDshot)}`);
+  s = core.fc;
+  atThrottle[s.rcData[3]] = s.motor.slice();
+  console.log(`   throttle ch ${s.rcData[3]}: rcCommand[T]=${s.rcCommand[3].toFixed(1)} motor[0..3]=${fmt(s.motor)} dshot[0..3]=${fmt(core.state.motorDshot)}`);
 }
 assert.ok(atThrottle[1000].every((v) => v >= 48 && v < 300), 'armed at throttle 1000: digital idle');
 assert.ok(atThrottle[1500].every((v, i) => v > atThrottle[1000][i] + 500), 'throttle 1500 lifts every motor');
@@ -128,20 +129,20 @@ for (const roll of [0, 0.1, 0.25, 0.5, -0.25, 1]) {
   const c = await SimCore.load(module);
   c.eeprom = core.eeprom;
   c.rcmap = core.rcmap;
-  c.boot();
-  c.input({ throttle: 0 }, [2000]);
+  c.reinit({ freshPack: true });
+  c.input(ch({ throttle: 0 }, [2000]));
   c.step(50);
-  c.input({ throttle: 0.5 }, [2000]);
+  c.input(ch({ throttle: 0.5 }, [2000]));
   c.step(200);
-  c.input({ throttle: 0.5, roll }, [2000]);
+  c.input(ch({ throttle: 0.5, roll }, [2000]));
   let done = 0;
   for (const after of [2, 10, 30]) {
     c.step(after - done);
     done = after;
-    const q = c.state();
-    const split = q.motorMix[2] + q.motorMix[3] - q.motorMix[0] - q.motorMix[1];
+    const q = c.fc;
+    const split = q.motor[2] + q.motor[3] - q.motor[0] - q.motor[1];
     if (after === 10) splitAt10[roll] = split;
-    console.log(`   roll ${String(roll).padStart(5)} ch ${String(q.rcData[0]).padStart(4)} +${String(after).padStart(2)}ms setpoint=${q.setpoint[0].toFixed(1).padStart(7)} motor[0..3]=${fmt(q.motorMix)} split=${split.toFixed(1)}`);
+    console.log(`   roll ${String(roll).padStart(5)} ch ${String(q.rcData[0]).padStart(4)} +${String(after).padStart(2)}ms setpoint=${q.setpoint[0].toFixed(1).padStart(7)} motor[0..3]=${fmt(q.motor)} split=${split.toFixed(1)}`);
   }
 }
 assert.equal(splitAt10[0], 0, 'no roll, no split');
@@ -155,15 +156,15 @@ console.log('\n== negative: ARM high with throttle 1500 before arming');
   const c = await SimCore.load(module);
   c.eeprom = core.eeprom;
   c.rcmap = core.rcmap;
-  c.boot();
-  c.input({ throttle: 0.5 }, [1000]);
+  c.reinit({ freshPack: true });
+  c.input(ch({ throttle: 0.5 }, [1000]));
   c.step(50);
-  let q = c.state();
+  let q = c.fc;
   console.log(`   throttle 1500, ARM 1000: armed=${q.armed} armingDisableFlags=${flags(q.armingDisableFlags)}`);
-  c.input({ throttle: 0.5 }, [2000]);
+  c.input(ch({ throttle: 0.5 }, [2000]));
   c.step(50);
-  q = c.state();
-  console.log(`   throttle 1500, ARM 2000: armed=${q.armed} armingDisableFlags=${flags(q.armingDisableFlags)} motor[0..3]=${fmt(q.motorMix)}`);
+  q = c.fc;
+  console.log(`   throttle 1500, ARM 2000: armed=${q.armed} armingDisableFlags=${flags(q.armingDisableFlags)} motor[0..3]=${fmt(q.motor)}`);
   assert.equal(q.armed, false);
 }
 

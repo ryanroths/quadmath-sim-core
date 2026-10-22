@@ -7,7 +7,7 @@
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { SimCore } from '../../src/js/sim-core.js';
+import { SimCore, sticksToChannels as ch } from '../../src/js/sim-core.js';
 
 const root = new URL('../../', import.meta.url);
 const wasm = await readFile(new URL('dist/sim-core.wasm', root));
@@ -23,49 +23,55 @@ for (const a of report.added) console.log(`  ${a.status}: ${a.text} (${a.msg})`)
 assert.equal(report.errors, 0, 'every class diff line is accepted by Betaflight');
 assert.equal(report.applied, 19, 'all 19 set lines applied');
 
-// 2. Boot the flight instance until Betaflight reports no arming-disable flag.
-const boot = core.boot();
-let s = core.state();
-console.log(`boot: arm-ready after ${(boot.simTimeUs / 1e6).toFixed(3)} s (${boot.ticks} ticks); vbat ${s.bfVbat.toFixed(2)} V, ${s.bfCells} cell(s), rx signal ${s.rxSignal}`);
-assert.equal(s.armingDisableFlags, 0);
-assert.equal(s.armed, false);
+// 2. configure() booted the flight instance until Betaflight reported no
+//    arming-disable flag.
+const boot = report.boot;
+let f = core.fc;
+console.log(`boot: arm-ready after ${(boot.simTimeUs / 1e6).toFixed(3)} s (${boot.ticks} ticks); vbat ${f.vbat.toFixed(2)} V, ${f.cells} cell(s), rx signal ${f.rxSignal}`);
+assert.equal(f.armingDisableFlags, 0);
+assert.equal(f.armed, false);
+let s;
 if (core.flightLog.trim()) console.log(`boot log: ${core.flightLog.trim()}`);
 
 const run = (ms) => core.step(Math.round(ms * core.loopHz / 1000));
 
 // 3. Throttle low, AUX1 high: arm.
-core.input({ throttle: 0 }, [2000, 1000, 1000, 1000]);
+core.input(ch({ throttle: 0 }, [2000, 1000, 1000, 1000]));
 run(50);
-s = core.state();
-console.log(`arm: armed ${s.armed} at t=${(s.tUs / 1e6).toFixed(3)} s; motors (DShot) ${s.motorDshot.map((v) => v.toFixed(0)).join(' ')}`);
-assert.equal(s.armed, true, 'Betaflight armed from the ARM aux');
+s = core.state;
+f = core.fc;
+console.log(`arm: armed ${f.armed} at t=${(s.tUs / 1e6).toFixed(3)} s; motors (DShot) ${s.motorDshot.map((v) => v.toFixed(0)).join(' ')}`);
+assert.equal(f.armed, true, 'Betaflight armed from the ARM aux');
 const idle = s.motorDshot.slice();
 assert.ok(idle.every((v) => v >= 48), 'armed motors sit at digital idle');
 
 // 4. Raise the throttle stick: every motor rises.
-core.input({ throttle: 0.5 }, [2000, 1000, 1000, 1000]);
+core.input(ch({ throttle: 0.5 }, [2000, 1000, 1000, 1000]));
 run(100);
-s = core.state();
-console.log(`throttle 50%: rcCommand T ${s.rcCommand[3].toFixed(0)}; motors ${s.motorDshot.map((v) => v.toFixed(0)).join(' ')}`);
+s = core.state;
+f = core.fc;
+console.log(`throttle 50%: rcCommand T ${f.rcCommand[3].toFixed(0)}; motors ${s.motorDshot.map((v) => v.toFixed(0)).join(' ')}`);
 assert.ok(s.motorDshot.every((v, i) => v > idle[i] + 200), 'throttle stick moves every motor');
 const mid = s.motorDshot.slice();
 
 // 5. Full right roll at the same throttle: Betaflight's PID drives a roll split
 //    (QUADX: motors 3 and 4 are on the left, 1 and 2 on the right). The rest
 //    plant does not rotate, so this is the first response, not a flight.
-core.input({ throttle: 0.5, roll: 1 }, [2000, 1000, 1000, 1000]);
+core.input(ch({ throttle: 0.5, roll: 1 }, [2000, 1000, 1000, 1000]));
 run(20);
-s = core.state();
+s = core.state;
+f = core.fc;
 const left = s.motorDshot[2] + s.motorDshot[3];
 const right = s.motorDshot[0] + s.motorDshot[1];
-console.log(`roll right: setpoint roll ${s.setpoint[0].toFixed(0)} deg/s; motors ${s.motorDshot.map((v) => v.toFixed(0)).join(' ')} (left ${left.toFixed(0)} vs right ${right.toFixed(0)})`);
-assert.ok(s.setpoint[0] > 400, 'roll stick reaches a high roll setpoint');
+console.log(`roll right: setpoint roll ${f.setpoint[0].toFixed(0)} deg/s; motors ${s.motorDshot.map((v) => v.toFixed(0)).join(' ')} (left ${left.toFixed(0)} vs right ${right.toFixed(0)})`);
+assert.ok(f.setpoint[0] > 400, 'roll stick reaches a high roll setpoint');
 assert.ok(left > right, 'right roll pushes the left motors up');
 
 // 6. Disarm.
-core.input({ throttle: 0 }, [1000, 1000, 1000, 1000]);
+core.input(ch({ throttle: 0 }, [1000, 1000, 1000, 1000]));
 run(50);
-s = core.state();
-console.log(`disarm: armed ${s.armed}; motors ${s.motorDshot.map((v) => v.toFixed(0)).join(' ')}`);
-assert.equal(s.armed, false);
+s = core.state;
+f = core.fc;
+console.log(`disarm: armed ${f.armed}; motors ${s.motorDshot.map((v) => v.toFixed(0)).join(' ')}`);
+assert.equal(f.armed, false);
 console.log('arm-and-motor: PASS');

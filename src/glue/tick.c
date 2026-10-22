@@ -21,9 +21,11 @@
 
 #include "common/time.h"
 #include "common/utils.h"
+#include "config/feature.h"
 #include "drivers/time.h"
 #include "fc/core.h"
 #include "fc/rc_controls.h"
+#include "fc/rc_modes.h"
 #include "fc/tasks.h"
 #include "flight/failsafe.h"
 #include "pg/rx.h"
@@ -46,10 +48,10 @@ static uint32_t inputTail;   // oldest sample not yet consumed
 static uint64_t inputLastUs;
 static bool inputAny;
 
-// Raw frame sent to Betaflight. Until the host sends a sample it is neutral:
-// sticks centred, throttle low, aux low, laid out through Betaflight's rcmap
-// (sc_tick_init), so any channel map boots to arm-ready.
+// Raw frame sent to Betaflight. Until the host sends a sample it is neutral
+// (neutralFrame): any map and stick settings boot to arm-ready or a switch.
 static uint16_t rxFrame[SC_RC_CHANNELS];
+static bool neutralValid;
 static uint32_t rxPeriodUs = 4000;
 static bool rxLinkUp = true;
 static timeUs_t rxLastFrameUs;
@@ -65,7 +67,7 @@ void sc_rx_set_rate(int hz)
     rxPeriodUs = 1000000u / (uint32_t)hz;
 }
 
-void sc_rx_link(bool up)
+void sc_rx_link_set(bool up)
 {
     rxLinkUp = up;
 }
@@ -97,12 +99,63 @@ int sc_input_push(uint64_t tUs, const uint16_t *ch, int n)
     return SC_OK;
 }
 
+// Sticks on Betaflight's centre (mid_rc), aux low, and the throttle where
+// Betaflight's own check (fc/rc_controls.c calculateThrottleStatus) reads it as
+// low: below min_check, or on mid_rc for 3D unless 3D-switched mode or the 3D
+// box is on. The box state is Betaflight's, evaluated from earlier frames.
+// Laid out through the rcmap: rcmap[function] is the raw channel carrying
+// ROLL, PITCH, YAW, THROTTLE, AUX1..AUX4 (rx/rx.c).
+static void neutralFrame(void)
+{
+    // Low values stay inside the valid pulse window (rx_min_usec, rx/rx.c),
+    // or Betaflight would treat the frame as signal loss.
+    const uint16_t validMin = rxConfig()->rx_min_usec;
+    const uint16_t mid = rxConfig()->midrc;
+    const uint16_t belowMincheck = rxConfig()->mincheck > 1000 ? 1000 : rxConfig()->mincheck - 1;
+    const uint16_t low = belowMincheck > validMin ? belowMincheck : validMin;
+    const uint16_t auxLow = 1000 > validMin ? 1000 : validMin;
+    const bool throttleMid = featureIsEnabled(FEATURE_3D) && !flight3DConfig()->switched_mode3d && !IS_RC_MODE_ACTIVE(BOX3D);
+    for (int i = 0; i < SC_RC_CHANNELS; i++) {
+        rxFrame[i] = auxLow;
+    }
+    for (int function = 0; function < RX_MAPPABLE_CHANNEL_COUNT; function++) {
+        const uint8_t raw = rxConfig()->rcmap[function];
+        if (raw >= SC_RC_CHANNELS) {
+            continue;
+        }
+        if (function == ROLL || function == PITCH || function == YAW) {
+            rxFrame[raw] = mid;
+        } else if (function == THROTTLE) {
+            rxFrame[raw] = throttleMid ? mid : low;
+        }
+    }
+    // Whether these flight channels are valid pulses by Betaflight's rule
+    // (rx/rx.c isPulseValid, static there). If not, the config can never
+    // arm, and a failsafe switch on aux low must not hide that (sim-core.js).
+    neutralValid = true;
+    for (int function = ROLL; function <= THROTTLE; function++) {
+        const uint8_t raw = rxConfig()->rcmap[function];
+        const uint16_t v = raw < SC_RC_CHANNELS ? rxFrame[raw] : 0;
+        if (v < rxConfig()->rx_min_usec || v > rxConfig()->rx_max_usec) {
+            neutralValid = false;
+        }
+    }
+}
+
+bool sc_neutral_frame_valid(void)
+{
+    return neutralValid;
+}
+
 // On every RX-grid tick the latest sample stamped at or before t becomes the
 // current frame; later samples wait for their own frame. The radio keeps
 // producing samples during a link loss, so they are consumed either way, and
 // only the transmission to Betaflight stops.
 static void rxGridTick(uint64_t t)
 {
+    if (!inputAny) {
+        neutralFrame();
+    }
     while (inputTail != inputHead && inputRing[inputTail % SC_INPUT_RING].tUs <= t) {
         memcpy(rxFrame, inputRing[inputTail % SC_INPUT_RING].ch, sizeof(rxFrame));
         inputTail++;
@@ -147,17 +200,7 @@ static void runSlackTasks(timeUs_t now)
 
 void sc_tick_init(void)
 {
-    // rcmap[function] is the raw channel that carries function ROLL, PITCH,
-    // YAW, THROTTLE, AUX1..AUX4 (rx/rx.c reads rcData[function] from it).
-    for (int i = 0; i < SC_RC_CHANNELS; i++) {
-        rxFrame[i] = 1000;
-    }
-    for (int function = 0; function < RX_MAPPABLE_CHANNEL_COUNT; function++) {
-        const uint8_t raw = rxConfig()->rcmap[function];
-        if (raw < SC_RC_CHANNELS) {
-            rxFrame[raw] = (function == ROLL || function == PITCH || function == YAW) ? 1500 : 1000;
-        }
-    }
+    neutralFrame();
     rxRuntimeState.rcFrameTimeUsFn = scRxFrameTimeUs;
     lastFailsafeCheckMs = millis();
 }
@@ -199,12 +242,13 @@ static void tickOnce(void)
     // 5. The plant moves on by one tick; the clock follows it.
     sc_plant_step(SC_TICK_US * 1e-6);
     sc_time_us = t + SC_TICK_US;
+    sc_trace_tick();
 }
 
 int sc_tick_run(int ticks)
 {
     int ran = 0;
-    while (ran < ticks && sc_fault == SC_FAULT_NONE && !sc_reboot_requested) {
+    while (ran < ticks && sc_fault_state == SC_FAULT_NONE && !sc_reboot_flag) {
         tickOnce();
         ran++;
     }

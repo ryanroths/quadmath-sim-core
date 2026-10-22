@@ -1,57 +1,36 @@
-// D1 (first form): the same sim-time input stream, run on two fresh instances,
-// gives the same state block, byte for byte, on every tick.
+// D1 repeat: the same sim-time sample stream, run twice on fresh instances,
+// gives the same trace hash (SHA-256 over the state block and Betaflight's
+// readouts at the end of every tick since boot). Every scenario of the D2
+// matrix, so each one is known to repeat before Node and Chrome are compared.
+// On the M3 rest plant an rpm-on scenario differs from its rpm-off twin only
+// in Betaflight's RPM-filter-enabled flag (gyro and eRPM are zero), which is
+// what keeps those traces distinct; the filter path gets input with M4.
 //
 //   node tests/node/determinism-repeat.test.mjs
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { SimCore } from '../../src/js/sim-core.js';
+import { CLASS_DIFFS, matrix, runScenario } from '../lib/scenarios.mjs';
 
 const root = new URL('../../', import.meta.url);
-const wasm = await readFile(new URL('dist/sim-core.wasm', root));
-const diff = await readFile(new URL('configs/65mm-air65-ryfly-1219s.diff', root), 'utf8');
-const module = await WebAssembly.compile(wasm);
+const module = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', root)));
+const presets = {};
+for (const [name, path] of Object.entries(CLASS_DIFFS)) presets[name] = await readFile(new URL(path, root), 'utf8');
 
-// A scripted session in sim time (whole microseconds): arm, throttle steps,
-// a roll sweep, yaw reversals. Generated in JS; only integer channels reach
-// the core.
-function script(t0, durationMs) {
-  const out = [];
-  for (let ms = 0; ms <= durationMs; ms += 4) {
-    const arm = ms >= 100 ? 2000 : 1000;
-    const throttle = ms < 300 ? 0 : (Math.floor(ms / 250) % 2 ? 0.55 : 0.4);
-    const roll = ms < 800 ? 0 : ((ms / 4) % 50) / 25 - 1;
-    const yaw = ms < 1600 ? 0 : (ms % 400 < 200 ? 0.6 : -0.6);
-    out.push({ t: t0 + ms * 1000, sticks: { throttle, roll, yaw }, aux: [arm, 1000, 1000, 1000] });
-  }
-  return out;
+const seen = new Set();
+for (const sc of matrix()) {
+  const a = await runScenario(SimCore, module, presets[sc.preset], sc);
+  const b = await runScenario(SimCore, module, presets[sc.preset], sc);
+  console.log(`${sc.name.padEnd(26)} ${a.hash.slice(0, 16)} ${b.hash.slice(0, 16)}  flying: armed ${a.flying.armed} angle ${a.flying.mode.angle} 3d ${a.flying.mode.mode3d} motors ${a.flying.motorDshot.join(' ')}`);
+  assert.equal(a.hash, b.hash, `${sc.name}: two fresh runs, same trace`);
+  assert.equal(a.flying.armed, true, `${sc.name}: armed during the script`);
+  assert.equal(a.flying.mode.angle, sc.angle, `${sc.name}: ANGLE as scripted`);
+  assert.equal(a.flying.mode.mode3d, sc.mode3d, `${sc.name}: 3D as configured`);
+  assert.ok(a.flying.motorDshot.every((v) => v > 0), `${sc.name}: motors running while armed`);
+  assert.equal(a.armedAtEnd, false, `${sc.name}: disarmed at the end`);
+  seen.add(a.hash);
 }
-
-async function run() {
-  const core = await SimCore.load(module);
-  core.configure(diff);
-  core.boot();
-  const ticksPerMs = core.loopHz / 1000;
-  const durationMs = 3000;
-  const samples = script(core.simTimeUs, durationMs);
-  const hash = createHash('sha256');
-  let next = 0;
-  for (let tick = 0; tick < durationMs * ticksPerMs; tick++) {
-    while (next < samples.length && samples[next].t <= core.simTimeUs) {
-      core.input(samples[next].sticks, samples[next].aux, samples[next].t);
-      next++;
-    }
-    core.step(1);
-    hash.update(core.stateBytes());
-  }
-  return { hash: hash.digest('hex'), final: core.state() };
-}
-
-const a = await run();
-const b = await run();
-console.log(`run A ${a.hash.slice(0, 16)}  run B ${b.hash.slice(0, 16)}  armed ${a.final.armed}  motors ${a.final.motorDshot.join(' ')}`);
-assert.equal(a.final.armed, true);
-assert.equal(a.hash, b.hash, 'two fresh instances, same input stream, same state block every tick');
-console.log('determinism-repeat: PASS');
+assert.equal(seen.size, matrix().length, 'every scenario has its own trace');
+console.log(`determinism-repeat: ${seen.size} scenarios, each identical twice: PASS`);

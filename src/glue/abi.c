@@ -1,7 +1,7 @@
 /*
- * The exported ABI (sc_*). Everything sim-core.js calls goes through here.
- * Version 1, partial: enough to boot, configure through the CLI, feed sticks,
- * step, and read Betaflight's and the plant's state.
+ * The exported ABI (sc_*), version 1. Everything sim-core.js calls goes
+ * through here. Names follow the Phase 1 plan's ABI table (PROGRESS.md);
+ * the plant, world and pose exports arrive with the M4 plant.
  *
  * This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
  */
@@ -10,12 +10,18 @@
 
 #include "platform.h"
 
+#include "build/debug.h"
+#include "config/feature.h"
+#include "fc/core.h"
 #include "fc/rc.h"
 #include "fc/rc_controls.h"
+#include "fc/rc_modes.h"
 #include "fc/runtime_config.h"
 #include "flight/failsafe.h"
 #include "flight/imu.h"
 #include "flight/mixer.h"
+#include "flight/pid.h"
+#include "flight/rpm_filter.h"
 #include "rx/rx.h"
 #include "sensors/battery.h"
 #include "sensors/gyro.h"
@@ -27,7 +33,163 @@ extern uint8_t eepromData[EEPROM_SIZE];
 // Scratch memory for passing strings and channel arrays across the boundary.
 static uint8_t scScratch[4096];
 
-static double scState[64];
+// State block v1: the plant, SI units, module frame. Index = meaning.
+enum {
+    ST_T_US = 0,
+    ST_POS = 1,
+    ST_VEL = 4,
+    ST_QUAT = 7,
+    ST_OMEGA = 11,
+    ST_SPECIFIC_FORCE = 14,
+    ST_MOTOR_DSHOT = 17,
+    ST_MOTOR_OUT = 21,
+    ST_MOTOR_DIR = 25,
+    ST_RPM = 29,
+    ST_THRUST_N = 33,
+    ST_VBAT_LOADED = 37,
+    ST_AMPS = 38,
+    ST_MAH = 39,
+    ST_SOC = 40,
+    ST_GROUND_CLEARANCE = 41,
+    ST_AIRBORNE = 42,
+    ST_CONTACT_FLAGS = 43,
+    ST_FAULT = 44,
+    ST_LEN = 45,
+};
+
+// Betaflight readouts v1. The plan's list, then what the OSD and the tests
+// read beyond it (motorsEnabled onwards).
+enum {
+    FC_ARMED = 0,
+    FC_ARMING_DISABLE_FLAGS = 1,
+    FC_FLIGHT_MODE_FLAGS = 2,
+    FC_FAILSAFE_PHASE = 3,
+    FC_VBAT = 4,
+    FC_AMPS = 5,
+    FC_MAH_DRAWN = 6,
+    FC_CELLS = 7,
+    FC_SETPOINT = 8,
+    FC_GYRO_FILTERED = 11,
+    FC_PID_SUM = 14,
+    FC_RC_COMMAND = 17,
+    FC_MOTOR = 21,
+    FC_DEBUG = 25,
+    FC_DEBUG_MODE = 33,
+    FC_MOTORS_ENABLED = 34,
+    FC_RC_DATA = 35,            // functions AETR, AUX1..AUX4
+    FC_RX_SIGNAL = 43,
+    FC_ATTITUDE = 44,           // roll, pitch, yaw, degrees
+    FC_AIRMODE = 47,            // the plan's mode list beyond flightModeFlags
+    FC_CRASH_FLIP = 48,
+    FC_MODE_3D = 49,
+    FC_RPM_FILTER = 50,         // isRpmFilterEnabled()
+    FC_LEN = 51,
+};
+
+static double scState[ST_LEN];
+static double scFc[FC_LEN];
+
+#define SC_EVENT_CAP 1024
+static double scEvents[SC_EVENT_CAP * SC_EVENT_DOUBLES];
+static int scEventCount;
+static int scEventsDropped;
+
+static sc_sha256_t scTrace;
+static bool scTraceOn;
+static uint8_t scTraceDigest[32];
+
+static void fillState(void)
+{
+    double *s = scState;
+    s[ST_T_US] = (double)sc_time_us;
+    for (int i = 0; i < 3; i++) {
+        s[ST_POS + i] = sc_plant.pos[i];
+        s[ST_VEL + i] = sc_plant.vel[i];
+        s[ST_OMEGA + i] = sc_plant.omega[i];
+        s[ST_SPECIFIC_FORCE + i] = sc_plant.specificForce[i];
+    }
+    for (int i = 0; i < 4; i++) {
+        s[ST_QUAT + i] = sc_plant.quat[i];
+    }
+    for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+        s[ST_MOTOR_DSHOT + i] = sc_motor_value[i];
+        s[ST_MOTOR_OUT + i] = sc_plant.motorOut[i];
+        s[ST_MOTOR_DIR + i] = sc_motor_dir[i];
+        s[ST_RPM + i] = sc_plant.rpm[i];
+        s[ST_THRUST_N + i] = sc_plant.thrustN[i];
+    }
+    s[ST_VBAT_LOADED] = sc_plant.vbatLoaded;
+    s[ST_AMPS] = sc_plant.amps;
+    s[ST_MAH] = sc_plant.mah;
+    s[ST_SOC] = sc_plant.soc;
+    s[ST_GROUND_CLEARANCE] = sc_plant.groundClearance;
+    s[ST_AIRBORNE] = sc_plant.airborne ? 1 : 0;
+    s[ST_CONTACT_FLAGS] = sc_plant.contactFlags;
+    s[ST_FAULT] = sc_fault_state;
+}
+
+static void fillFc(void)
+{
+    double *f = scFc;
+    f[FC_ARMED] = ARMING_FLAG(ARMED) ? 1 : 0;
+    f[FC_ARMING_DISABLE_FLAGS] = (double)getArmingDisableFlags();
+    f[FC_FLIGHT_MODE_FLAGS] = (double)flightModeFlags;
+    f[FC_FAILSAFE_PHASE] = (double)failsafePhase();
+    f[FC_VBAT] = getBatteryVoltage() / 100.0;
+    f[FC_AMPS] = getAmperage() / 100.0;
+    f[FC_MAH_DRAWN] = getMAhDrawn();
+    f[FC_CELLS] = getBatteryCellCount();
+    for (int axis = 0; axis < 3; axis++) {
+        f[FC_SETPOINT + axis] = getSetpointRate(axis);
+        f[FC_GYRO_FILTERED + axis] = gyro.gyroADCf[axis];
+        f[FC_PID_SUM + axis] = pidData[axis].Sum;
+    }
+    for (int i = 0; i < 4; i++) {
+        f[FC_RC_COMMAND + i] = rcCommand[i];
+        f[FC_MOTOR + i] = motor[i];
+    }
+    for (int i = 0; i < 8; i++) {
+        f[FC_DEBUG + i] = debug[i];
+        f[FC_RC_DATA + i] = rcData[i];
+    }
+    f[FC_DEBUG_MODE] = debugMode;
+    f[FC_MOTORS_ENABLED] = sc_motors_enabled ? 1 : 0;
+    f[FC_RX_SIGNAL] = rxIsReceivingSignal() ? 1 : 0;
+    f[FC_ATTITUDE] = attitude.values.roll / 10.0;
+    f[FC_ATTITUDE + 1] = attitude.values.pitch / 10.0;
+    f[FC_ATTITUDE + 2] = attitude.values.yaw / 10.0;
+    f[FC_AIRMODE] = airmodeIsEnabled() ? 1 : 0;
+    f[FC_CRASH_FLIP] = isFlipOverAfterCrashActive() ? 1 : 0;
+    f[FC_MODE_3D] = featureIsEnabled(FEATURE_3D) ? 1 : 0;
+    f[FC_RPM_FILTER] = isRpmFilterEnabled() ? 1 : 0;
+}
+
+void sc_event_push(int kind, const double *values, int n)
+{
+    if (scEventCount >= SC_EVENT_CAP) {
+        scEventsDropped++;
+        return;
+    }
+    double *e = &scEvents[scEventCount * SC_EVENT_DOUBLES];
+    memset(e, 0, SC_EVENT_DOUBLES * sizeof(double));
+    e[0] = (double)sc_time_us;
+    e[1] = kind;
+    for (int i = 0; i < n && i < SC_EVENT_DOUBLES - 2; i++) {
+        e[2 + i] = values[i];
+    }
+    scEventCount++;
+}
+
+void sc_trace_tick(void)
+{
+    if (!scTraceOn) {
+        return;
+    }
+    fillState();
+    fillFc();
+    sc_sha256_update(&scTrace, scState, sizeof(scState));
+    sc_sha256_update(&scTrace, scFc, sizeof(scFc));
+}
 
 EMSCRIPTEN_KEEPALIVE int sc_abi_version(void) { return SC_ABI_VERSION; }
 EMSCRIPTEN_KEEPALIVE int sc_loop_hz(void) { return SC_LOOP_HZ; }
@@ -40,68 +202,106 @@ EMSCRIPTEN_KEEPALIVE int sc_eeprom_size(void) { return EEPROM_SIZE; }
 EMSCRIPTEN_KEEPALIVE int sc_boot(void)
 {
     sc_time_us = SC_BOOT_EPOCH_US;
-    sc_fault = SC_FAULT_NONE;
-    sc_reboot_requested = false;
+    sc_fault_state = SC_FAULT_NONE;
+    sc_reboot_flag = false;
+    scEventCount = 0;
+    scEventsDropped = 0;
     sc_plant_init();
     sc_boot_betaflight();
     sc_tick_init();
-    if (sc_fault == SC_FAULT_NONE) {
+    if (sc_fault_state == SC_FAULT_NONE) {
         const int failed = sc_boot_asserts();
         if (failed) {
-            sc_fault = SC_FAULT_BOOT_ASSERT_BASE + failed;
+            sc_set_fault(SC_FAULT_BOOT_ASSERT_BASE + failed);
         }
     }
-    return sc_fault;
+    return sc_fault_state;
 }
 
 EMSCRIPTEN_KEEPALIVE int sc_pg_missing(void) { return sc_pg_missing_count(); }
 
-EMSCRIPTEN_KEEPALIVE void sc_cli_begin(void) { sc_cli_enter(); }
+// Config instance only: the flight instance never enters the CLI.
+EMSCRIPTEN_KEEPALIVE void sc_cli_enter(void) { sc_cli_port_enter(); }
 
-// Applies one CLI line held in scratch. Returns 0 when Betaflight accepted it,
-// 1 when Betaflight printed ###ERROR for it, <0 for a bad call.
-EMSCRIPTEN_KEEPALIVE int sc_cli_line(int len)
+// Applies one CLI line of len bytes at ptr. Returns 0 when Betaflight accepted
+// it, 1 when Betaflight printed ###ERROR for it, <0 for a bad call.
+EMSCRIPTEN_KEEPALIVE int sc_cli_line(const char *ptr, int len)
 {
-    if (len < 0 || len >= (int)sizeof(scScratch)) {
+    if (!ptr || len < 0 || len > 255) {
         return SC_ERR_BAD_ARG;
     }
+    char line[256];
+    memcpy(line, ptr, (size_t)len);
     const int before = sc_log_len();
-    const int rc = sc_cli_feed((const char *)scScratch, len);
+    const int rc = sc_cli_feed(line, len);
     if (rc != SC_OK) {
         return rc;
     }
+    // The CLI echoes the typed line first (cli/cli.c processCharacter), so
+    // skip it; Betaflight's errors start a line of their own ("###ERROR IN").
     const char *log = sc_log_ptr();
-    for (int i = before; i + 8 <= sc_log_len(); i++) {
-        if (memcmp(&log[i], "###ERROR", 8) == 0) {
+    const int end = sc_log_len();
+    int i = before;
+    while (i < end && log[i] != '\n') {
+        i++;
+    }
+    for (i++; i + 8 <= end; i++) {
+        if (log[i - 1] == '\n' && memcmp(&log[i], "###ERROR", 8) == 0) {
             return 1;
         }
     }
     return 0;
 }
 
-EMSCRIPTEN_KEEPALIVE const char *sc_log_ptr_export(void) { return sc_log_ptr(); }
-EMSCRIPTEN_KEEPALIVE int sc_log_len_export(void) { return sc_log_len(); }
-EMSCRIPTEN_KEEPALIVE int sc_log_truncated_export(void) { return sc_log_truncated(); }
-EMSCRIPTEN_KEEPALIVE void sc_log_clear_export(void) { sc_log_clear(); }
-EMSCRIPTEN_KEEPALIVE int sc_reboot_pending(void) { return sc_reboot_requested; }
+EMSCRIPTEN_KEEPALIVE const char *sc_cli_log_ptr(void) { return sc_log_ptr(); }
+EMSCRIPTEN_KEEPALIVE int sc_cli_log_len(void) { return sc_log_len(); }
+EMSCRIPTEN_KEEPALIVE int sc_cli_log_truncated(void) { return sc_log_truncated(); }
+EMSCRIPTEN_KEEPALIVE void sc_cli_log_clear(void) { sc_log_clear(); }
+EMSCRIPTEN_KEEPALIVE int sc_reboot_requested(void) { return sc_reboot_flag; }
 
-// One input sample from scratch: n uint16 channel values (1000..2000),
-// stamped at sim time tUs.
-EMSCRIPTEN_KEEPALIVE int sc_input(double tUs, int n)
+// Battery carried across a reinit: soc2[0] state of charge, soc2[1] filtered
+// pack voltage. Only after sc_boot and before the first tick.
+EMSCRIPTEN_KEEPALIVE int sc_battery_carry(const double *soc2)
+{
+    if (sc_time_us != SC_BOOT_EPOCH_US) {
+        return SC_ERR_BAD_STATE;
+    }
+    if (!soc2 || !(soc2[0] >= 0.0 && soc2[0] <= 1.0) || !(soc2[1] > 0.0 && soc2[1] < 100.0)) {
+        return SC_ERR_BAD_ARG;
+    }
+    sc_plant_battery_carry(soc2[0], soc2[1]);
+    return SC_OK;
+}
+
+// What sc_battery_carry takes, read from the running plant: out2[0] state of
+// charge, out2[1] filtered pack voltage.
+EMSCRIPTEN_KEEPALIVE int sc_battery_state(double *out2)
+{
+    if (!out2) {
+        return SC_ERR_BAD_ARG;
+    }
+    out2[0] = sc_plant.soc;
+    out2[1] = sc_plant.vbatFiltered;
+    return SC_OK;
+}
+
+// One 16-channel sample in raw channel order, stamped at sim time tUs. Stamps
+// never go backwards. Accepts 750..2250 per channel (Betaflight's own pulse
+// checks decide the rest); sim-core.js narrows that to 1000..2000.
+EMSCRIPTEN_KEEPALIVE int sc_input(const uint16_t *ch16, double tUs)
 {
     // Whole microseconds only: a fractional stamp would land in an earlier
     // frame than it names.
-    if (!(tUs >= 0.0) || tUs > 9007199254740991.0 || tUs != (double)(uint64_t)tUs
-        || n < 4 || n > SC_RC_CHANNELS) {
+    if (!ch16 || !(tUs >= 0.0) || tUs > 9007199254740991.0 || tUs != (double)(uint64_t)tUs) {
         return SC_ERR_BAD_ARG;
     }
     uint16_t ch[SC_RC_CHANNELS];
-    memcpy(ch, scScratch, (size_t)n * sizeof(uint16_t));
-    return sc_input_push((uint64_t)tUs, ch, n);
+    memcpy(ch, ch16, sizeof(ch));
+    return sc_input_push((uint64_t)tUs, ch, SC_RC_CHANNELS);
 }
 
 // 250, 500 or 1000 Hz, and only if frames land on whole ticks.
-EMSCRIPTEN_KEEPALIVE int sc_rx_rate(int hz)
+EMSCRIPTEN_KEEPALIVE int sc_set_rx_rate(int hz)
 {
     if ((hz != 250 && hz != 500 && hz != 1000) || hz > SC_LOOP_HZ || ((1000000 / hz) % SC_TICK_US) != 0) {
         return SC_ERR_BAD_ARG;
@@ -110,44 +310,55 @@ EMSCRIPTEN_KEEPALIVE int sc_rx_rate(int hz)
     return SC_OK;
 }
 
-EMSCRIPTEN_KEEPALIVE void sc_rx_link_export(int up) { sc_rx_link(up != 0); }
+EMSCRIPTEN_KEEPALIVE void sc_rx_link(int up) { sc_rx_link_set(up != 0); }
+
+// 1 when the boot frame's sticks and throttle are valid pulses for this config.
+EMSCRIPTEN_KEEPALIVE int sc_neutral_valid(void) { return sc_neutral_frame_valid() ? 1 : 0; }
 
 EMSCRIPTEN_KEEPALIVE int sc_step(int ticks) { return ticks > 0 ? sc_tick_run(ticks) : 0; }
-EMSCRIPTEN_KEEPALIVE int sc_fault_code(void) { return sc_fault; }
+EMSCRIPTEN_KEEPALIVE int sc_fault(void) { return sc_fault_state; }
 EMSCRIPTEN_KEEPALIVE double sc_time(void) { return (double)sc_time_us; }
 
-// State block v1 (partial). Index = meaning; frozen once the ABI is.
-EMSCRIPTEN_KEEPALIVE double *sc_state(void)
+EMSCRIPTEN_KEEPALIVE double *sc_state_ptr(void)
 {
-    double *s = scState;
-    memset(scState, 0, sizeof(scState));
-    s[0] = (double)sc_time_us;
-    s[1] = ARMING_FLAG(ARMED) ? 1 : 0;
-    s[2] = (double)getArmingDisableFlags();
-    s[3] = (double)flightModeFlags;
-    s[4] = (double)failsafePhase();
-    for (int i = 0; i < SC_MOTOR_COUNT; i++) {
-        s[5 + i] = sc_motor_value[i];       // DShot value sent to the ESC
-        s[10 + i] = motor[i];               // Betaflight mixer output
+    fillState();
+    return scState;
+}
+
+EMSCRIPTEN_KEEPALIVE int sc_state_len(void) { return ST_LEN; }
+
+EMSCRIPTEN_KEEPALIVE double *sc_fc_ptr(void)
+{
+    fillFc();
+    return scFc;
+}
+
+EMSCRIPTEN_KEEPALIVE int sc_fc_len(void) { return FC_LEN; }
+
+EMSCRIPTEN_KEEPALIVE double *sc_events_ptr(void) { return scEvents; }
+EMSCRIPTEN_KEEPALIVE int sc_events_len(void) { return scEventCount; }
+EMSCRIPTEN_KEEPALIVE int sc_events_dropped(void) { return scEventsDropped; }
+
+EMSCRIPTEN_KEEPALIVE void sc_events_clear(void)
+{
+    scEventCount = 0;
+    scEventsDropped = 0;
+}
+
+// Starts the trace hash over: every tick from here on adds the state and
+// Betaflight blocks as they stand at the end of the tick.
+EMSCRIPTEN_KEEPALIVE void sc_trace_start(void)
+{
+    sc_sha256_init(&scTrace);
+    scTraceOn = true;
+}
+
+// NULL until sc_trace_start: no hash covers a run that was not traced.
+EMSCRIPTEN_KEEPALIVE const uint8_t *sc_trace_digest(void)
+{
+    if (!scTraceOn) {
+        return NULL;
     }
-    s[9] = sc_motors_enabled ? 1 : 0;
-    for (int axis = 0; axis < 3; axis++) {
-        s[14 + axis] = getSetpointRate(axis);
-        s[17 + axis] = gyro.gyroADCf[axis];
-    }
-    for (int i = 0; i < 4; i++) {
-        s[20 + i] = rcCommand[i];
-        s[24 + i] = rcData[i];
-    }
-    s[28] = getBatteryVoltage() / 100.0;
-    s[29] = getBatteryCellCount();
-    s[30] = getAmperage() / 100.0;
-    s[31] = rxIsReceivingSignal() ? 1 : 0;
-    s[32] = attitude.values.roll / 10.0;
-    s[33] = attitude.values.pitch / 10.0;
-    s[34] = attitude.values.yaw / 10.0;
-    for (int i = 0; i < 4; i++) {
-        s[35 + i] = rcData[4 + i];
-    }
-    return s;
+    sc_sha256_final(&scTrace, scTraceDigest);
+    return scTraceDigest;
 }

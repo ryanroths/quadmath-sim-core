@@ -20,8 +20,18 @@
 
 #include "sc.h"
 
-int sc_fault;
-bool sc_reboot_requested;
+int sc_fault_state;
+bool sc_reboot_flag;
+
+void sc_set_fault(int code)
+{
+    if (sc_fault_state != SC_FAULT_NONE || code == SC_FAULT_NONE) {
+        return;
+    }
+    sc_fault_state = code;
+    const double value = code;
+    sc_event_push(SC_EVENT_FAULT, &value, 1);
+}
 
 // One "cycle" per simulated microsecond. Only the scheduler's own load and
 // guard bookkeeping and the CLI status line read cycles.
@@ -46,7 +56,7 @@ int32_t clockCyclesToMicros(int32_t clockCycles)
 // boots a fresh instance from it, as the firmware would after a reset.
 void systemReset(void)
 {
-    sc_reboot_requested = true;
+    sc_reboot_flag = true;
 }
 
 void systemResetToBootloader(bootloaderRequestType_e requestType)
@@ -57,7 +67,7 @@ void systemResetToBootloader(bootloaderRequestType_e requestType)
 
 void failureMode(failureMode_e mode)
 {
-    sc_fault = SC_FAULT_BF_FAILURE_BASE + (int)mode;
+    sc_set_fault(SC_FAULT_BF_FAILURE_BASE + (int)mode);
 }
 
 uint32_t stackTotalSize(void)

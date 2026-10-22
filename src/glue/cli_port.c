@@ -140,7 +140,7 @@ static const struct serialPortVTable cliPortVTable = {
     .endWrite = NULL,
 };
 
-void sc_cli_enter(void)
+void sc_cli_port_enter(void)
 {
     memset(&scCliPort, 0, sizeof(scCliPort));
     scCliPort.vTable = &cliPortVTable;
@@ -165,14 +165,14 @@ int sc_cli_feed(const char *line, int len)
     if (!scCliActive || len < 0 || len > 255) {
         return SC_ERR_BAD_ARG;
     }
-    if (sc_reboot_requested) {
+    if (sc_reboot_flag) {
         return SC_ERR_BAD_STATE;
     }
     for (int i = 0; i < len; i++) {
         cliRx[cliRxHead++ % CLI_RX_SIZE] = (uint8_t)line[i];
     }
     cliRx[cliRxHead++ % CLI_RX_SIZE] = '\n';
-    while (cliRxHead != cliRxTail && !sc_reboot_requested) {
+    while (cliRxHead != cliRxTail && !sc_reboot_flag) {
         cliProcess();
     }
     cliRxTail = cliRxHead;
