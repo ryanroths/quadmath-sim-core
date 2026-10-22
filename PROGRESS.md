@@ -1811,3 +1811,32 @@ findings were all low.
 2. **M2 remainder:** the HARDWARE_VALUE list, and the B5 ATTITUDE and
    acc-LPF asserts.
 3. **75 mm** still waits on a bench decision.
+
+---
+
+## 2026-10-22 | Phase 1 | full `npm test` on the committed tree (`e5179b3`)
+
+`npm test` (`node tests/run-all.mjs`), Windows, Node 24.21.0, emsdk 3.1.61 in
+WSL, Chrome 155.0.8059.85. Exit 0.
+
+- `git diff --stat vendor/betaflight` and `git -C vendor/betaflight status --porcelain`: both empty.
+- Build 1 and build 2: `dist/sim-core.wasm` 159,153 B, sha256
+  `bd3abde4c92dabc1959e5fdcaed56d7d007d16b59ffe9cc9299df16004c33d1f` both
+  times, equal to the committed `dist/sim-core.wasm.sha256`.
+
+```
+PASS   134.4 s  B1 B2 byte-exact build, vendor untouched; F5 arm, motors
+PASS     0.1 s  B3 B4 B5 ABI surface, PG coverage, boot asserts
+PASS     0.1 s  F5 arm and motor answer the sticks
+PASS     0.9 s  C2 F5 config policy, map, link loss, bad input
+PASS     0.6 s  C1 C2 C3 config count and readback
+PASS     0.3 s  C1 diff passthrough (rates ratio, RPM filter, P)
+PASS     1.0 s  D1 determinism repeat
+PASS     0.6 s  D3 frame independence 30/60/144/240 Hz
+PASS     0.6 s  D4 reset vs fresh load
+PASS     1.1 s  X1 black box vs WebFPV (F1 F2 F4)
+PASS    11.9 s  D2 Node vs headless Chrome, console clean
+all 11 passed
+```
+
+Stopped here for the owner. The PR to `main` is open; the M4 plant waits for go.
