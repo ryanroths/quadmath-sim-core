@@ -1,0 +1,64 @@
+# quadmath-sim-core CI: the byte-exact build on the pinned emsdk, its hash
+# against the committed dist/sim-core.wasm.sha256, and the whole test list
+# (npm test, which builds twice more and runs Node, headless Chrome and the
+# WebFPV black-box tests). The job is named "ci": main's branch protection
+# requires that check.
+#
+# This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - uses: mymindstorm/setup-emsdk@v16
+        with:
+          version: 3.1.61
+
+      - name: Toolchain
+        run: |
+          node --version
+          emcc --version | head -1
+          google-chrome --version
+
+      # The black-box and corpus tests read WebFPV's module and diffs from a
+      # clone at the commit Phase 0 pinned (tests/lib/webfpv.mjs checks the
+      # module's sha256). Nothing of WebFPV is copied into this repo.
+      - name: WebFPV reference at 518846c
+        run: |
+          git init -q "$RUNNER_TEMP/webfpv-upstream"
+          cd "$RUNNER_TEMP/webfpv-upstream"
+          git remote add origin https://github.com/Mathew-Harvey/WebFPVSimulator.git
+          git fetch -q --depth 1 --filter=blob:none origin 518846c99af94a7074b853dd0ad02c027bb929ae
+          git show 518846c:dist/sim.wasm | sha256sum
+
+      - name: Build
+        run: bash scripts/build.sh
+
+      - name: dist matches the committed hash
+        run: |
+          (cd dist && sha256sum -c sim-core.wasm.sha256)
+          git diff --exit-code -- dist/
+
+      - name: npm test
+        env:
+          WEBFPV_DIR: ${{ runner.temp }}/webfpv-upstream
+        run: npm test
