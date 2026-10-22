@@ -1,0 +1,15 @@
+{
+  "name": "quadmath-sim-core",
+  "version": "0.0.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node tests/run-all.mjs",
+    "test:quick": "node tests/run-all.mjs --quick",
+    "gate": "node tests/gate-arm-motor.mjs --build"
+  }
+}

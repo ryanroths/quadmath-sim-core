@@ -1,0 +1,13 @@
+--- a/src/main/target/common_post.h
++++ b/src/main/target/common_post.h
+@@ -491,8 +491,9 @@
+ #define USE_WS2811_SINGLE_COLOUR
+ #endif
+ 
+-#if defined(SIMULATOR_BUILD) || defined(UNIT_TEST)
++#if defined(UNIT_TEST)
+ // This feature uses 'arm_math.h', which does not exist for x86.
++// quadmath-sim-core: kept for SIMULATOR_BUILD; 4.5.1 uses common/sdft.c, not arm_math.h.
+ #undef USE_DYN_NOTCH_FILTER
+ #endif
+ 
