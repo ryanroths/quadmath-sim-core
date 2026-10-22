@@ -8,6 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node tests/node/abi-surface.test.mjs && node tests/node/arm-and-motor.test.mjs && node tests/node/config-policy.test.mjs && node tests/node/determinism-repeat.test.mjs"
+    "test": "node tests/node/abi-surface.test.mjs && node tests/node/arm-and-motor.test.mjs && node tests/node/config-policy.test.mjs && node tests/node/determinism-repeat.test.mjs",
+    "gate": "node tests/gate-arm-motor.mjs --build"
   }
 }
