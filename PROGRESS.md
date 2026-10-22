@@ -1112,3 +1112,103 @@ journals and checked against source.
 
 Rule from here: never act on a completion notice until the journal shows the
 result.
+
+---
+
+## 2026-10-22 | decisions | owner answers to the Phase 1 plan
+
+**Repo.** Pushed public to `https://github.com/ryanroths/quadmath-sim-core`
+(`main` at `ab64c0a`). The SSH push was refused; the remote uses HTTPS.
+
+### Owner decisions (verbatim intent)
+
+- **RPM (plan decision 1, replaced).** Build the minimum real model now:
+  RPM = KV × effective voltage, with first-order motor lag, loaded by prop
+  drag torque.
+- **Current (part of plan decision 3, replaced).** Bench mAh/min per class,
+  as a throttle-proportional stand-in until Phase 3.
+- **Loop rate (plan decision 2).** 1 kHz, as a build parameter
+  (`SC_LOOP_HZ`), not hard-coded.
+- **Gamepad (plan decision 9).** A 4 ms `setInterval` poll, stamped in sim
+  time, into a ring buffer. Betaflight's RC link rate is set to match
+  (250 Hz). WebHID is Phase 2.
+- **Per-class PIDs (plan decision 11).** Real diffs only:
+  - 65 mm: the Air65 diff from `tune-database.js`
+  - 75 mm: the Meteor75 Pro diff from `tune-database.js`
+- **Drop 2.5" and 5" from Phase 1 (plan decision 12).** No preset without
+  a real diff and bench data.
+- **Remaining decisions:** take the recommended pick, log it, and flag any
+  with less than high confidence.
+- **Next step:** start Phase 1 code, and stop at the first point where
+  Betaflight arms and a motor responds to a stick in Node, before any
+  browser work.
+
+### Remaining decisions taken (recommended pick)
+
+| Plan decision | Pick | Confidence |
+|---|---|---|
+| 3 Battery through Betaflight's ADC (`USE_ADC`, voltage and current meter sources ADC) | yes | high |
+| 4 World contact, clearance and triggers in C | yes | high |
+| 5 Disturbance (propwash, draft noise) off in Phase 1 | yes | high |
+| 6 3D mode in Phase 1 (`feature 3D`, DShot value-range decoding, test F9) | yes | **medium**: adds reverse-thrust plant work and a test; it could move to Phase 2 without hurting anything else |
+| 7 Default `aux` lines when a diff has no ARM box | yes | high. Note: every `tune-database.js` export has no `aux` lines, so this will fire for both classes. |
+| 8 `sim.html` loads sim-core from a release URL pinned with SRI | yes | **medium**: depends on how the quadmath site is deployed and whether the release host is reliable; a vendored copy is the fallback |
+| 10 Try building without `SIMULATOR_BUILD` in M1; if that fails, keep it and record the compiled-out behaviours | yes | **medium**: unknown until M1 compiles it |
+| 13 A frozen copy of the JS plant in this GPL repo as the P2 reference | yes | **medium**: it is the owner's own code, so the owner's licensing call; low risk |
+
+### Findings from the data that change or constrain these decisions (flagged)
+
+1. **`tune-database.js` stores no full diffs.** Each card holds PIDs and
+   rates as numbers, plus prose notes.
+   - Its export `cliFor()` (`tune-database.js:365-385`) emits only:
+     - `p/i/d` per axis
+     - `rates_type`
+     - `rc_rate`/`srate`/`expo` per axis
+     - `save`
+   - Everything else in the notes is not machine-readable: FF, D-min, TPA,
+     filters, bidir DShot, dyn idle, thrust linear, `motor_poles`.
+   - So the "real diff" for each class is a **partial** Betaflight diff;
+     every other setting stays at the Betaflight 4.5.1 default.
+   - **Confidence: low** that this matches the owner's intent. A full
+     `diff all` from each quad would close it.
+2. **Which Air65 card.** Two candidates:
+   - `65-betafpv-ryfly-1219s` (RyFly, VCI Spark 0702 29K KV, Gemfan 1219S,
+     board "AIR65 RYFLY"). This matches the only calibrated Air65 bench file,
+     `data/bench/air65-analog-vci0702-30k.json` (VCI 0702 PRO DB 30000 kV,
+     Gemfan 1219 3-blade, 300 mAh LiHV, 25.42 g).
+   - `65-betafpv-stock` (factory Air65 II Champion, Champion 0702 and
+     Gemfan 1207). It has no bench file.
+   - **Picked `65-betafpv-ryfly-1219s`. Confidence: medium.**
+3. **The Meteor75 Pro has a diff but no bench data.**
+   - The only Betaflight 4.5.1 Meteor75 Pro card is
+     `75-betafpv-ryfly-hamo-45mm` (1102 22K KV, 45 mm props).
+     `75-betafpv-ryfly-o4-gf1811` is on BF 2025.12-alpha, not 4.5.1, so it
+     is excluded.
+   - All three 75 mm bench files are provisional: uncalibrated sensors,
+     uncontrolled runs. All three are 0802 builds (Treetopper, Fractal,
+     Cockroach), not a Meteor75 Pro.
+   - Under "no preset without a real diff and bench data", **75 mm has no
+     plant in Phase 1 yet**. Its diff is still used in config tests.
+   - **Owner choice needed** (no confidence assigned):
+     - fly a Meteor75 Pro bench run
+     - or accept a provisional 0802 bench file
+4. **85 mm is dropped too.** `85-happymodel-ryfly` (Mobula8 2S) has a diff
+   but there is no 85 mm bench file. Same rule.
+5. **The RPM model has no bench numbers for its constants.** The bench files
+   carry KV, prop, pack, AUW and current/mAh only. There is no RPM, winding
+   resistance, rotor inertia or thrust data.
+   - Phase 1 therefore sets the lag time constant from quadmath's motor τ.
+   - It sets the prop drag and thrust coefficients from quadmath's preset
+     thrust and kQ at full speed.
+   - **Confidence: medium** on the structure, **low** on the constants
+     until a bench RPM/thrust run.
+6. **Current reference point.** The calibrated Air65 cruise run gives 270 mAh
+   (corrected) in 233 s: 4.2 A average, 69.5 mAh/min, ±8%.
+   - The bench file records no throttle, so "throttle-proportional" needs a
+     reference duty. Phase 1 uses the plant's own hover duty as the cruise
+     reference.
+   - **Confidence: low.**
+7. **What the first stop needs.** The stop is: Betaflight arms and a motor
+   responds to a stick in Node. That needs only the 65 mm config path, the
+   tick, RX and a plant at rest. The RPM model and current stand-in land
+   right after it, in M4.
