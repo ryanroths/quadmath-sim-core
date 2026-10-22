@@ -1212,3 +1212,186 @@ result.
    responds to a stick in Node. That needs only the 65 mm config path, the
    tick, RX and a plant at rest. The RPM model and current stand-in land
    right after it, in M4.
+
+---
+
+## 2026-10-22 | Phase 1 | stop point reached: Betaflight arms and a motor answers a stick, in Node
+
+Branch `phase1/arm-and-motor`. No browser work yet. Stopped here as instructed.
+
+### Build (M1)
+
+- **Inputs:**
+  - `vendor/betaflight` submodule at `77d01ba` (4.5.1), line endings checked, read-only
+  - `patches/0001-keep-dyn-notch-in-simulator-build.patch`
+  - `patches/0002-pg-sections-for-wasm-ld.patch`
+- **What `scripts/build.sh` enforces:**
+  - emcc 3.1.61 (`67fa4c1`) or refuse
+  - no emcc environment overrides
+  - vendor at the pinned commit and clean
+  - patches applied to a copy with `--fuzz=0`; any offset or fuzz fails the build
+  - relative paths, fixed `SOURCE_DATE_EPOCH`
+  - `SC_LOOP_HZ` must be 1000..8000 and divide 1,000,000
+  - `dist/` is replaced only when the hash matches the committed one, or with `SC_UPDATE_DIST=1`
+- **Betaflight files: 102.** The 99 from the plan, plus:
+  - `scheduler/scheduler.c` (needed `SCHEDULER_DELAY_LIMIT`)
+  - `fc/tasks.c` (needed `TASK_GYROPID_DESIRED_PERIOD`)
+  - `fc/dispatch.c`
+
+  The first two need MCU-platform defines, which `target/QMSC/platform_mcu.h` supplies from `SC_LOOP_HZ`.
+- **Output:** `dist/sim-core.wasm`, 155,555 B, sha256
+  `39174b21622b3b2d9e07bfe936426d23d968095bbbcff82e6e930c78a471319e`.
+  - Byte-identical across clean rebuilds.
+  - **0 imports**, so no JS function, including `Math.*`, can reach the module.
+  - 84 exports, pinned in `tests/node/abi-exports.json`.
+- **`SC_LOOP_HZ=2000` build:** boots, passes the boot asserts, arms and drives
+  the motors (8100 ticks of 500 us to arm-ready). It is not committed.
+
+### Glue as built (differences from the plan)
+
+**Symbols our glue provides (38).**
+- clock: `micros`, `millis`, `delay`, `delayMicroseconds`
+- system: `systemReset`, `systemResetToBootloader`, `failureMode`,
+  `SystemCoreClock`, `getCycleCounter`, `clockMicrosToCycles`,
+  `clockCyclesToMicros`, `stackHighMem`, `stackTotalSize`,
+  `timerGetConfiguredByTag`
+- gyro: `gyroSetSampleRate` (sets the acc rate too)
+- motor and DShot: `motorPwmDevInit`, `dshotPwmDevInit`, `motors`,
+  `useDshotTelemetry`, `dshotCommandWrite`,
+  `dshotStreamingCommandsAreEnabled`, `dshotSetPidLoopTime`,
+  `dshotDMAHandlerCycleCounters`
+- ADC: `adcGetChannel`, `getVrefMv`, `adcDeviceByInstance`
+- no TCP serial: `serTcpOpen`
+- no MSP serial ports: `mspSerialProcess`, `mspFcProcessCommand`, `mspFcProcessReply`
+- LED: `warningLedFlash`, `warningLedDisable`, `warningLedUpdate`
+- IO: `IOInit`, `IOGetByTag`, `IOConfigGPIO`, `IOToggle`, `IOWrite`
+
+**What compiling `scheduler.c`/`tasks.c` changed.** The plan's 12 scheduler
+stubs and `taskUpdateRxMainInProgress` are gone. Betaflight's own task table,
+`tasksInit` enables and rates, and RX state machine run.
+
+**The tick.**
+- Calls `schedulerExecuteTask` in the plan's order.
+- Gates FILTER and PID with Betaflight's own `gyroFilterReady()` /
+  `pidLoopReady()`.
+- Runs `rxFrameCheck` and the failsafe check after the realtime tasks on
+  every tick, as `scheduler()` does.
+- Runs event tasks (RX) while their check function fires.
+- Runs periodic tasks once at least one period has passed.
+
+**Motor device.**
+- Values are rounded to whole DShot units, as on the wire.
+- Plant eRPM goes back as a GCR period in `decodeTelemetry`, which
+  `motorWriteAll()` calls before each write, as on hardware.
+- `dshotStreamingCommandsAreEnabled` uses Betaflight's own rule (3 s after
+  motor enable). That needs a non-zero enable time, so **the sim clock starts at
+  1.000 s** (`SC_BOOT_EPOCH_US`).
+
+**Battery.**
+- `DEFAULT_VOLTAGE_METER_SOURCE` and `DEFAULT_CURRENT_METER_SOURCE` are ADC.
+- Plant voltage and current are converted into ADC counts by inverting
+  Betaflight's own formulas.
+- Betaflight reads 4.19 V for a 4.20 V pack (1 ADC LSB) and detects 1 cell.
+
+**Boot.**
+- Follows `fc/init.c` for the compiled subsystems, citing each block,
+  including `debugMode` (init.c:406).
+- Asserts, else a fault:
+  - `pid_process_denom == 1`
+  - `gyro.sampleRateHz == SC_LOOP_HZ`
+  - `targetLooptime == tick`
+  - acc rate
+  - DShot protocol
+
+**Input.**
+- A 1024-sample ring of integer channels, stamped in whole microseconds of sim
+  time, sampled and held onto the RX grid (250/500/1000 Hz only).
+- During link loss the ring keeps draining and only transmission stops.
+- The neutral pre-input frame is laid out through Betaflight's rcmap.
+
+**Config: two instances.**
+- The config instance enters the CLI. The flight instance never does, so
+  arming is never blocked.
+- A class diff starts from factory defaults.
+- Per-line policy (`src/js/cli-policy.js`). Every line ends `applied`,
+  `rejected` with a reason, `error` with Betaflight's message, or `comment`.
+- `aux` lines are checked against Betaflight's own resolved echo. An unknown
+  box id would silently become ARM, so its slot is cleared and the line rejected.
+- `feature` lines outside AIRMODE/ANTI_GRAVITY/MOTOR_STOP/3D are rejected. A
+  check instance boots the saved image and confirms the rest survived.
+- Default aux lines go into free slots only.
+- The 8-letter map is inverted fully.
+- `save` happens once at the end, giving the EEPROM image the flight instance
+  boots from.
+
+**Class diffs.**
+- Generated verbatim with quadmath's own `cliFor()` (`configs/*.diff`, source
+  rev and card id in the header).
+- They hold PIDs and rates only, and no `aux` lines, so the four default aux
+  lines are always added for them.
+
+**Plant.** `src/plant/rest_plant.c` is an M3 test plant: level on the floor at
++1 g, 1S at 4.20 V. M4 replaces it with the owner's RPM model.
+
+### Results (`npm test`, all pass)
+
+| Test | Result |
+|---|---|
+| abi-surface | 0 imports; exports match the allow-list; every Betaflight setting has an owning PG |
+| arm-and-motor | Air65 diff: 19 applied, 0 errors, 4 default aux added. Arm-ready 5.100 s (boot grace 5 s). Armed on AUX1 in 50 ms. Idle DShot 158 = 48 + 5.5% x 1999 (default `dshot_idle_value`). 50% throttle: 1052 on all four. Full right roll: setpoint 740 deg/s (srate 74); left motors 2047, right 158 (saturated because the rest plant does not rotate). Disarm: 0. |
+| config-policy | Unknown aux box rejected and slot cleared; TELEMETRY/OSD/LED_STRIP/ESC_SENSOR rejected; AIRMODE applied and confirmed after save; `map TAER1234` boots, arms and drives the motors; a 6 s link loss puts Betaflight in failsafe (phase 4, disarmed) without stalling input, and the link recovers; fractional time, fractional aux and NaN input refused |
+| determinism-repeat | Two fresh instances, one 3 s sim-time input stream (arm, throttle steps, roll sweep, yaw reversals): the whole 512-byte state block is identical on every tick |
+
+### Adversarial code review before stopping (2 reviewers, 21 findings, all verified)
+
+**Fixed:**
+- aux unknown-id trap
+- silent feature clearing
+- ungated FILTER/PID and missing boot asserts
+- input ring stall during link loss
+- rcmap: AETR only, 4 letters
+- neutral frame ignored the map
+- out-of-bounds CLI line at the ABI (now at most 255)
+- fractional time stamps, non-integer aux, any RX rate
+- `debugMode` never set
+- DShot streaming stub was `true`
+- motor values unrounded
+- configure stacking on the previous class
+- partial determinism hash
+- `SC_LOOP_HZ` octal/upper bound
+- patch fuzz
+- no hash enforcement in `build.sh`
+- unpinned ABI surface: an allow-list test instead of an explicit linker export list
+
+**Still open:**
+- The complete HARDWARE_VALUE key list is not yet generated from
+  `cli/settings.c` (TODO in `cli-policy.js`, M2).
+- B1 (byte-exact) is enforced by `build.sh` but is not part of `npm test`,
+  which has no emcc.
+
+### What went wrong
+
+- PowerShell mangled the pipes in a quoted `wsl -e bash -c` command. All WSL
+  runs now go through a script file.
+- Windows has no Python; text patching went through Node.
+- `drivers/pwm_output_dshot_shared.h` needs DMA types. Replaced by a
+  layout-identical local struct for the CLI's counters.
+- Our static `rxFrameTimeUs` clashed with a Betaflight declaration. Renamed.
+- The first aux verification matched the CLI's echo of the typed line, not
+  Betaflight's resolved line. The test caught it; the check now uses the last
+  echo.
+- The first draft gated FILTER/PID as "always", a reimplementation the
+  reviewer caught. It now calls Betaflight's predicates.
+
+### Next (waiting for the owner's go)
+
+1. **M4 plant:**
+   - the owner's RPM model: KV x effective voltage, first-order lag, prop drag torque load
+   - thrust and rigid body ported from `quadphysics.js`
+   - contact and battery
+   - the bench mAh/min current stand-in
+   - this enables F6 axis signs, P1-P5 and D4
+2. **M2 remainder:** HARDWARE_VALUE list generation, C1 runtime-effect tests.
+3. **Then browser work:** D2 Node vs Chrome, the 4 ms gamepad poll, the
+   black-box X tests.
+4. **75 mm** still waits on a bench decision (2026-10-22 decisions, finding 3).
