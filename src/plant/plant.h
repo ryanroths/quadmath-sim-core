@@ -166,7 +166,8 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
 // A hull contact's world response for the hull point there moving at vel
 // (module frame, corrected in place), as a box face hit: bounce, crash and
 // friction along the contact's normal, or a box top's soft landing (scrub),
-// along the vertical, as on the floor; normal: the one it used. Queues its
-// CONTACT event.
+// along the vertical, as on the floor; a contact with no push only stops the
+// point moving into the box. normal: the one it used. Queues its CONTACT
+// event.
 uint32_t sc_world_hull_hit(const sc_hull_contact_t *c, double vel[3], double bounceScale, double crashScale,
                            double spinScale, bool *scrub, double normal[3]);

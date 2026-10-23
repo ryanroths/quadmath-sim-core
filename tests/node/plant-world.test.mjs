@@ -2226,7 +2226,7 @@ const fmtPose = (r) => `${(r.inside * 1e3).toFixed(2)} mm in (${r.deepTicks} tic
     ['gym, posed across seam 21/18', 'gym', { pos: [-7.496143, 5.214499, 0.320935], quat: [-0.5949891253785448, -0.022519397961825643, 0.27627648406604444, 0.7544217134658943], vel: [-1.594593, -3.903893, -0.44409] }, 0.3201125621795654],
     ['office, posed across seam 79/76', 'office', { pos: [-3.6169, 1.957242, 0.373651], quat: [-0.9583604029563483, 0.00935002721375848, 0.0007611195693421739, 0.2854073154869175], vel: [0.227051, -0.132998, 0.134752] }, 0.3384892702102661],
     ['office, posed at box 65', 'office', { pos: [-3.225434, 4.671019, 0.040892], quat: [0.4743427241172406, 0.13894981159139036, 0.01016627583630364, 0.869245981740136], vel: [4.404882, -7.034932, 4.925329] }, 0.07794291973114013],
-    ['backyard, posed with thin wall 46 through the quad', 'backyard', { pos: [-0.343597, 0.758099, 0.69806], quat: [0.9987510352172345, -0.00874539080904451, 0.005781718884875036, 0.048851402424452114], vel: [0.842135, -0.893103, -0.619923] }, 0.16360745429992676],
+    ['backyard, posed with thin wall 47 through the quad', 'backyard', { pos: [-0.343597, 0.758099, 0.69806], quat: [0.9987510352172345, -0.00874539080904451, 0.005781718884875036, 0.048851402424452114], vel: [0.842135, -0.893103, -0.619923] }, 0.16360745429992676],
   ];
   const lines = [];
   for (const [name, map, pose, duty] of poses) {
@@ -2355,4 +2355,42 @@ const fmtPose = (r) => `${(r.inside * 1e3).toFixed(2)} mm in (${r.deepTicks} tic
   console.log(`map flights for 2.5 s held between boxes closer than the footprint, and onto a desk:\n  ${lines.join('\n  ')}`);
 }
 
-console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down, carried hull overlaps pushed only as far as they deepen, hull pushes taking no point into the solid: PASS');
+// 44. A hull contact with no push (each push world.c tried takes a footprint
+// point into the solid) only stops the hull moving into the box. Its
+// response used to hold the speed the quad was leaving at, as a point's
+// does: posed in the backyard with thin wall 47 through the quad between its
+// rims and a rim on the wall's far face, motors at 0.16 (below hover), the
+// contact kept the quad moving at the wall the rim was pushed out of, so
+// each tick the rim was pushed back (1.7 mm) and the sweeps wound the quad
+// up to the spin cap (150 rad/s) and 4.6 m/s. 1.5 s from the pose: no
+// one-tick push over 1 mm (2a8ec95, with no hull: 0.9 mm) and the spin
+// never near the cap (2a8ec95: 51 rad/s).
+{
+  const yard = await mapFixture('backyard');
+  const c = await flight({ floorZ: 0, boxes: yard });
+  c.teleport({ pos: [-0.343597, 0.758099, 0.69806], quat: [0.9987510352172345, -0.00874539080904451, 0.005781718884875036, 0.048851402424452114], vel: [0.842135, -0.893103, -0.619923] });
+  c.motorOverride(-1, 0.16360745429992676);
+  let prev = null;
+  let push = 0;
+  let spin = 0;
+  let speed = 0;
+  for (let k = 0; k < 1500; k++) {
+    c.step(1);
+    c.events();
+    const s = c.state;
+    if (k >= 20) {
+      spin = Math.max(spin, Math.hypot(...s.omega));
+      speed = Math.max(speed, Math.hypot(...s.vel));
+    }
+    if (prev) {
+      const d = [0, 1, 2].map((a) => s.pos[a] - prev.pos[a]);
+      push = Math.max(push, Math.min(Math.hypot(...d.map((v, a) => v - prev.vel[a] * 1e-3)), Math.hypot(...d.map((v, a) => v - s.vel[a] * 1e-3))));
+    }
+    prev = s;
+  }
+  console.log(`posed with a thin wall through the quad, motors below hover, 1.5 s: largest one-tick push ${(push * 1e3).toFixed(2)} mm, |omega| at most ${spin.toFixed(1)} rad/s and |v| ${speed.toFixed(2)} m/s after the first 20 ms`);
+  assert.ok(push <= 1e-3, 'no rim pushed back over 1 mm a tick');
+  assert.ok(spin < 100, 'the quad not wound up toward the spin cap');
+}
+
+console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down, carried hull overlaps pushed only as far as they deepen, hull pushes taking no point into the solid, held hull contacts only stopping motion: PASS');
