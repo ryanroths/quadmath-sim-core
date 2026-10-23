@@ -35,7 +35,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SimCore } from '../src/js/sim-core.js';
-import { readLog } from './hover-from-log.mjs';
+import { readLog, binRows50, currentBands } from './hover-from-log.mjs';
 import { logPath as findLog } from './logs.mjs';
 
 const AXES = ['roll', 'pitch', 'yaw'];
@@ -104,6 +104,19 @@ async function inversion(module, diff, airframe) {
   });
 }
 
+// Time for a step response to first reach half its target (1.0), ms, linear
+// between samples: the lag at 50 % of the X3 rows, on the deconvolved step.
+function lag50(r) {
+  if (r.step[0] >= 0.5) return 0;   // already there at t = 0 (an instant kick)
+  for (let i = 1; i < r.step.length; i++) {
+    if (r.step[i] >= 0.5) {
+      const f = (0.5 - r.step[i - 1]) / (r.step[i] - r.step[i - 1]);
+      return +(r.t[i - 1] + f * (r.t[i] - r.t[i - 1])).toFixed(1);
+    }
+  }
+  return null;
+}
+
 const rmsOf = (a) => Math.sqrt(a.reduce((s, v) => s + v * v, 0) / Math.max(1, a.length));
 
 export async function simVsLog(file, quadmathDir, { diff, airframe, module, log: li = 0, from = 0, to = Infinity, aux = {} }, print = () => {}) {
@@ -170,7 +183,9 @@ export async function simVsLog(file, quadmathDir, { diff, airframe, module, log:
     sim.t.push(ts);
     for (let a = 0; a < 3; a++) {
       sim.gyro[a].push(fc.gyroFiltered[a]);
-      sim.setpoint[a].push(fc.setpoint[a]);
+      // The setpoint the PID ran on, after angle mode: what the blackbox's
+      // setpoint field logs (blackbox/blackbox.c:1153).
+      sim.setpoint[a].push(fc.pidSetpoint[a]);
     }
     for (let a = 0; a < 4; a++) sim.rc[a].push(fc.rcCommand[a]);
     sim.throttle.push((fc.rcCommand[3] - 1000) / 1000);
@@ -214,18 +229,21 @@ export async function simVsLog(file, quadmathDir, { diff, airframe, module, log:
       gyroRmsSim: +rmsOf(sim.gyro[a]).toFixed(2),
       gyroErrRms: +rmsOf(g).toFixed(2),
       setpointErrRms: +rmsOf(sp).toFixed(3),
-      stepLog: stepLog ? { windows: stepLog.windows, ...stepLog.metrics } : null,
-      stepSim: stepSim ? { windows: stepSim.windows, ...stepSim.metrics } : null,
+      stepLog: stepLog ? { windows: stepLog.windows, ...stepLog.metrics, lag50Ms: lag50(stepLog) } : null,
+      stepSim: stepSim ? { windows: stepSim.windows, ...stepSim.metrics, lag50Ms: lag50(stepSim) } : null,
     };
   });
   return {
     source: file.split(/[\\/]/).pop(),
+    log_index: li,
     stretch_s: [+(t0).toFixed(3), +(t0 + dur).toFixed(3)],
     log: { frames: rows.length, rate_hz: +logFs.toFixed(1) },
     sim: { ticks: sim.t.length, rate_hz: 1e6 / tick, flightModeFlags: simFlags, aux: auxValues, height_m: [+sim.zMin.toFixed(3), +sim.zMax.toFixed(3)] },
     log_flight_mode_flags: flagsAt,
     rc_readback_max_error: rcErr,
     axes,
+    // The log's pack current against rpm (50 ms bins, logged current).
+    log_current_vs_rpm: currentBands(binRows50(log.rows, log.acc1G, log.header.motor_poles)),
   };
 }
 
@@ -247,7 +265,7 @@ async function main() {
   }, (line) => console.error(line));
   out.diff = diffFile;
   console.error(`${out.source} ${out.stretch_s[0]}-${out.stretch_s[1]} s: ${out.log.frames} frames at ${out.log.rate_hz} Hz replayed into ${out.sim.ticks} sim ticks; rcCommand read back within roll, pitch, yaw, throttle ${out.rc_readback_max_error.join(", ")}`);
-  const f = (m) => (m ? `rise ${m.riseMs} ms, overshoot ${m.overshootPct} %, settle ${m.settleMs} ms (${m.windows} windows)` : 'no step: not enough stick input');
+  const f = (m) => (m ? `rise ${m.riseMs} ms, lag at 50 % ${m.lag50Ms} ms, overshoot ${m.overshootPct} %, settle ${m.settleMs} ms (${m.windows} windows)` : 'no step: not enough stick input');
   for (const x of out.axes) {
     console.error(`${x.name.padEnd(5)} gyro rms log ${x.gyroRmsLog} sim ${x.gyroRmsSim} deg/s, sim - log ${x.gyroErrRms} rms; setpoint sim - log ${x.setpointErrRms} rms`);
     console.error(`      step log: ${f(x.stepLog)}`);

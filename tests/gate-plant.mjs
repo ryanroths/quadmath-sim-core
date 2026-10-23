@@ -36,6 +36,8 @@ import { readFile } from 'node:fs/promises';
 import { SimCore, sticksToChannels as ch } from '../src/js/sim-core.js';
 import * as feel from './lib/feel.mjs';
 import { loadWebfpvModule } from './lib/webfpv.mjs';
+import { existsSync } from 'node:fs';
+import { logPath } from '../tools/logs.mjs';
 import { QuadPhysics, aeroCoeffs } from './reference/quadmath-de9b15d/quadphysics.js';
 import { stepBattery, DEFAULT_WHOOP } from './reference/quadmath-de9b15d/sim-whoop.js';
 import { batteryFromBuild, BUILD_PRESETS } from './reference/quadmath-de9b15d/sim-build.js';
@@ -176,6 +178,63 @@ console.log('\n== P1 single-motor step, Air65 plant, from rest in free air (benc
 }
 
 // ---------------------------------------------------------------------------
+// The owner's punch-out log (tests/reference/air65-punch.json, from
+// tools/hover-from-log.mjs --plateau; owner decisions 2026-10-23).
+const punch = JSON.parse(await readFile(new URL('tests/reference/air65-punch.json', root), 'utf8'));
+const CURRENT_CORRECTION = 1.24;   // the Air65 bench's current-sensor correction (AJ:44-46), as iHover
+
+console.log('\n== P6 thrust law: kt from the hover predicts the punch (thrust from rpm squared), within 10%');
+{
+  // The plant's kt, from the airframe (it carries the hover's m g / 4 w^2),
+  // at the punch's steady plateau rpm: thrust / weight is the specific force
+  // the accelerometer reads at the punch's onset, before the quad has speed.
+  const core = await SimCore.load(module, { trace: false });
+  core.configure({ diff, plant: air65 });
+  const d = core.plantDerived;
+  const w = punch.measured.omega_rad_s;
+  const predicted = (4 * d.ktProp * w * w) / (air65.values.mass.value * air65.values.gravity.value);
+  const measured = punch.measured.onset_accZ_g;
+  console.log(`   kt ${d.ktProp.toExponential(4)} at ${punch.measured.rpm} rpm (${w} rad/s): thrust / weight ${f(predicted, 3)}; measured at onset ${f(measured, 2)} g (${punch.punches.map((p) => `${p.start_s} s: ${p.onset_accZ_g}`).join(', ')}) -> ${check(Math.abs(predicted / measured - 1) <= 0.1, 'P6 thrust law')}`);
+}
+
+// The owner's freestyle log, replayed by tools/sim-vs-log.mjs on the Air65
+// config (tests/reference/air65-freestyle.sim-vs-log.json).
+const freestyleRef = JSON.parse(await readFile(new URL('tests/reference/air65-freestyle.sim-vs-log.json', root), 'utf8'));
+
+console.log('\n== P7 pack current model against the freestyle log, 38-60 krpm bands of at least 8 bins, within 10% (logged current x 1.24)');
+{
+  // I = iHover x (rpm / rpmHover)^currentExponent (src/plant/plant.c
+  // stepPhysical), at each band's mean rpm, against the freestyle log's
+  // steady flight. The punch log's own mid-rpm bins are the rotors spinning
+  // up or down within 100 ms, where accelerating the rotors draws current the
+  // model does not describe; they are printed below for the record.
+  const { iHover, rpmHover, currentExponent } = air65.values;
+  const bands = freestyleRef.log_current_vs_rpm.filter((b) => b.rpm >= 38000 && b.rpm < 60000 && b.bins >= 8);
+  let worst = 0;
+  for (const b of bands) {
+    const model = iHover.value * (b.rpm / rpmHover.value) ** currentExponent.value;
+    const logged = b.amps * CURRENT_CORRECTION;
+    worst = Math.max(worst, Math.abs(model / logged - 1));
+    console.log(`   ${b.rpm} rpm (${b.bins} bins): model ${f(model, 2)} A, log ${f(logged, 2)} A (${f(b.amps, 2)} logged), ${f((model / logged - 1) * 100, 1)} %`);
+  }
+  console.log(`   ${bands.length} bands, worst ${f(worst * 100, 1)} % -> ${check(bands.length >= 3 && worst <= 0.1, 'P7 current model')}`);
+  const transient = punch.current_vs_rpm.filter((b) => b.rpm >= 38000 && b.rpm < 60000)
+    .map((b) => `${b.rpm} rpm ${f((iHover.value * (b.rpm / rpmHover.value) ** currentExponent.value / (b.amps * CURRENT_CORRECTION) - 1) * 100, 1)} % (${b.bins} bins)`);
+  console.log(`   punch log, the same bands (spin-up and spin-down, reported): ${transient.join(', ')}`);
+}
+
+console.log('\n== P8 the plant at the punch (reported, not gated): all four motors at the plateau duty from a full pack, 400 ms');
+{
+  const core = await airborne('', { aux: auxOn() });
+  core.motorOverride(-1, punch.measured.duty);
+  core.step(400);
+  const s = core.state;
+  const rpm = s.rpm.reduce((a, b) => a + b) / 4;
+  const ratio = rpm / (air65.values.kv.value * s.vbatLoaded * punch.measured.duty);
+  console.log(`   plant: ${f(rpm, 0)} rpm, ${f(s.vbatLoaded, 3)} V, ${f(s.amps, 2)} A, rpm / (KV x V x duty) ${f(ratio, 4)}; log: ${punch.measured.rpm} rpm, ${punch.measured.vbat_v} V, ${f(punch.measured.amps_a * CURRENT_CORRECTION, 2)} A (x 1.24), ${punch.derived.load_fraction_full}; loadFraction ${air65.values.loadFraction.value}`);
+}
+
+// ---------------------------------------------------------------------------
 // The quadmath Air65 build as quadmath's sim runs it (physicsFromBuild,
 // floatiness 0.32, build drag), for the parity models.
 function parityModel(quadCfg, { battery }) {
@@ -190,11 +249,11 @@ function parityModel(quadCfg, { battery }) {
       tau: v(quadCfg.motorTau * quadCfg.spoolTauMul), tauDownMult: v(quadCfg.spoolDownMul), reverseScale: v(quadCfg.reverseThrustScale),
       cdAFront: v(a.cdAxy), cdAPlan: v(a.cdAz), skinB: v(a.skinB), aeroB: v(a.aeroB), aeroC: v(a.aeroC),
       discK: v(1.35), discEnd: v(0.22), groundK: v(0), gravity: v(9.81), airDensity: v(1.225),
-      cells: v(pack.cells), capacityMah: v(pack.mah), cellIR: v(0), iRef: v(0),
+      cells: v(pack.cells), capacityMah: v(pack.mah), cellIR: v(0), iHover: v(0),
       ocv: v([3.30, 3.50, 3.60, 3.75, 3.87, 4.05, 4.20]),
       sagDrop: v(pack.sagDrop), hoverSeconds: v(battery ? pack.hoverS : 0), sagScale: v(1),
       bounceScale: v(1), crashScale: v(1), spinScale: v(1),
-      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), iRefDuty: v(0),
+      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0),
     },
   };
 }
@@ -495,6 +554,24 @@ const ref = feel.webfpvSim(await loadWebfpvModule(), classDiff, { airframe: 1, g
   for (const l of warned) console.log(`   warning: line ${l.n} ${l.status}: ${l.text.trim()} (${l.msg})`);
 }
 
+// The freestyle replay, where the decoder and the log are at hand.
+let freestyle = null;
+{
+  const qm = process.env.QUADMATH_DIR;
+  const file = logPath(freestyleRef.source);
+  if (qm && existsSync(file)) {
+    const { simVsLog } = await import('../tools/sim-vs-log.mjs');
+    freestyle = await simVsLog(file, qm, { diff, airframe: air65, module, log: freestyleRef.log_index });
+    console.log(`\n== X3 replay of ${freestyleRef.source} log ${freestyleRef.log_index} on the Air65 config: ${freestyle.log.frames} frames into ${freestyle.sim.ticks} ticks; rcCommand read back within ${freestyle.rc_readback_max_error.join(', ')}`);
+    for (const x of freestyle.axes) {
+      const m = (s) => (s ? `rise ${s.riseMs} ms, lag ${s.lag50Ms} ms, overshoot ${s.overshootPct} %, settle ${s.settleMs} ms (${s.windows} windows)` : 'none');
+      console.log(`   ${x.name.padEnd(5)} log: ${m(x.stepLog)}; sim: ${m(x.stepSim)}`);
+    }
+  } else {
+    console.log(`\n== X3 replay of ${freestyleRef.source}: not run here (${qm ? `${file} not found` : 'QUADMATH_DIR not set'})`);
+  }
+}
+
 console.log('\n== X2 / F3 rate tracking: throttle 0.35, full stick 1.5 s, mean of the last 0.3 s (+-1.0%)');
 for (const [a, name] of ['roll', 'pitch', 'yaw'].entries()) {
   const o = feel.rateTracking(ours, a);
@@ -535,17 +612,35 @@ console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, both on the c
   rows.at(-1).refName = 'Air65';
   // The plan restricts rise, overshoot and stop bounce to roll and pitch;
   // lag at 50% and settle have no axis restriction (PROGRESS.md band table).
+  // Rise, lag and overshoot against the Air65's own freestyle log (owner
+  // decision 2026-10-23), the bands unchanged: the closed-loop step response
+  // of setpoint to gyro, by quadmath's blackbox-metrics.js stepResponse
+  // (Wiener deconvolution) on both, the log and sim-core replaying its sticks
+  // on the Air65 config. Needs QUADMATH_DIR and the log in SIM_CORE_LOGS;
+  // without them the rows are not run here.
+  const logRows = (sv) => {
+    for (const [i, ax] of ['roll', 'pitch', 'yaw'].entries()) {
+      const x = sv ? sv.axes[i] : null;
+      const sim = x && x.stepSim;
+      const log = x && x.stepLog;
+      const tag = (k) => `${ax} ${k} (log)`;
+      const put = (key, band, ov, rv, test) => {
+        if (!sv) rows.push({ key, band, ov: null, rv: null, pass: false, notRun: true, refName: 'log' });
+        else { add(key, band, ov, rv, test); rows.at(-1).refName = 'log'; }
+      };
+      put(tag('rise to 90% ms'), ax === 'yaw' ? '+-30%' : '+-20% (>= +-4 ms)', sim && sim.riseMs, log && log.riseMs, ax === 'yaw' ? rel(0.3) : rel(0.2, 4));
+      put(tag('lag at 50% ms'), '+-3 ms', sim && sim.lag50Ms, log && log.lag50Ms, abs(3));
+      if (ax !== 'yaw') put(tag('overshoot %'), '+-2 points', sim && sim.overshootPct, log && log.overshootPct, abs(2));
+    }
+  };
+  logRows(freestyle);
   for (const ax of ['roll', 'pitch']) {
-    add(`${ax} rise 10-90 (ms)`, '+-20% (>= +-4 ms)', o[ax].rise10_90, r[ax].rise10_90, rel(0.2, 4));
-    add(`${ax} overshoot (%)`, '+-2 points', o[ax].overshootPct, r[ax].overshootPct, abs(2));
     add(`${ax} stop bounce (%)`, '+-2 points', o[ax].bouncePct, r[ax].bouncePct, abs(2));
   }
   for (const ax of ['roll', 'pitch', 'yaw']) {
-    add(`${ax} lag at 50% (ms)`, '+-3 ms', o[ax].trackLag50, r[ax].trackLag50, abs(3));
     add(`${ax} settle 5% (ms)`, '<= 1.5x', o[ax].settle5, r[ax].settle5, ratio(1.5));
   }
   add('chirp lag (ms)', '+-3 ms', o.chirp.lagMs, r.chirp.lagMs, abs(3));
-  add('yaw rise 10-90 (ms)', '+-30%', o.yaw.rise10_90, r.yaw.rise10_90, rel(0.3));
   add('yaw steady error (%)', '+-3 points', o.yaw.ssErrPct, r.yaw.ssErrPct, abs(3));
   add('chirp error after lag (%)', '+-3 points', o.chirp.rmsErrAfterLagPct, r.chirp.rmsErrAfterLagPct, abs(3));
   add('chirp gain', '+-0.03', o.chirp.gain, r.chirp.gain, abs(0.03));
@@ -559,9 +654,10 @@ console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, both on the c
   add('divergence', 'none', diverged ? 1 : 0, 0, (ov) => ov === 0);
   for (const row of rows) {
     const signed = signoff.signedOff && signoff.signedOff[row.key];
-    const verdict = row.pass ? 'pass' : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date}${signed.reason ? `: ${signed.reason}` : ''})` : 'MISS';
+    const verdict = row.notRun ? 'not run here: needs QUADMATH_DIR and the freestyle log in SIM_CORE_LOGS'
+      : row.pass ? 'pass' : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date}${signed.reason ? `: ${signed.reason}` : ''})` : 'MISS';
     console.log(`   ${row.key.padEnd(30)} sim-core ${f(row.ov, 3).padStart(9)}  ${(row.refName || 'WebFPV').padEnd(6)} ${f(row.rv, 3).padStart(9)}  band ${row.band.padEnd(18)} ${verdict}`);
-    if (!row.pass && !signed) failures.push(`X3 ${row.key}`);
+    if (!row.pass && !signed && !row.notRun) failures.push(`X3 ${row.key}`);
   }
   console.log(`   hover stick, Air65 bench row: on the Air65 config; channel ${f(b.quantum, 3)}, rcCommand ${f(b.rc, 3)}, vz residual ${f(b.vzResidual, 3)} m/s; measured rcCommand ${f(bench.measured.hover_stick, 3)} (${bench.source})`);
   console.log(`   not banded: yaw overshoot sim-core ${f(o.yaw.overshootPct, 2)} % vs WebFPV ${f(r.yaw.overshootPct, 2)} %; yaw bounce ${f(o.yaw.bouncePct, 2)} % vs ${f(r.yaw.bouncePct, 2)} %; hover residual vz ${f(o.hover.vzResidual, 3)} vs ${f(r.hover.vzResidual, 3)} m/s; hover stick on the class diff alone: sim-core channel ${f(o.hover.quantum, 3)} (rcCommand ${f(o.hover.rc, 3)}), WebFPV whoop65 channel ${f(r.hover.quantum, 3)} (the band's reference until 2026-10-23)`);

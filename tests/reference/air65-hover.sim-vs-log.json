@@ -1,5 +1,6 @@
 {
   "source": "BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_090813_BETAFPVG473.BBL",
+  "log_index": 0,
   "stretch_s": [
     0,
     66.074
@@ -28,7 +29,7 @@
     ],
     "height_m": [
       0.01,
-      3.293
+      69.721
     ]
   },
   "log_flight_mode_flags": 1,
@@ -42,29 +43,76 @@
     {
       "name": "roll",
       "gyroRmsLog": 5.04,
-      "gyroRmsSim": 7.21,
-      "gyroErrRms": 8.37,
-      "setpointErrRms": 0.263,
+      "gyroRmsSim": 1.96,
+      "gyroErrRms": 4.72,
+      "setpointErrRms": 4.21,
       "stepLog": null,
       "stepSim": null
     },
     {
       "name": "pitch",
       "gyroRmsLog": 3.85,
-      "gyroRmsSim": 6.57,
-      "gyroErrRms": 7.43,
-      "setpointErrRms": 0.221,
+      "gyroRmsSim": 1.18,
+      "gyroErrRms": 3.66,
+      "setpointErrRms": 3.392,
       "stepLog": null,
       "stepSim": null
     },
     {
       "name": "yaw",
       "gyroRmsLog": 2.26,
-      "gyroRmsSim": 4.67,
-      "gyroErrRms": 4.81,
+      "gyroRmsSim": 1.44,
+      "gyroErrRms": 1.79,
       "setpointErrRms": 0.143,
       "stepLog": null,
       "stepSim": null
+    }
+  ],
+  "log_current_vs_rpm": [
+    {
+      "krpm": [
+        24,
+        26
+      ],
+      "bins": 5,
+      "rpm": 25611,
+      "amps": 2.62
+    },
+    {
+      "krpm": [
+        28,
+        30
+      ],
+      "bins": 13,
+      "rpm": 29501,
+      "amps": 2.51
+    },
+    {
+      "krpm": [
+        30,
+        32
+      ],
+      "bins": 323,
+      "rpm": 31536,
+      "amps": 2.91
+    },
+    {
+      "krpm": [
+        32,
+        34
+      ],
+      "bins": 902,
+      "rpm": 32627,
+      "amps": 3.09
+    },
+    {
+      "krpm": [
+        34,
+        36
+      ],
+      "bins": 36,
+      "rpm": 34515,
+      "amps": 3.46
     }
   ],
   "diff": "configs/air65-ryfly-2026-10-23.txt"

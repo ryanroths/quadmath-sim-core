@@ -145,7 +145,10 @@ if (qm) {
   if (existsSync(real)) {
     const { hoverFromLog } = await import('../../tools/hover-from-log.mjs');
     const again = await hoverFromLog(real, qm, air, { 'auw-g': 25.79, 'rest-after': 4.08, pack: 'weBLEEDfpv 340 mAh 1S BT2.0' });
-    assert.deepEqual(JSON.parse(JSON.stringify(again)), toolRef, 'the tool on the real log gives the committed reference');
+    // tmax_N_at_load_fraction is keyed by the airframe's loadFraction of the
+    // day; everything else comes from the log and must match exactly.
+    const strip = (o) => { const c = JSON.parse(JSON.stringify(o)); delete c.derived.tmax_N_at_load_fraction; return c; };
+    assert.deepEqual(strip(again), strip(toolRef), 'the tool on the real log gives the committed reference');
     const { simVsLog } = await import('../../tools/sim-vs-log.mjs');
     const wasm = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', root)));
     const config = (await Promise.all(['configs/air65-ryfly-2026-10-23.txt', 'configs/air65-ryfly-2026-10-23.from-header.txt'].map((p) => readFile(new URL(p, root), 'utf8')))).join('\n');

@@ -83,7 +83,7 @@
     "plant_load_fraction_for_hover_ratio": 0.6323,
     "plant_load_fraction_note": "the plant's loadFraction (its full-throttle point at 4.2 V per cell) at which its own hover ratio equals static_load_fraction_hover",
     "tmax_N_at_load_fraction": {
-      "0.632": 0.38279,
+      "0.65": 0.40491,
       "0.6323": 0.38319
     },
     "tmax_note": "kt x (lf x Kv x vRefCell)^2: the airframe tmax that carries the measured kt at that loadFraction",

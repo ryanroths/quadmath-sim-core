@@ -31,14 +31,20 @@ async function flight(world, plant = air65) {
   core.configure({ diff, plant, world });
   return core;
 }
+const HOVER_DUTY_NO_SAG = (await flight({ floorZ: -100 })).plantDerived.dutyHover;
 
-// Fixed motor duties in the presses below were last checked against a hover
-// duty (plantDerived.dutyHover, no sag) of 0.27595, at loadFraction 0.81.
-// D() keeps each press the same multiple of the airframe's hover duty when
-// the motor constants move (loadFraction 0.632 from 2026-10-23), so a press
-// above hover stays above it and one below stays below.
-const DUTY_CHECKED_AT = 0.27595;
-const HOVER_DUTY = (await flight({ floorZ: -100 })).plantDerived.dutyHover;
+// Fixed motor duties in the presses below are written as the duty they had
+// when last checked, against a hover duty of 0.2949 there: the duty that holds
+// the quad up on a full pack sagging at the hover current (loadFraction 0.81,
+// cellIR 64.3 mOhm, 4.2 A at hover). D() keeps each press the same multiple of
+// that hover duty as the plant's constants move (from 2026-10-23), so a press
+// above hover stays as far above it, whatever the motor model and the sag.
+const DUTY_CHECKED_AT = 0.2949;
+const HOVER_DUTY = (() => {
+  const v = air65.values;
+  const full = v.ocv.value[6];
+  return (HOVER_DUTY_NO_SAG * v.vRefCell.value) / (full - v.iHover.value * v.cellIR.value);
+})();
 const D = (duty) => (duty * HOVER_DUTY) / DUTY_CHECKED_AT;
 
 // 1. Resting disarmed on a box top: no yaw spin-up (sim.html makes every tick
@@ -213,17 +219,17 @@ for (const vel of [[18, 0, -8], [30, 10, -15], [0, 25, -20]]) {
   assert.equal(core.battery.soc, 0.02);
 }
 
-// 10. At hover on a full pack the current stand-in draws the bench current:
-// iRef at iRefDuty, the logged hover's current and duty (owner decision
-// 2026-10-23), and the plant hovers at about that duty.
+// 10. At hover on a full pack the current model draws the logged hover
+// current: iHover at rpmHover (owner decision 2026-10-23), with the rotors at
+// the plant's hover rpm.
 {
   const sim = await feel.simCoreSim(SimCore, module, { diff, airframe: air65 });
   const h = feel.hoverTrim(sim);
   sim.fly(() => ({ t: h.throttle }), 3000);
   const s = sim.core.state;
   const d = sim.core.plantDerived;
-  const iRef = air65.values.iRef.value;
-  console.log(`hover stick ${h.quantum}: ${s.amps.toFixed(3)} A at ${s.vbatLoaded.toFixed(3)} V (bench ${iRef} A); reference duty ${d.dutyCurrentRef.toFixed(4)}, no-sag hover duty ${d.dutyHover.toFixed(4)}`);
+  const iRef = air65.values.iHover.value;
+  console.log(`hover stick ${h.quantum}: ${s.amps.toFixed(3)} A at ${s.vbatLoaded.toFixed(3)} V (bench ${iRef} A); rotors at ${Math.round(s.rpm.reduce((a, b) => a + b) / 4)} rpm (rpmHover ${air65.values.rpmHover.value}); no-sag hover duty ${d.dutyHover.toFixed(4)}, ${d.ampsFull.toFixed(1)} A at full throttle`);
   assert.equal(h.diverged, null);
   assert.ok(Math.abs(s.amps - iRef) / iRef < 0.03, 'hover current within 3% of the bench current');
 }
@@ -287,13 +293,13 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   core.configure({ diff });
   assert.throws(() => core.configure({ diff, plant: { ...structuredClone(air65), describe() {} } }));
   assert.equal(core.plant, null, 'still the rest plant after a clone failure');
-  for (const [field, value] of [['iRef', 42], ['cellIR', 0.6], ['cellIR', 0.9], ['iRefDuty', 0], ['iRefDuty', 1.2]]) {
+  for (const [field, value] of [['iHover', 70], ['cellIR', 0.6], ['cellIR', 0.9], ['rpmHover', 0], ['currentExponent', 0]]) {
     const bad = structuredClone(air65);
     bad.values[field].value = value;
-    assert.throws(() => core.configure({ diff, plant: bad }), /plant block refused/, `${field} ${value}: the pack cannot hold hover at the bench current`);
+    assert.throws(() => core.configure({ diff, plant: bad }), /plant block refused/, `${field} ${value}: the pack cannot hold the hover current, or the current model is out of range`);
     assert.equal(core.plant, null);
   }
-  console.log('uncloneable plant, three unreachable current references and two reference duties out of range: refused, previous config kept');
+  console.log('uncloneable plant, three hover currents the pack cannot hold and two current models out of range: refused, previous config kept');
 }
 
 // 16. A unit quaternion an ulp past 1 is accepted.
@@ -481,16 +487,16 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   // the old CG point did: 1 mm from the face, 60 mm above the seam between
   // the blocks at z 0.5. The wall's friction on the pressed rims holds the
   // slide to some 20 mm/s, so it runs 7 s and the rims cross the seam at
-  // about 2.8 s. The press is D(0.32): the wall's friction holds the quad on
-  // the face at D(0.34) and above (a stick-slip edge that moves with the pack's
-  // sag: between D(0.335) and D(0.34) with cellIR 57 mOhm), so the press sits
-  // clear of it. At loadFraction 0.81 the old D(0.35) slid past at 4.7 s.
+  // about 2.8 s. The press is 1.100 x the hover duty (D(0.3245)): the wall's
+  // friction holds the quad on the face from about 1.12 x up (a stick-slip
+  // edge), so the press sits clear of it. At loadFraction 0.81 the old
+  // D(0.35) slid past at 4.7 s.
   const tilt = 0.8;
   const lead = [REACH * Math.cos(tilt) - REST * Math.sin(tilt), -REACH * Math.sin(tilt) - REST * Math.cos(tilt)];
   const slide = async (boxes) => {
     const core = await flight({ floorZ: 0, boxes });
     core.teleport({ pos: [1.999 - lead[0], 0, 0.56 - lead[1]], vel: [0.5, 0, -0.3], quat: [Math.cos(tilt / 2), 0, Math.sin(tilt / 2), 0] });
-    core.motorOverride(-1, D(0.32));
+    core.motorOverride(-1, D(0.3245));
     const path = [];
     let maxX = -Infinity;
     let inside = 0;
@@ -1435,11 +1441,16 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
 // the same height above either the motors at a fixed duty lift the same; on
 // the same throttle Betaflight hovers in ground effect at the same height
 // above either. Control: the lift 10 mm higher (where quadmath's CG datum
-// put a box top) is far from the box top's.
+// put a box top) is far from the box top's. The floor is raised to the box
+// top's height, so both fly at the same absolute height and differ only in
+// what is underneath. The hovers start in the air, 15 mm up: resting on the
+// floor and on a box top leave last-bit different states (two contact code
+// paths), which the 3 s closed-loop hover grows to some 5 um (seen with the
+// rpm-based current model, 2026-10-23); that is rounding, not the datum.
 {
   const top = 0.5;
   const at = [0.2, -0.1];
-  const surfaces = [[0, { floorZ: 0 }], [top, { floorZ: 0, boxes: [{ min: [-1, -1, 0], max: [1, 1, top], id: 7 }] }]];
+  const surfaces = [[top, { floorZ: top }], [top, { floorZ: 0, boxes: [{ min: [-1, -1, 0], max: [1, 1, top], id: 7 }] }]];
   const rest = [];
   for (const [surface, world] of surfaces) {
     const c = await flight(world);
@@ -1462,11 +1473,11 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     c.step(1);
     return { clr: c.state.groundClearance, sf: c.state.specificForce[2] };
   };
-  const free = (await lift(0, surfaces[0][1], 0.1)).sf;
+  const free = (await lift(top, surfaces[0][1], 0.1)).sf;
   for (const h of [0.005, 0.015]) {
-    const f = await lift(0, surfaces[0][1], h);
+    const f = await lift(top, surfaces[0][1], h);
     const b = await lift(top, surfaces[1][1], h);
-    const cg = await lift(0, surfaces[0][1], h + REST);
+    const cg = await lift(top, surfaces[0][1], h + REST);
     console.log(`${h * 1000} mm up at the hover duty: lift ${f.sf.toFixed(6)} over the floor, ${b.sf.toFixed(6)} over the box top (${(f.sf - b.sf).toExponential(2)}), clearance ${f.clr.toFixed(6)} and ${b.clr.toFixed(6)}; ground effect adds ${(f.sf - free).toFixed(4)} m/s2; over the floor 10 mm higher (quadmath's CG datum's box top) ${(cg.sf - b.sf).toFixed(4)} off`);
     assert.ok(Math.abs(f.clr - h) < 1e-9 && Math.abs(b.clr - h) < 1e-9, 'the clearance is the height above the surface');
     assert.ok(f.sf - free > 0.05, 'in ground effect');
@@ -1475,14 +1486,16 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   }
 
   // Betaflight in angle mode on a throttle just under the free-air hover,
-  // from rest on each surface: the height above it, every tick for 3 s.
+  // armed 1 m up (nothing touches), then posed 15 mm above each surface: the
+  // height above it, every tick for 3 s.
   const hoverThr = feel.hoverTrim(await feel.simCoreSim(SimCore, module, { diff, airframe: air65 })).throttle;
   const hover = async (surface, world) => {
     const c = await flight(world);
-    c.teleport({ pos: [...at, surface + REST] });
+    c.teleport({ pos: [...at, surface + 1] });
     const chs = (st) => ch(st, [2000, 2000]);
     c.input(chs({ throttle: 0 }));
     c.step(100);
+    c.teleport({ pos: [...at, surface + REST + 0.015] });
     const z = [];
     for (let ms = 0; ms < 3000; ms++) {
       if (ms % 4 === 0) c.input(chs({ throttle: hoverThr - 0.005 }));
@@ -1491,7 +1504,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     }
     return { z, clr: c.state.groundClearance };
   };
-  const hf = await hover(0, surfaces[0][1]);
+  const hf = await hover(top, surfaces[0][1]);
   const hb = await hover(top, surfaces[1][1]);
   const dz = Math.max(...hf.z.map((v, k) => Math.abs(v - hb.z[k])));
   const ceiling = air65.values.propDiameter.value;

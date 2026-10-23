@@ -48,10 +48,10 @@ const PB_NAME = {
   kv: 'KV', vRefCell: 'V_REF_CELL', loadFraction: 'LOAD_FRACTION', tmax: 'TMAX', kqRatio: 'KQ_RATIO', tau: 'TAU',
   tauDownMult: 'TAU_DOWN_MULT', reverseScale: 'REVERSE_SCALE', cdAFront: 'CDA_FRONT', cdAPlan: 'CDA_PLAN', skinB: 'SKIN_B',
   aeroB: 'AERO_B', aeroC: 'AERO_C', discK: 'DISC_K', discEnd: 'DISC_END', groundK: 'GROUND_K', gravity: 'GRAVITY',
-  airDensity: 'AIR_DENSITY', cells: 'CELLS', capacityMah: 'CAPACITY_MAH', cellIR: 'CELL_IR', iRef: 'I_REF', ocv: 'OCV',
+  airDensity: 'AIR_DENSITY', cells: 'CELLS', capacityMah: 'CAPACITY_MAH', cellIR: 'CELL_IR', iHover: 'I_HOVER', ocv: 'OCV',
   sagDrop: 'SAG_DROP', hoverSeconds: 'HOVER_SECONDS', sagScale: 'SAG_SCALE', bounceScale: 'BOUNCE_SCALE',
   crashScale: 'CRASH_SCALE', spinScale: 'SPIN_SCALE', ductOuterRadius: 'DUCT_RADIUS', hullBelow: 'HULL_BELOW',
-  hullAbove: 'HULL_ABOVE', iRefDuty: 'I_REF_DUTY',
+  hullAbove: 'HULL_ABOVE', rpmHover: 'RPM_HOVER', currentExponent: 'CURRENT_EXP',
 };
 assert.deepEqual([...PLANT_FIELDS].sort(), Object.keys(PB_NAME).sort(), 'every airframe field has a PB_ name');
 assert.equal(Object.keys(PB).length, PLANT_FIELDS.length + 1, 'plant.h has a PB_ entry per field, plus PB_LEN');
@@ -77,7 +77,7 @@ const derivedNames = Object.keys(core.plantDerived);
 const PD_NAME = {
   kvRad: 'KV_RAD', ktMotor: 'KT_MOTOR', omegaFull: 'OMEGA_FULL', ktProp: 'KT_PROP', kqProp: 'KQ_PROP', rWinding: 'R_WINDING',
   jRotor: 'J_ROTOR', omegaHover: 'OMEGA_HOVER', dutyHover: 'DUTY_HOVER', ixx: 'IXX', iyy: 'IYY', izz: 'IZZ', arm: 'ARM',
-  dutyCurrentRef: 'DUTY_CURRENT_REF',
+  ampsFull: 'AMPS_FULL',
 };
 assert.equal(derivedNames.length, PD.LEN, 'plantDerived has PD_LEN names');
 assert.equal(core.flight.sc_plant_derived_len(), PD.LEN, 'sc_plant_derived_len is PD_LEN');
