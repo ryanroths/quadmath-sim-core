@@ -2079,4 +2079,63 @@ const mapFixture = async (id) => JSON.parse(await readFile(new URL(`tests/fixtur
   assert.ok(shelfEdge < 1e-6, 'the split shelf edge never through the hull');
 }
 
-console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece: PASS');
+// 41. A box standing on the floor reaches down through it for the hull too
+// (world.c satOverlap), as it has no bottom face for a point: no way out of
+// it takes the hull down. A level quad skimming 0.2 or 1 mm above the floor
+// at 2 or 5 m/s, square or yawed 30 deg, into a 20 or 40 mm post standing on
+// the floor that passes between its rims keeps every rim on or above the
+// floor and the post out of the hull. The least-overlap axis was a sloped
+// side face of the hull, about 0.79 vertical, so the push went down: rims up
+// to 5.75 mm under the floor. And posed in the gym beside a 40 mm post that
+// is 20 mm into the hull, no point inside it, with the motors at 0.265, the
+// quad comes off the post onto the floor; it was pushed 25 mm under the
+// floor, and held there every tick by the floor lifting it and the hull
+// pushing it down again.
+{
+  let runs = 0;
+  let low = 0;
+  let deep = 0;
+  for (const width of [0.02, 0.04]) {
+    const post = { min: [1, -width / 2, 0], max: [1 + width, width / 2, 0.7], id: 1 };
+    for (const gap of [0.0002, 0.001]) {
+      for (const speed of [2, 5]) {
+        for (const yawDeg of [0, 30]) {
+          for (const dy of [0, 0.008]) {
+            const yaw = (yawDeg * Math.PI) / 180;
+            // 30 mm short of the post, the rims REACH (cos + sin) ahead of the CG.
+            const ahead = REACH * (Math.cos(yaw) + Math.sin(yaw));
+            const c = await flight({ floorZ: 0, boxes: [post] });
+            c.teleport({ pos: [post.min[0] - ahead - 0.03, dy, REST + gap], quat: [Math.cos(yaw / 2), 0, 0, Math.sin(yaw / 2)], vel: [speed, 0, 0] });
+            c.motorOverride(-1, HOVER_DUTY);
+            for (let k = 0; k < 600; k++) {
+              c.step(1);
+              c.events();
+              low = Math.min(low, footMin(c, 2));
+              deep = Math.max(deep, edgeIn(c.footprint, post));
+            }
+            runs++;
+          }
+        }
+      }
+    }
+  }
+  console.log(`skimming the floor into a post standing on it, ${runs} skims: lowest rim ${(low * 1e3).toFixed(3)} mm, the post at most ${(deep * 1e3).toFixed(3)} mm inside the hull`);
+  assert.ok(low > -5e-4, 'no rim pushed under the floor');
+  assert.ok(deep < 1e-3, 'the post kept out of the hull');
+
+  const gym = await mapFixture('gym');
+  const c = await flight({ floorZ: 0, boxes: gym });
+  c.teleport({ pos: [7.520772, -5.181785, 0.014805], quat: [0.9987369473220914, -0.003535410201526186, -0.019845015588958355, 0.046023757829308384], vel: [-0.470755, 1.486271, -0.62221] });
+  c.motorOverride(-1, 0.2650545358657837);
+  let gLow = 0;
+  for (let k = 0; k < 1500; k++) {
+    c.step(1);
+    c.events();
+    gLow = Math.min(gLow, footMin(c, 2));
+  }
+  console.log(`posed in the gym with a 40 mm post 20 mm into the hull, motors at 0.265 for 1.5 s: lowest rim ${(gLow * 1e3).toFixed(3)} mm, CG ends at z ${c.state.pos[2].toFixed(4)}`);
+  assert.ok(gLow > -5e-4, 'no rim pushed under the floor');
+  assert.ok(Math.abs(c.state.pos[2] - REST) < 5e-4, 'resting on the floor');
+}
+
+console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down: PASS');
