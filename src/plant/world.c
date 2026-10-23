@@ -93,6 +93,13 @@
  *     order the map lists the boxes in: the contacts are taken in order in
  *     plant.c's sweeps, and swapping two pieces in the list moved the quad
  *     44 um
+ *   - a box standing on the floor reaches down through it for the hull, as
+ *     it has no bottom face for a point: the separating-axis test is against
+ *     the box extended down, so no way out takes the hull down. A post's
+ *     vertical edge meeting a sloped side of the pyramid (about 0.79
+ *     vertical) pushed the quad down through the floor: rims 5.75 mm under
+ *     it skimming into a post, 25 mm under it (and held there, the floor
+ *     lifting and the hull pushing down every tick) posed beside one
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
  *
@@ -1004,8 +1011,10 @@ static void hullFaces(scHull_t *h)
 }
 
 // Box b against hull h along the unit axis a: how far the hull must move along
-// a (dir 1) or against it (dir -1) to clear the box, the shorter.
-static double satOverlap(const scBox_t *b, const scHull_t *h, const double a[3], int *dir)
+// a (dir 1) or against it (dir -1) to clear the box, the shorter. A box
+// standing on the floor (standing) reaches down through it, as it has no
+// bottom face for a point: no way out takes the hull down.
+static double satOverlap(const scBox_t *b, const scHull_t *h, const double a[3], bool standing, int *dir)
 {
     double lo = INFINITY, hi = -INFINITY, c = 0, r = 0;
     for (int k = 0; k < SC_HULL_POINTS; k++) {
@@ -1017,7 +1026,8 @@ static double satOverlap(const scBox_t *b, const scHull_t *h, const double a[3],
         c += (b->min[k] + b->max[k]) * 0.5 * a[k];
         r += (b->max[k] - b->min[k]) * 0.5 * fabs(a[k]);
     }
-    const double up = c + r - lo, down = hi - (c - r);
+    const double up = standing && a[1] < 0 ? INFINITY : c + r - lo;        // moving the hull along a
+    const double down = standing && a[1] > 0 ? INFINITY : hi - (c - r);    // and against it
     *dir = up <= down ? 1 : -1;
     return fmin(up, down);
 }
@@ -1029,6 +1039,7 @@ static double satOverlap(const scBox_t *b, const scHull_t *h, const double a[3],
 static double hullDepth(const scBox_t *b, scHull_t *h, double n[3])
 {
     hullFaces(h);
+    const bool standing = grounded(b, floorZ * WS);     // the footprint's floor: no pad
     double best = INFINITY;
     for (int t = 0; t < 32; t++) {
         double a[3] = { 0, 0, 0 };
@@ -1052,7 +1063,7 @@ static double hullDepth(const scBox_t *b, scHull_t *h, double n[3])
             }
         }
         int dir;
-        const double o = satOverlap(b, h, a, &dir);
+        const double o = satOverlap(b, h, a, standing, &dir);
         if (o <= FACE_EPS) {
             return 0;
         }
