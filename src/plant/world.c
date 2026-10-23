@@ -86,12 +86,11 @@
  *     next post, and that one threw it back: 20 to 40 mm one-tick pushes),
  *     and one a footprint point began the tick inside is left to that point
  *     (held at its depth, a thin wall through the quad kept a rim 9.9 mm
- *     inside it). Pressed up
- *     under a shelf shallower than the quad against a wall, the shelf's
- *     front edge passed between the leading rim and the rest and the quad
- *     swung over it onto the shelf (12 mm of edge inside the hull); set down
- *     level with its CG 10 mm behind a table edge, it tipped over the edge
- *     with the edge 9 mm into its body
+ *     inside it). Pressed up under a shelf shallower than the quad against a
+ *     wall, the shelf's front edge passed between the leading rim and the
+ *     rest and the quad swung over it onto the shelf (12 mm of edge inside
+ *     the hull); set down level with its CG 10 mm behind a table edge, it
+ *     tipped over the edge with the edge 9 mm into its body
  *   - the hull meets solids, not box pieces: boxes that meet or overlap
  *     along one axis with the same extent on the other two (a wall, table or
  *     shelf in pieces) are the one box they form. Piece by piece a seam was a
@@ -113,9 +112,12 @@
  *     the box face axis most along the separating axis, or failing that the
  *     next one at least half along it, whose push, swept, takes no point
  *     under the floor or into a solid it was not in; with none there is no
- *     push, and the contact's response alone holds the quad (plant.c then
+ *     push, and the contact's response alone holds the quad, only stopping
+ *     it moving into the box (holding the speed it was leaving at, as a
+ *     point's response does, fought the rims on the far side of a thin wall
+ *     posed through the quad and wound it up to the spin cap). plant.c then
  *     resolves the five points again from where the points' push left
- *     them). Mostly vertical on the pyramid's sloped sides, the push drove
+ *     them. Mostly vertical on the pyramid's sloped sides, the push drove
  *     a quad flying into a slot lower than the hull down into the table
  *     under it (rims through a 3 mm plate in one tick) or the floor, and
  *     wedged between boxes closer together than the footprint it pushed a
