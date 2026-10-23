@@ -2710,3 +2710,687 @@ PASS    12.0 s  D2 Node vs headless Chrome, console clean
 
 Stopped here for the owner. PR #2 is open; the gate waits on the decisions in
 the M4 entry.
+
+---
+
+## 2026-10-23 | Phase 1 M4 | the owner's M4 decisions and the Air65 bench hover: damping, rotor reaction torque, a five-point footprint, measured constants, hover stick against the bench
+
+Same branch (`phase1/m4-plant`, PR #2). Two owner messages today.
+
+**First (M4 decisions):**
+1. Add rotational damping (`aeroB` and `aeroC`) and each rotor's reaction
+   torque `J dω/dt` with the derived `jRotor`. Re-run the damping table. The
+   owner expected yaw overshoot and bounce to drop toward WebFPV's range
+   without touching `kqRatio`.
+2. Replace the single contact point at the centre of mass with five: four at
+   the duct outer radius on the arm angles, one at the canopy top. Re-run
+   turtle.
+3. Hover stick: do not sign off; a bench hover with blackbox is coming. Add a
+   `tests/reference/air65-hover.json` slot.
+4. Band yaw lag and settle only after 1 and 2 land. Report what coast
+   measures and why damping raises it before it is banded. Keep P1's 1 s
+   window. Stop when the table is re-run.
+
+**Second (the bench hover is in):**
+1. Drop the owner's `air65-hover.json` into `tests/reference/` as it is, with
+   `vbat_rest_after` 4.08, the pack (weBLEEDfpv 340 mAh 1S BT2.0) and
+   `auw_g` 25.79 (props on, 2026-10-23).
+2. First verify the logged eRPM unit in Betaflight's source; if it is not
+   eRPM/100, stop before touching the plant.
+3. Replace the low-confidence values with measured: mass 0.02579 kg,
+   `ktProp = m g / (4 ω²)` at ω 3389 rad/s (5.51e-9), static `loadFraction`
+   0.81. Keep `cellIR` 64.3 mΩ, cite the log's two points (about 60 mΩ at the
+   start, 71 mΩ at the end), flag the rise with discharge for Phase 3.
+4. Band X3 hover stick against the measured 0.371 ±0.02, not WebFPV; rename
+   the row's reference column.
+5. Damping, `J dω/dt` and the footprint after the constants land; re-run the
+   full damping table and the gate.
+6. Add `tools/hover-from-log.mjs`, based on the owner's `hover.mjs`, so the
+   next pack or airframe is one command. It imports quadmath's
+   `vendor/blackbox-log.module.js` by path; document that.
+7. Stop when the gate table is re-run.
+
+**Where it stopped.** Everything asked for is in, and the table and gate are
+re-run (below). Three findings need the owner before anything else moves:
+1. **`loadFraction` 0.81 is not the plant's parameter.** The plant takes
+   `loadFraction` as its static *full-throttle* point (it sets the winding
+   resistance R). The bench's 0.809 is measured at *hover*. With 0.81 in the
+   plant, the plant's own ratio at hover is 0.93, it hovers at duty 0.292
+   (the quad: 0.336), and T/W is 9.9. The plant value that reproduces the
+   measured 0.809 at hover is **0.632**: hover duty 0.336 exactly, T/W 6.1,
+   `J` 2.58e-8. Built as instructed (0.81); 0.632 is run alongside in the
+   table.
+2. **The quad runs dynamic idle; the class diff does not.** The log's
+   `motorOutput` is 48,2047. Betaflight puts the low end at 48 only with
+   dynamic idle on (or `dshot_idle_value` 0); the class diff leaves the
+   default 5.5 % static idle (low end 158). The bench row now flies the log's
+   throttle path, idle floor included. With it, hover stick is 0.362 at
+   `loadFraction` 0.632 (measured 0.371, in band) and 0.314 at 0.81 (miss).
+3. **At 0.632, the owner's expectation for the reaction torque holds** with
+   the derived `J` itself: yaw overshoot 44 % → 24 % and bounce 50 % → 30 %
+   (damping row to decision row). At 0.81 it does not (56 % → 126 %).
+
+Nothing was banded, nothing signed off, no threshold touched. The gate fails
+9 at the landed constants (turtle and eight X3 rows); at 0.632 it would fail
+7 (hover stick, pitch lag and punch pass, roll rise misses).
+
+### Logged eRPM is eRPM / 100 (verified before touching the plant)
+
+Betaflight 4.5.1 (`vendor/betaflight`), read-only:
+- `blackbox/blackbox.c:261-269`: the `eRPM` fields, commented "eRPM / 100".
+- `blackbox/blackbox.c:1170`: each frame logs `getDshotErpm(i)`.
+- `drivers/dshot.c:341-344`: `getDshotErpm` returns the stored eRPM
+  telemetry value, which `dshotUpdateTelemetryData` (`:280-284`) stores as
+  decoded.
+- `drivers/dshot.c:183-184`: the decode is "Convert period to erpm * 100",
+  `(1000000 * 60 / 100 + value / 2) / value`, so the stored value is
+  eRPM / 100.
+- `drivers/dshot.c:56`, `:160`, `:395-399`: Betaflight's own `erpmToRpm` is
+  `erpm × ERPM_PER_LSB (100) / (motorPoleCount / 2)`.
+
+So RPM = logged × 100 / (poles / 2): 1942 × 100 / 6 = 32,367 rpm on the
+bin mean (the file's 32,359 is the per-frame mean), ω 3389 rad/s.
+
+The log is from Betaflight 4.5.0; the vendor tree is 4.5.1.
+`git diff --quiet 4.5.0 4.5.1 -- drivers/dshot.c drivers/dshot.h
+blackbox/blackbox.c` is empty, so the path is the same.
+
+### The bench hover file and the tool
+
+`tests/reference/air65-hover.json` is the owner's file byte for byte except
+the three fills, plus one key, `auw_note` ("all-up weight measured props-on,
+2026-10-23 (owner)"), so the citation in the airframe has a source. It
+replaces this morning's empty slot and its schema; `scripts/derive-air65-
+hover.mjs`, written for that slot, is deleted (it never landed).
+
+`tools/hover-from-log.mjs <log.BBL> --quadmath <quadmath clone>`, or with
+`QUADMATH_DIR` set:
+- Decodes with quadmath's `vendor/blackbox-log.module.js` (MIT, W Etheredge,
+  licence beside it), imported by path from a quadmath clone and never copied
+  into this repo. Node prints a "module type not specified" warning for it;
+  that is harmless.
+- Reads the same fields as the owner's `hover.mjs`, and from the header the
+  whole throttle path: `motorOutput`, `motor_poles`, `dshot_bidir`,
+  `thrust_linear`, `vbat_sag_compensation`, `throttle_boost`, `thr_mid`,
+  `thr_expo`, `dyn_idle_min_rpm`, `dshot_idle_value`, `motor_output_limit`,
+  `throttle_limit_type` and `_percent`.
+- Finds the hover window itself (the owner's criteria: mean accZ within 5 %
+  of 1 g, accZ spread under 10 %, gyro and setpoint rms under 10 deg/s,
+  motors above idle; the longest run), or takes `--window`.
+- Prints the 1 s bins, then: `kt`, the hover ratio, the plant
+  `loadFraction` that reproduces it, `tmax` at both, and the cell IR at the
+  start and (with `--rest-after`) the end. `--out` writes the reference
+  JSON in the same format; `--auw-g`, `--rest-before`, `--rest-after`,
+  `--pack` and `--cells` fill the rest.
+- `tests/node/hover-from-log.test.mjs` runs the window search and every
+  derivation on synthetic frames shaped like the Air65 log (idle, take-off,
+  56 s of hover, a throttle blip, landing). With `QUADMATH_DIR` set it also
+  writes a synthetic Betaflight 4.5 log (`tests/lib/synth-bbl.mjs`,
+  Betaflight's own field definitions and encodings) and runs it through the
+  real decoder: plain, with static idle, and at high resolution. Without
+  `QUADMATH_DIR` (CI) it says that part did not run. No real `.BBL` is in
+  either repo; the first one through the tool should be checked against the
+  owner's `hover.mjs` numbers.
+
+### Constants landed (as instructed)
+
+| Value | Before | Now | Source (`HV` = the bench hover file) |
+|---|---|---|---|
+| `mass` | 0.02542 kg (bench file, LAVA 300 mAh) | 0.02579 kg | `HV` `auw_g`, props on, weBLEEDfpv 340 mAh pack. **high** |
+| `ktProp` (carried by `tmax`) | 3.04e-9 (quadmath class Tmax) | 5.507e-9 N/(rad/s)² | `HV`: m g / (4 ω²), ω 3389. **medium** |
+| `tmax` | 0.478 N | 0.629 N | kt × (lf Kv vRef)²; derived, not measured. **medium** |
+| `loadFraction` | 0.95 | 0.81 | `HV` 0.809, owner decision. **medium** |
+| `cellIR` | 64.3 mΩ | 64.3 mΩ | kept; log brackets it at 60 and 71 mΩ |
+
+- The plant has no `ktProp` input: it derives `ktProp = tmax / ω_full²`
+  with `ω_full = lf × Kv × vRef`. So `tmax` now carries the measured `kt`
+  and has to be re-derived whenever `loadFraction`, KV or `vRefCell`
+  changes; the airframe note says so, and the tool prints it.
+- The pack changed under the mass: `capacityMah`, the OCV table and `iRef`
+  are still the bench file's LAVA 300 mAh. The current stand-in draws 4.2 A
+  at hover; the log shows 3.04 A (its current sensor not corrected). Not
+  changed; for the owner.
+- `cellIR`, for Phase 3: (4.24 − 4.11) / (2.79 − 0.62) = 60 mΩ at the start,
+  (4.08 − 3.86) / 3.11 = 71 mΩ at the end, on the weBLEEDfpv pack with the
+  logged current uncorrected.
+
+**For the owner: `loadFraction`.** In the plant (`derive()`),
+`u V = ω/Kv + R kq ω²/Kt` with `R` set so that full throttle at `vRef`
+reaches `lf × Kv × vRef`. At steady hover the bench's ratio is then
+`rpm / (KV V u) = 1 / (1 + (1 − lf) ω_h / (lf² Kv vRef))`, which is above
+`lf` because hover is far below full speed. Holding the measured `kt`:
+
+| `loadFraction` | Plant ratio at hover | Hover duty at 3.968 V | Full thrust | T/W | R | J |
+|---|---|---|---|---|---|---|
+| 0.95 (before) | 0.986 | 0.276 | 0.865 N | 13.7 | 3.3 mΩ | 3.0e-7 |
+| **0.81 (landed)** | **0.931** | **0.292** | **0.629 N** | **9.9** | 17 mΩ | 6.4e-8 |
+| 0.70 | 0.864 | 0.315 | 0.470 N | 7.4 | 36 mΩ | 3.5e-8 |
+| **0.632** | **0.809** | **0.336** | **0.383 N** | **6.1** | 55 mΩ | 2.6e-8 |
+| bench | 0.809 | 0.336 | – | – | – | – |
+
+At 0.632 the plant's hover matches the bench in both ratio and duty. Full
+thrust is then 39 g a motor against 64 g at 0.81; no static thrust has been
+measured on this quad, so neither is checked. A review agent working from
+the code alone reached the same 0.63. Recommendation: `loadFraction` 0.632, with
+the source "the plant's full-throttle point that reproduces the measured
+0.809 at hover". It is one value; the tool prints it for the next airframe.
+
+### X3 hover stick against the bench
+
+Row `hover stick (Air65 bench)`, band ±0.02, reference column `Air65`.
+Two things had to match before the comparison means anything:
+1. **The quantity.** The log's 0.371 is `rcCommand[3]` (`blackbox.c:1149`),
+   after `min_check` and the throttle curve. The sim's hover trim is a
+   channel value (the old row compared that). The row now reads Betaflight's
+   own `rcCommand[THROTTLE]` from the FC readout at the trimmed stick. On the
+   class diff the two differ by 0.04 (channel 0.293, rcCommand 0.255).
+2. **The throttle path.** The class diff sets PIDs and rates only. The row
+   flies the class diff plus the settings in the log header between stick
+   and motors (`tests/lib/bench-hover.mjs`): `thrust_linear` 20,
+   `vbat_sag_compensation` 70, `throttle_boost` 5, `thr_mid` 50, `thr_expo`
+   0, `motor_poles` 12, `dshot_bidir` ON, and the idle floor from the logged
+   `motorOutput`. The header the owner extracted has no `dyn_idle_min_rpm` or
+   `dshot_idle_value`; a low end of 48 means dynamic idle
+   (`mixer_init.c:342-343`) or idle 0 (`dshot.c:68`), and at hover rpm both
+   leave the floor at 48 (measured: identical hover at `dyn_idle_min_rpm` 20,
+   40, or `dshot_idle_value` 0). So the row sets `dshot_idle_value` 0, and
+   uses the header's own idle settings when the tool writes them. The same
+   goes for `vbat_warning_cell_voltage`, which the owner's extract does not
+   have yet (found, not fixed, item 1).
+
+| `loadFraction` | Header subset only | + idle floor 48 (the row) | Bench |
+|---|---|---|---|
+| 0.81 | 0.271 | **0.314** | 0.371 |
+| 0.632 | 0.322 | **0.362** | 0.371 |
+
+The remaining 0.009 at 0.632: the sim's pack sags to 3.91 V at the stand-in's
+4.24 A, against the log's 3.968 V at 3.04 A (the plant holds duty 0.342 vs
+0.336).
+
+### What was built for the first message
+
+**Rotational damping.** `aeroB` 4.734e-5 N·m·s/rad and `aeroC` 3.4716e-6
+N·m·s²/rad²: quadmath's `AERO_B0` 3.0e-5 and `AERO_C0` 2.2e-6
+(`QP:98-99`) × `aeroBMul` 1.578 (`QP:493` at floatiness 0.32), through
+quadmath's own `aeroCoeffs` (`QP:205-216`), which `derive-air65.mjs` now
+prints. Low confidence: tuned for feel in quadmath.
+
+**Rotor reaction torque.** Per motor, the frame's yaw torque is
+`−spin · (kq ω|ω| + J dω/dt)`, `dω/dt` the motor's own change over the tick.
+`J` is the derived `jRotor`. Physical model only; the parity model is bit
+for bit unchanged (P2, P3, P5). plant-world #30 checks the first tick of a
+motor step yaws the body by `J Δω / Izz` within 5 %, the same way as the
+drag torque.
+
+**Five-point footprint** (physical model only).
+- Body-frame points: four duct rims on the arm diagonals at
+  `(wheelbase/2 + ductOuterRadius) · √½` = 35.8 mm in x and y,
+  `z = −hullBelow` (−10 mm); the canopy at `z = +hullAbove` (+18 mm).
+- New airframe fields, medium confidence, from WebFPV's published whoop
+  dimensions (facts only, nothing pasted): `ductOuterRadius` 18.1 mm,
+  `hullBelow` 10 mm (= quadmath's `FLOOR_CLEARANCE_M`, `QP:90`),
+  `hullAbove` 18 mm. The plant block is 43 doubles; `sim-core.js` has the
+  fields and a `footprint` getter.
+- Each tick, on the pose the tick integrated to:
+  1. Each point meets the floor and boxes through quadmath's point contact
+     (`world.c` `resolvePoint`, split out of `sc_world_contact`), with no
+     floor pad and no spin kick.
+  2. The CG moves by the largest push out along each axis. Opposite pushes
+     cancel (wedged in a gap narrower than the footprint), unless the CG
+     itself is inside a box: then the larger push wins.
+  3. 32 sweeps of projected Gauss-Seidel turn what the world did to each
+     point into impulses through its lever arm: an accumulated normal push
+     clamped at zero (four points share the load, nothing pulls), and the
+     world's tangential target with the friction kept opposing the point's
+     arrival slip.
+  4. The spin cap (150 rad/s) and the ground scrub, then floor edge events
+     and triggers at the CG.
+- After review (round 10, below): the floor edge state after a pose or a
+  floor move uses the CG height at which the lowest footprint point touches
+  at that attitude; ground effect measures from the hull (0 at rest on the
+  floor and on a box top alike); a second rim crashing inside the 50 ms
+  contact window is still reported as a crash; a footprint point's world
+  round trip writes back only the components the world changed.
+- Cost: 4.1 µs a tick in the air, 15-16 µs resting (Node, this machine),
+  about 60× real time at rest.
+
+### The damping table, re-run on the measured constants
+
+Same procedures as the gate (scratch `table2.mjs`; reaction-torque variants
+built from today's source with `J` scaled by 0 and 0.1, `dist/` restored byte
+for byte after). The footprint is in every row. `kt` is the measured value
+in every row; at `loadFraction` 0.632 `tmax` is re-derived so the plant's
+`kt` stays measured. Bold is outside the band; hover is the bench row (Air65
+throttle path, rcCommand).
+
+| Row | P1 (1 s) | Hover | Roll rise | Pitch rise | Pitch lag | Yaw rise | Yaw lag | Yaw settle | Yaw os | Yaw bounce | X2 yaw | Coast | Chirp gain | Punch | J |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **lf 0.81 (landed)** | | | | | | | | | | | | | | | |
+| A: footprint only | **fault 284 ms** | **0.314** | 33 | 32 | **7** | 15 | 12 | **208** | 63 % | 63 % | 0.00 % | 9.79 | 0.920 | **12.11** | – |
+| B: + reaction | **fault 235 ms** | **0.314** | 33 | 32 | **7** | **2** | **−1** | 67 | 129 % | 129 % | 0.00 % | 9.79 | 0.920 | **12.11** | 6.4e-8 |
+| C: + damping | 62.4 rad/s | **0.314** | 35 | **41** | **7** | 15 | 12 | **157** | 56 % | 59 % | 0.00 % | **11.81** | **0.907** | **12.11** | – |
+| **D: + both (decision)** | 55.6 rad/s | **0.314** | 35 | **41** | **7** | **2** | **−1** | 67 | 126 % | 128 % | 0.00 % | **11.81** | **0.907** | **12.11** | 6.4e-8 |
+| E: + both, J/10 | 61.6 rad/s | **0.314** | 35 | **41** | **7** | **13** | 7 | 58 | 27 % | 27 % | 0.00 % | **11.81** | **0.907** | **12.11** | 6.4e-9 |
+| **lf 0.632 (reproduces the bench hover)** | | | | | | | | | | | | | | | |
+| A: footprint only | **fault 447 ms** | 0.362 | 34 | 37 | 9 | 19 | **15** | **161** | 52 % | 52 % | 0.00 % | **11.82** | 0.921 | 8.91 | – |
+| B: + reaction | **fault 422 ms** | 0.362 | 34 | 37 | 9 | **6** | **2** | 24 | 27 % | 27 % | 0.00 % | **11.82** | 0.921 | 8.91 | 2.6e-8 |
+| C: + damping | 48.1 rad/s | 0.362 | **38** | **41** | 9 | 20 | **15** | 113 | 44 % | 50 % | 0.00 % | **14.11** | **0.905** | 8.91 | – |
+| **D: + both (decision)** | 45.7 rad/s | 0.362 | **38** | **41** | 9 | **6** | **2** | 24 | 24 % | 30 % | 0.00 % | **14.11** | **0.905** | 8.91 | 2.6e-8 |
+| E: + both, J/10 | 47.9 rad/s | 0.362 | **38** | **41** | 9 | 19 | **13** | 97 | 36 % | 40 % | 0.00 % | **14.11** | **0.905** | 8.91 | 2.6e-9 |
+| Air65 bench | – | 0.371 | | | | | | | | | | | | | |
+| WebFPV whoop65 | – | – | 30 | 34 | 12 | 21 | 9 | 104 | 12.6 % | 9.9 % | 0.00 % | 9.60 | 0.950 | 9.51 | 1.5e-8 |
+
+Bands (unchanged): hover ±0.02, roll and pitch rise ±20 % (at least ±4 ms),
+yaw rise ±30 %, lag ±3 ms, settle ≤ 1.5×, coast ±20 %, chirp gain ±0.03,
+punch ±15 %, X2 ±1.0 %. Overshoot and bounce have no band. Turtle fails in
+every row (below). Ms throughout; coast in degrees, punch in metres climbed
+in 1 s.
+
+**Reading it.**
+- **Damping** clears P1 in every case and costs coast, chirp gain and rise
+  (a torque against rotation: slower to start a roll, less gain on a
+  chirp).
+- **Reaction torque, `loadFraction` 0.81 (`J` 6.4e-8):** the wrong way, as
+  this morning at 0.95. In the yaw step `J dω/dt` peaks at 3.7e-2 N·m a
+  motor against 3.8e-3 of drag. Yaw rises in 2 ms, lag is −1 ms, overshoot
+  and bounce go from 56/59 % to 126/128 %.
+- **Reaction torque, `loadFraction` 0.632 (`J` 2.6e-8):** the owner's
+  expectation holds with the derived `J` itself. Overshoot and bounce drop
+  from 44/50 % (C) to 24/30 % (D), settle from 113 to 24 ms. It overshoots
+  the other way on rise (6 vs 21 ms) and lag (2 vs 9 ms): the yaw response
+  is now faster than WebFPV's, not slower.
+- **`J` follows `loadFraction`.** `derive()` sets `J` from `tau` and `R`,
+  and `R` from `loadFraction`: 3.0e-7 at 0.95 (with the measured `kt`),
+  6.4e-8 at 0.81, 2.6e-8 at 0.632. WebFPV's is 1.5e-8. At 0.632 the
+  remaining factor of 1.7 is `tau` (quadmath's spool-up constant, low
+  confidence).
+- **Punch** (12.1 m vs 9.5) is T/W 9.9 at 0.81; at 0.632 (T/W 6.1) it is
+  8.9, in band.
+- **Coast** at 0.632 misses even without damping (11.8°): lower authority
+  brakes the roll more slowly (peak deceleration 58 vs 78 kdeg/s²).
+
+### Coast: what it measures, and why damping raises it
+
+The coast metric is the roll angle from releasing a full-rate roll (740°/s)
+until the roll rate first reaches zero.
+
+Damping raises it, but not because the body stops more slowly. It is
+Betaflight's I-term:
+- Holding a roll against real damping, the PID has to supply the damping
+  torque. 1 ms before release the roll PID sum is +34 with damping (motors
+  0.284/0.349) and 0 without (all four 0.317), at `loadFraction` 0.81.
+- That sum is the I-term, and `iterm_relax` keeps it from bleeding off. It
+  goes on pushing the roll after the stick is centred while P and D brake.
+- So the rate falls fast and then creeps: with damping, 9.0°/s at +100 ms,
+  2.3°/s at +200 ms, zero at 585 ms. Without, it crosses zero at 75 ms.
+
+| `loadFraction` 0.81 | Coast | Time to zero rate |
+|---|---|---|
+| no damping | 9.79° | 75 ms |
+| no damping, `iterm_relax` off | 9.12° | 44 ms |
+| no damping, `i_roll` 0 | 9.89° | 149 ms |
+| damping | **11.81°** | 585 ms |
+| damping, `iterm_relax` off | 9.63° | 57 ms |
+| damping, `i_roll` 0 | 9.54° | 131 ms |
+
+With damping and the I-term or its relax taken out, coast is back at about
+9.6°, WebFPV's value. The extra 2.2° is the I-term carrying the held-roll
+torque past the release: Betaflight's controller, ported and not changed,
+so the plant cannot remove it without being wrong. At `loadFraction` 0.632
+the same pattern holds one step up (no damping 11.82°, damping 14.11°,
+damping with relax off 11.25°): lower authority brakes more slowly.
+
+Coast mixes the plant (how fast the body stops) with the controller's
+I-term tail. Before it is banded the owner may want to choose which one the
+band holds. A stop measure that reads the body and not the tail would be,
+for example, the angle until the rate falls under 5 % of the release rate.
+That is a change of definition, for the owner; not made.
+
+### Turtle with the footprint
+
+The gate's protocol (full roll until up-z > 0.9, then centred) fails in
+every row. The footprint does what it was asked: the quad comes to rest on
+its edges instead of rolling forever on one point. It comes to rest on the
+wrong side: canopy and two duct rims down, up-z −0.79, CG 14.2 mm up.
+
+Stick centred at different points of the flip (decision build):
+
+| Stick centred when | lf 0.81: time, turning at release, at 1 s | lf 0.632: time, turning at release, at 1 s |
+|---|---|---|
+| up-z > −0.5 | 49 ms, 50.8 rad/s, rolled past (−0.79) | 58 ms, 23.8 rad/s, **upright** (1.00) |
+| up-z > 0 | 59 ms, 51.1 rad/s, rolled past | 75 ms, 36.4 rad/s, rolled past |
+| up-z > 0.5 | 69 ms, 58.0 rad/s, rolled past | 88 ms, 43.3 rad/s, rolled past |
+| up-z > 0.9 (the gate) | 79 ms, 62.4 rad/s, rolled past | 101 ms, 47.6 rad/s, rolled past |
+
+Crash flip is open loop: held until up-z > 0.9, two motors drive the roll
+for the whole turn, and the body is still turning at 48-62 rad/s when the
+stick is centred. Lifting the CG over one side's rims (CG 37.2 mm from the
+rim line, 10 mm up at rest) takes 0.0068 J; at 50 rad/s the roll energy is
+about 0.013 J. The landing takes out only what quadmath's floor response
+gives each rim (its bounce and friction).
+
+Options (nothing changed):
+1. The protocol: a pilot taps crash flip and lets go early. At 0.632, letting
+   go at up-z > −0.5 lands upright. Changing the release point changes the
+   check, so it is the owner's call.
+2. The contact: a duct landing may lose more energy than quadmath's point
+   bounce, which was tuned for a CG point. A landing loss on the lever-arm
+   impulse could be added, at low confidence: nothing measured.
+3. Leave turtle failing until a bench turtle (or video) says what the
+   Air65 does.
+
+### Gate (`node tests/gate-plant.mjs`, raw, at the landed constants)
+
+```
+== airframe airframes/air65.json
+   mass            0.02579                    kg             [high] HV measured.auw_g 25.79: all-up weight, props on, with the weBLEEDfpv 340 mAh 1S BT2.0 pack the hover was flown on (owner, 2026-10-23)
+   wheelbase       0.065                      m              [medium] AJ:5 frame_size_mm 65, used as the motor-to-motor diagonal as quadmath does (QP:8, B:198)
+   boxHeightRatio  0.35                                      [low] QP:434-440 flat-box inertia, h = 0.35 x wheelbase
+   propDiameter    0.031                      m              [high] AJ:20-25 prop_detail size_mm 31, Gemfan 1219, 3 blades
+   kv              30000                      rpm/V          [high] AJ:8 motor_kv; motorDB S:96 'VCI 0702 PRO DB' kv 30000
+   vRefCell        4.2                        V              [medium] B:213 batteryFromBuild full = 4.2 x cells: the pack voltage at which quadmath's thrust (tmax) holds
+   loadFraction    0.81                                      [medium] HV derived.static_load_fraction_hover 0.809 = hover rpm / (KV x vbat x duty) = 32359 / (30000 x 3.968 x 0.336), measured at steady hover (owner decision 2026-10-23)
+   tmax            0.6290506051148167         N per motor    [medium] HV: the measured thrust coefficient kt = m g / (4 w_hover^2) = 0.02579 x 9.81 / (4 x 3389^2) = 5.5070e-9 N/(rad/s)^2, w_hover = measured.hover_omega_rad_s (logged eRPM x 100 / (motor_poles / 2): Betaflight 4.5.1 drivers/dshot.c:56, :183, :395-399, blackbox/blackbox.c:261, :1170), times w_full^2 = (loadFraction x KV x vRefCell)^2 = 10687.7^2 rad/s
+   kqRatio         0.72                                      [low] derive: physicsFromBuild kQ (B:186); QP:21, QP:305 yaw torque = kQ x thrust x wheelbase / 2
+   tau             0.00949                    s              [low] derive: physicsFromBuild motorTau 0.013 s (B:184) x spoolTauMul 0.73 (QP:489), quadmath's spool-up time constant
+   tauDownMult     1.4                                       [low] QP:490 spoolDownMul
+   reverseScale    0.85                                      [low] QP:130 REVERSE_THRUST_SCALE
+   cdAFront        0.008691624000000002       m^2            [low] derive: CDA_XY0 0.0054 (QP:95) x cdMul 1.578 (QP:492 at floatiness 0.32, QP:111) x userDragMul 1.02 (H:5199, build drag 0.561 from B:185)
+   cdAPlan         0.00965736                 m^2            [low] derive: CDA_Z0 0.0060 (QP:96) x cdMul 1.578 x userDragMul 1.02, as cdAFront
+   skinB           0                          N s/m          [high] owner's M4 instruction: quadratic drag, frontal and plan
+   aeroB           0.00004734                 N m s/rad      [low] derive: aeroCoeffs (QP:205-216) = AERO_B0 3.0e-5 (QP:98) x prop area 1 x aeroBMul 1.578 (QP:493 at floatiness 0.32); added by the owner's decision of 2026-10-23
+   aeroC           0.0000034716               N m s^2/rad^2  [low] derive: aeroCoeffs (QP:205-216) = AERO_C0 2.2e-6 (QP:99) x prop ref^3 1 x aeroBMul 1.578 (QP:493); added by the owner's decision of 2026-10-23
+   discK           0                                         [high] owner's M4 instruction: quadratic drag, frontal and plan
+   discEnd         0.22                                      [low] QP:101 DISC_THR_END
+   groundK         0.06711908268028192                       [low] derive: whoopGroundK (W:147-151) = 0.062 x groundStr 1 (W:20) x whoopScale(build).ground (W:121), on the preset build; ground effect 1 + k (1 - h/D)^2 (QP:191-197)
+   gravity         9.81                       m/s^2          [high] QP:88
+   airDensity      1.225                      kg/m^3         [high] QP:89
+   cells           1                                         [high] AJ:39 '1S LiHV'
+   capacityMah     300                        mAh            [high] AJ:38 capacity_mah
+   cellIR          0.0642857142857143         ohm            [low] derived from the bench discharge: (OCV at SoC 0.1 - cutoff_v_load) / average current = (3.55 - 3.28) / 4.2, with cutoff 3.28 V under load (AJ:57), 4.2 A (AJ:61), SoC 1 - 270/300 at the end (AJ:47, AJ:60), OCV 3.55 V from the OCV table (W:160-168). Kept by the owner's decision of 2026-10-23. The hover log (HV, weBLEEDfpv 340 mAh pack) on its logged current gives about 60 mOhm at the start ((4.24 - 4.11) V / (2.79 - 0.62) A, the idle bin against the first hover second) and about 71 mOhm at the end ((4.08 - 3.86) V / 3.11 A, the rest voltage after landing against the last hover second). This value uses the bench's corrected current (4.2 A, AJ:61); with the same 1.24 correction (AJ:44-46, as HV asks) the log gives about 48 and 57 mOhm, both below it, and on uncorrected current this formula gives 80 mOhm, above both. Different packs (LAVA 300 and weBLEEDfpv 340)
+   iRef            4.2                        A              [low] AJ:61 avg_current_a_corrected over the 233 s cruise (AJ:55); applied at the plant's own hover duty (PROGRESS.md 2026-10-22, finding 6)
+   ocv             [3.3,3.5,3.6,3.75,3.87,4.05,4.2] V per cell at SoC 0, 0.05, 0.15, 0.40, 0.70, 0.90, 1 [medium] W:160-168 lipoOcv
+   sagDrop         0.33                       V              [low] B:225 batteryFromBuild sagDrop for 300 mAh 1S
+   hoverSeconds    180                        s              [low] B:224 batteryFromBuild hoverS
+   sagScale        1                                         [low] W:122 whoopScale sag for 300 mAh 1S
+   bounceScale     1.0310150949352062                        [low] derive: whoopScale(build).bounce (W:115), on the preset build (25.4 g: quadmath's normalizeBuild rounds AUW to 0.1 g, B:62)
+   crashScale      1.0310150949352062                        [low] derive: whoopScale(build).crashAt (W:116), on the preset build
+   spinScale       1.255161033983708                         [low] derive: whoopScale(build).spin (W:117), on the preset build
+   ductOuterRadius 0.0181                     m              [medium] WebFPV configs/airframes.js:64-73 WHOOP_TRUE_DIMS hullR (518846c, read for the fact, not code): a 65 mm whoop's duct is a 33 mm bore, a 1 mm tip gap for a 31 mm prop, plus a 1.6 mm moulded wall; that file checks it against the maker's published 82.6 mm frame
+   hullBelow       0.01                       m              [medium] WebFPV configs/airframes.js:64-73 WHOOP_TRUE_DIMS vHalfDown (10 mm of duct below the CG); equal to quadmath's FLOOR_CLEARANCE_M 0.01 (QP:90), the CG's height at rest
+   hullAbove       0.018                      m              [medium] WebFPV configs/airframes.js:64-73 WHOOP_TRUE_DIMS vHalfUp (18 mm of canopy and camera above the CG)
+   derived: kvRad 3141.59, ktMotor 0.00031831, omegaFull 10687.7, ktProp 5.50703e-9, kqProp 1.28864e-10, rWinding 0.0172565, jRotor 6.40095e-8, omegaHover 3389, dutyHover 0.27595, ixx 0.0000101926, iyy 0.0000101926, izz 0.0000181605, arm 0.022981, dutyCurrentRef 0.294908
+   full-throttle rpm 102060, hover rpm 32363, hover duty 0.2759 at 4.2 V
+
+== P4 at rest on the floor (Betaflight accelerometer, g)
+   boot 4100 ticks; z 0.0100 m; plant specific force -0.0000 0.0000 9.8100 m/s^2
+   Betaflight acc 0.00000 0.00000 1.00000 g; attitude 0 0 0 -> ok
+
+== P1 single-motor step, Air65 plant, from rest in free air (bench override, duty 0 -> 1), held 1 s
+   motor 0: t63 9 ms, rpm at 150 ms 97337, peak body rate 55.6 rad/s, no fault in 1 s, finite true -> ok
+   motor 1: t63 9 ms, rpm at 150 ms 97337, peak body rate 55.6 rad/s, no fault in 1 s, finite true -> ok
+   motor 2: t63 9 ms, rpm at 150 ms 97337, peak body rate 55.6 rad/s, no fault in 1 s, finite true -> ok
+   motor 3: t63 9 ms, rpm at 150 ms 97337, peak body rate 55.6 rad/s, no fault in 1 s, finite true -> ok
+   all four: t63 9 ms, rpm at 1.5 s 82141 and 2 s 81926, loaded pack 3.2548 -> 3.2449 V, finite true, fault 0 -> ok
+
+== P2 port parity: C plant (parity model) vs quadmath quadphysics.js (frozen de9b15d), 2 s, same motor commands
+   end: C pos -2.120421 1.353300 3.254085  JS -2.120421 1.353300 3.254085
+   end: C omega 3.127631 24.726168 0.394800  JS 3.127631 24.726168 0.394800
+   pos       max relative difference 4.444e-15 -> ok
+   vel       max relative difference 3.119e-15 -> ok
+   quat      max relative difference 1.629e-15 -> ok
+   omega     max relative difference 4.158e-16 -> ok
+   motorOut  max relative difference 0.000e+0 -> ok
+
+== P3 battery parity: C pack (parity model) vs quadmath sim-whoop.js stepBattery (frozen de9b15d), same load sequence, 30 s
+   at 30 s: C charge 0.903287 V 3.981893; JS charge 0.903287 V 3.981893
+   voltage max relative difference 0.000e+0 -> ok
+   charge  max relative difference 0.000e+0 -> ok
+
+== P5 ground clearance: C query vs quadmath sim.html groundClearance (H:3206-3215) on every exported map
+   living          49 boxes,  3860 points: equal to the hook on the same (micrometre) boxes 3860/3860; against quadmath's unquantised boxes: grid max |difference| 4.28e-7 m, 380/735 edge points moved in or out by the rounding -> ok ok
+   garage         136 boxes,  5165 points: equal to the hook on the same (micrometre) boxes 5165/5165; against quadmath's unquantised boxes: grid max |difference| 4.35e-7 m, 1096/2040 edge points moved in or out by the rounding -> ok ok
+   warehouse      129 boxes,  5060 points: equal to the hook on the same (micrometre) boxes 5060/5060; against quadmath's unquantised boxes: grid max |difference| 4.35e-7 m, 794/1935 edge points moved in or out by the rounding -> ok ok
+   backyard        70 boxes,  4175 points: equal to the hook on the same (micrometre) boxes 4175/4175; against quadmath's unquantised boxes: grid max |difference| 4.42e-7 m, 374/1050 edge points moved in or out by the rounding -> ok ok
+   office         112 boxes,  4805 points: equal to the hook on the same (micrometre) boxes 4805/4805; against quadmath's unquantised boxes: grid max |difference| 4.28e-7 m, 711/1680 edge points moved in or out by the rounding -> ok ok
+   gym            109 boxes,  4760 points: equal to the hook on the same (micrometre) boxes 4760/4760; against quadmath's unquantised boxes: grid max |difference| 4.28e-7 m, 729/1635 edge points moved in or out by the rounding -> ok ok
+   trainer         21 boxes,  3440 points: equal to the hook on the same (micrometre) boxes 3440/3440; against quadmath's unquantised boxes: grid max |difference| 4.35e-7 m, 54/315 edge points moved in or out by the rounding -> ok ok
+   room            18 boxes,  3395 points: equal to the hook on the same (micrometre) boxes 3395/3395; against quadmath's unquantised boxes: grid max |difference| 4.28e-7 m, 108/270 edge points moved in or out by the rounding -> ok ok
+   city-explore    87 boxes,  4430 points: equal to the hook on the same (micrometre) boxes 4430/4430; against quadmath's unquantised boxes: grid max |difference| 4.29e-7 m, 405/1305 edge points moved in or out by the rounding -> ok ok
+   not covered: the city base buildings and track gates, built inline in sim.html (they need a browser page to export)
+
+== F6 axis signs (acro 150 ms, angle 1 s; module frame X forward, Y left, Z up)
+   acro roll right      gyro 40 0 0 deg/s, setpoint 40 0 0, body roll 5.7 pitch 0.0 yaw -0.0 deg, Betaflight attitude 5.8 0.0 0.0, velocity 0.00 -0.11 3.57 -> ok
+   acro pitch forward   gyro 0 40 0 deg/s, setpoint 0 40 0, body roll 0.0 pitch 5.7 yaw -0.0 deg, Betaflight attitude 0.0 5.8 0.0, velocity 0.11 -0.00 3.57 -> ok
+   acro yaw right       gyro 0 0 -38 deg/s, setpoint 0 0 -38, body roll 0.0 pitch 0.0 yaw -5.6 deg, Betaflight attitude 0.0 0.0 6.0, velocity 0.00 -0.00 3.57 -> ok
+   angle roll right     gyro 1 0 0 deg/s, setpoint 103 0 0, body roll 8.4 pitch 0.0 yaw -0.0 deg, Betaflight attitude 8.2 0.0 0.0, velocity -0.00 -1.34 5.06 -> ok
+   angle pitch forward  gyro 0 1 0 deg/s, setpoint 0 103 0, body roll 0.0 pitch 8.4 yaw -0.0 deg, Betaflight attitude 0.0 8.2 0.0, velocity 1.34 -0.00 5.06 -> ok
+
+== F9 3D and crash flip
+   3D armed true (mode3d true)
+   full reverse stick: DShot 1047 1047 1047 1047, thrust -0.3507 -0.3507 -0.3507 -0.3507 N, rpm 82658 82658 82658 82658 -> ok
+   deadband after reverse: DShot 103 103 103 103, thrust -0.002331 -0.002331 -0.002331 -0.002331 N (0.371 % of full, reverse 3D idle) -> ok
+   deadband after forward: DShot 1103 1103 1103 1103, thrust 0.002734 0.002734 0.002734 0.002734 N (0.435 % of full, forward 3D idle); reverse/forward idle thrust 0.8526 (reverseScale 0.85) -> ok
+   crash flip, 3D off: armed true, crashFlip true, spin-direction state -1 -1 -1 -1, DShot 2027 2027 0 0, thrust -0.4289 -0.4289 0.0000 0.0000 -> ok
+   crash flip, 3D on: armed true, crashFlip true, spin-direction state 1 1 1 1, DShot 1027 1027 0 0, thrust -0.4224 -0.4224 0.0000 0.0000 -> ok
+   turtle from the floor (start up-z -1.00, armed in crash flip true): full roll until upright, then centred: upright at 79 ms, rolled on past upright, peak body rate 63.7 rad/s, at 500 ms up-z -0.79, |omega| 0.00 rad/s -> FAIL
+
+== X2 / F3 rate tracking: throttle 0.35, full stick 1.5 s, mean of the last 0.3 s (+-1.0%)
+   roll  sim-core 740.00 deg/s vs setpoint 740.00 (0.001 %); WebFPV 744.06 (0.549 %) -> ok
+   pitch sim-core 739.99 deg/s vs setpoint 740.00 (-0.001 %); WebFPV 743.59 (0.485 %) -> ok
+   yaw   sim-core 700.00 deg/s vs setpoint 700.00 (-0.000 %); WebFPV 700.01 (0.002 %) -> ok
+
+== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65mm-air65-ryfly-1219s), same channel inputs, gravity/air/kv 1.0
+   hover stick (Air65 bench)      sim-core     0.314  Air65      0.371  band +-0.02             MISS
+   roll rise 10-90 (ms)           sim-core    35.000  WebFPV    30.000  band +-20% (>= +-4 ms)  pass
+   roll overshoot (%)             sim-core    -0.072  WebFPV     0.485  band +-2 points         pass
+   roll stop bounce (%)           sim-core    -0.090  WebFPV     0.016  band +-2 points         pass
+   pitch rise 10-90 (ms)          sim-core    41.000  WebFPV    34.000  band +-20% (>= +-4 ms)  MISS
+   pitch overshoot (%)            sim-core    -0.028  WebFPV     0.682  band +-2 points         pass
+   pitch stop bounce (%)          sim-core    -0.059  WebFPV     0.380  band +-2 points         pass
+   roll lag at 50% (ms)           sim-core     7.000  WebFPV    10.000  band +-3 ms             pass
+   roll settle 5% (ms)            sim-core    55.000  WebFPV    45.000  band <= 1.5x            pass
+   pitch lag at 50% (ms)          sim-core     7.000  WebFPV    12.000  band +-3 ms             MISS
+   pitch settle 5% (ms)           sim-core    54.000  WebFPV    52.000  band <= 1.5x            pass
+   yaw lag at 50% (ms)            sim-core    -1.000  WebFPV     9.000  band +-3 ms             MISS
+   yaw settle 5% (ms)             sim-core    67.000  WebFPV   104.000  band <= 1.5x            pass
+   chirp lag (ms)                 sim-core    -3.000  WebFPV    -3.000  band +-3 ms             pass
+   yaw rise 10-90 (ms)            sim-core     2.000  WebFPV    21.000  band +-30%              MISS
+   yaw steady error (%)           sim-core     0.089  WebFPV     0.757  band +-3 points         pass
+   chirp error after lag (%)      sim-core    19.851  WebFPV    18.927  band +-3 points         pass
+   chirp gain                     sim-core     0.907  WebFPV     0.950  band +-0.03             MISS
+   punch 1 s (m)                  sim-core    12.113  WebFPV     9.505  band +-15%              MISS
+   coast after roll (deg)         sim-core    11.808  WebFPV     9.597  band +-20%              MISS
+   drift after roll (deg, 4.5 s)  sim-core     0.003  WebFPV     0.288  band <= 0.5             pass
+   hands-off 8 s (deg)            sim-core     0.000  WebFPV     0.002  band <= 0.05            pass
+   off-axis peak (deg/s)          sim-core     0.000  WebFPV     1.105  band <= 10              pass
+   divergence                     sim-core     0.000  WebFPV     0.000  band none               pass
+   hover stick, Air65 bench row: set thrust_linear = 20, set vbat_sag_compensation = 70, set throttle_boost = 5, set thr_mid = 50, set thr_expo = 0, set motor_poles = 12, set dshot_bidir = ON, set dshot_idle_value = 0, set motor_output_limit = 100 on the class diff (28 lines applied, 0 rejected, 0 errors); channel 0.349, rcCommand 0.314, vz residual -0.057 m/s; measured rcCommand 0.371 (BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_090813_BETAFPVG473.BBL)
+   not banded: yaw overshoot sim-core 126.09 % vs WebFPV 12.60 %; yaw bounce 127.49 % vs 9.90 %; hover residual vz 0.000 vs 0.041 m/s; hover stick on the class diff alone: sim-core channel 0.293 (rcCommand 0.255), WebFPV whoop65 channel 0.320 (the band's reference until 2026-10-23)
+
+gate-plant: FAIL (9): F9 turtle from the floor; X3 hover stick (Air65 bench); X3 pitch rise 10-90 (ms); X3 pitch lag at 50% (ms); X3 yaw lag at 50% (ms); X3 yaw rise 10-90 (ms); X3 chirp gain; X3 punch 1 s (m); X3 coast after roll (deg)
+```
+
+The same gate with `loadFraction` 0.632 (and `tmax` re-derived to keep the measured `kt`), the misses only:
+
+```
+   roll rise 10-90 (ms)           sim-core    38.000  WebFPV    30.000  band +-20% (>= +-4 ms)  MISS
+   pitch rise 10-90 (ms)          sim-core    41.000  WebFPV    34.000  band +-20% (>= +-4 ms)  MISS
+   yaw lag at 50% (ms)            sim-core     2.000  WebFPV     9.000  band +-3 ms             MISS
+   yaw rise 10-90 (ms)            sim-core     6.000  WebFPV    21.000  band +-30%              MISS
+   chirp gain                     sim-core     0.905  WebFPV     0.950  band +-0.03             MISS
+   coast after roll (deg)         sim-core    14.108  WebFPV     9.597  band +-20%              MISS
+gate-plant: FAIL (7): F9 turtle from the floor; X3 roll rise 10-90 (ms); X3 pitch rise 10-90 (ms); X3 yaw lag at 50% (ms); X3 yaw rise 10-90 (ms); X3 chirp gain; X3 coast after roll (deg)
+```
+
+### Tests: plant-world reworked for the footprint
+
+The single CG point was what many sections pressed against walls, seams and
+posts. My first pass this morning moved those poses by `REACH` and `REST`
+and pointed the asserts at the footprint. Review round 10 (below) showed
+that was not enough: in ten sections the rims started inside the box (the
+first tick was a pose-out, not the hit), or the flight never touched the
+wall, post or seam the section is named for, and several asserts could not
+fail. Two I had loosened outright (#1's contact count, #29's column-hit
+window) and one sign was flipped (#26's room corner, +1e-4 to −1e-4).
+
+The sections were rebuilt (six agents, each re-checked by a second one),
+each with:
+- the leading footprint point placed where the old CG point was, rotated
+  for a tilted quad, and no point starting inside a box unless the section
+  is about a pose in the solid;
+- asserts on the footprint on every tick, at HEAD's thresholds or stricter;
+- a guard that the named geometry was reached (the right box id, a point
+  within nm or µm of the face, edge or seam at the right moment);
+- a sabotage run: the wall, post, box or seam removed or moved, or a world
+  with a real ledge, and the section fails.
+
+| Section | What it checks now |
+|---|---|
+| 2 | Three level crashes (crash event, no fault) and the same crashes flared 0.4 rad, which reach the 150 rad/s cap (peak 148.9 = 150 less one tick of scrub). Without the cap they spin to 245-505 rad/s and fault. |
+| 19 | The front rims skim the floor into a grounded box's side at 12 m/s: bounced, never past the side; a pose low in the box comes out, not under the floor. |
+| 21 | Rims sliding down a stacked wall cross the seam and match the one-piece wall; the garage crate fall meets the 73/77 seam. |
+| 22 | A box on the floor plane is solid at the rims' level for 2.9 s of 3. |
+| 23 | Resting on a box top at `REST`, floor calls give no contact. |
+| 26 | Garage corner reached (both walls) and never passed; room corner with HEAD's +1e-4; slab and deck never through or onto; crate line, T-join, overlapping boxes; the office lintel's 1 µm gap hit by one rim within 1 µm of the seam. |
+| 27 | Leading rims on the wall face nm deep, at HEAD's approach speeds (0.2-2.4 m/s), under a deck and onto a table. |
+| 28 | Rim pairs on and near the split seam, plus a 45°-yawed run that puts one rim exactly on the seam plane (HEAD's code path); split equals one piece; 1 µm overlap holds. |
+| 29 | Rim 1 up the wall face into the ceiling beside the seam (belly on the wall, HEAD's exact point); the split post's corner edge reached by rim 3 as it crosses 1.5 m, with a control world that has a ledge; nine seam poses. |
+| 30 | First-tick reaction torque (this morning). |
+| **31 new** | A tilted landing: rims 2 and 3 land hard but under crash speed, rims 0 and 1 slam down 5 ms later above it; a crashed CONTACT is reported (the upgrade). |
+| **32 new** | Posed inverted on the canopy and tilted on two rims after a flight: no floorTouch. |
+| **33 new** | Resting and hovering low over a box top is the same as over the floor: clearance 0 on both, heights equal to 2e-15 m. |
+| **34 new** | The canopy lying on a face with no speed into it: the same run as without the box, to 0 (the write-back fix). |
+
+`plant-world` now runs in about 30 s (4 s before). `tests/node/hover-from-
+log.test.mjs` is new (above).
+
+### Review before stopping (ultracode)
+
+Every finding was checked by a separate skeptic agent before it counted.
+1. **Round 10** (five lenses over the footprint, world split, reaction and
+   damping, JS/ABI/hover slot, test honesty): 18 confirmed (several found
+   twice), 5 refuted.
+   - The test-honesty findings above (rebuilt).
+   - The floor edge state after a pose judged "on the floor" by the level
+     rest height: inverted or tilted on the floor read as a new floorTouch.
+     Fixed (`restHeightAt`).
+   - Ground effect measured from the CG minus quadmath's pad: 10 mm of
+     clearance on a box top, 0 on the floor (3.6 % less thrust on a table).
+     Fixed (`sc_world_hull_clearance`; quadmath's own query, P5, untouched).
+   - A rim crashing within 50 ms of a softer rim landing was crash physics
+     with no crash event. Fixed (`touchFace` upgrade, footprint only).
+   - A touch with no push got a contact normal from the ×3.5 round trip's
+     last-bit noise. Fixed (write back only what the world changed).
+   - The reaction torque's limit cycle at the old constants (reported, not a
+     code defect: it is `J`).
+   - The old derive script and gate row against my slot's schema (gone).
+2. **Round 11** (four lenses over the bench constants, hover row, tool and
+   the round-10 C fixes): 6 confirmed, 4 refuted.
+   - **High:** the tool read `motorOutput` and `acc_1G` from the parser's
+     `unknown` map, but the parser keeps them; it would fail on every real
+     log. A reviewer wrote a synthetic Betaflight log to prove it. Fixed:
+     header values from the log's own `H` lines, and the synthetic log is
+     now `tests/lib/synth-bbl.mjs`.
+   - The tool's duty used the mixer range, not DShot's (wrong with static
+     idle or an output limit); `blackbox_high_resolution` was ignored.
+     Fixed, and tested through the decoder.
+   - The bench throttle path left out `vbat_warning_cell_voltage` (below).
+     Fixed in the path; the value is not in the owner's file yet.
+   - The `cellIR` citation compared bench (corrected current) and log
+     (uncorrected) values. Rewritten on one basis.
+   - `plant.c`'s header still said `kt` and `R` were quadmath's. Rewritten.
+3. Refuted, for the record: the ×3.5 round trip on no-contact ticks (no
+   effect), ground effect from the CG (one lens refuted it, another
+   confirmed it; fixed), the room-corner sign flip "can never fire" (put
+   back anyway), P2/P3 now taking the airframe's `tmax` as quadmath's
+   `maxThrustPerMotor` (still a parity test, both sides the same input; it
+   is no longer quadmath's own Air65 number), the idle inference skipped
+   for `dyn_idle_min_rpm` 0 (unreachable; made robust anyway).
+
+### Found, not fixed (for the owner)
+
+1. **`vbat_warning_cell_voltage`.** It sets the range sag compensation
+   works over (`mixer_init.c:350-354`). The owner's header extract does not
+   have it, so the bench row flies the default 350. The log's own
+   rcCommand-to-duty pair fits about 330 (duty 0.334 at 3.968 V against the
+   logged 0.336; 350 gives 0.347). At 330 the row reads about 0.011 higher.
+   The BBL header line `vbatcellvoltage` has it; the tool now writes it.
+2. **Split wall meeting a ceiling** (pre-existing; reproduced on HEAD's
+   committed wasm): a point pressed into the wall while rising into the
+   ceiling beside the seam is pushed sideways onto the seam plane, gets an
+   extra contact, and hits the ceiling at 2.01 instead of 2.45 m/s. Not
+   pinned in the tests (it would turn plant-world red).
+3. **Split post, deep corner:** a rim more than 5 µm into the corner and
+   less far past the split than into the corner is held at the split (an
+   invisible ledge: 1.4953 vs 1.5145 m). `nearBox` only sees boxes within
+   5 µm, so the first pass sees only the upper piece.
+4. **The footprint passes a shelf edge between points.** Pressed up under
+   a 30-45 mm shelf against a wall at near-level tilts, the body swings over
+   the shelf's front edge, where no point is, and ends with points on the
+   shelf. HEAD's deck/wall seam check cannot hold through five points; it is
+   written (`27b`) and kept out of the suite.
+5. **A box 5 µm to 0.1 mm above the floor** counts as grounded (no bottom
+   face) but a rim on the floor is not "near" it: it slides 10.7 mm under
+   the side in 3 s.
+6. **Level crashes no longer tumble.** quadmath's friction is a velocity
+   target per point, with no Coulomb limit; four rims at one target leave
+   no rotation (a 30 m/s level crash ends with ω 0). Tilted crashes spin up
+   to the cap.
+7. The plant's ground-contact brake and airborne flag key on the floor only,
+   not box tops (no X3 effect).
+8. The current stand-in draws 4.2 A at hover; the log has 3.04 A raw (3.77 A
+   with the bench's 1.24). `capacityMah`, the OCV table and `iRef` are the
+   LAVA 300 mAh pack's, the mass the weBLEEDfpv 340's.
+9. Coverage limits of open-loop presses on five points (no false passes,
+   but blind spots): the slab and deck edge line is never reached (a 10 mm
+   gap there goes unseen); one rim sits in the garage corner for 8 ms (a
+   20 µm slot goes unseen); no point touches the crate seam itself.
+
+### What went wrong
+
+- **My first footprint reframing of plant-world left ten sections testing
+  nothing**, and loosened three checks. Same lesson as the M4 entry, worse:
+  a check moved until it passes is not a check. Each reworked section now
+  proves it can fail (a sabotage run), and the two loosened ones were put
+  back.
+- **The first bench hover-stick row compared the wrong quantities**:
+  the sim's stick channel against the log's rcCommand (0.04 apart), on a
+  different throttle path (no `thrust_linear`, sag compensation or idle
+  floor). Found by running the numbers, before review.
+- **`loadFraction`'s meaning.** The owner's "static load fraction" and the
+  plant's parameter are different quantities. I first planned only to land
+  0.81; the plant's hover duty showed the mismatch.
+- **The tool as first written could not read a real log.** I tested only
+  the analysis on synthetic frames, never the decoder; review found it with
+  a synthetic BBL. That BBL is now a test.
+- **The `cellIR` citation mixed corrected and uncorrected current.**
+- **`scripts/derive-air65-hover.mjs`** was written for my own slot schema,
+  which the owner's file replaced. Deleted before landing.
+- **Variant builds** again needed `dist/` restored; a script now does it
+  byte for byte and checks the hash. A shell `cd` once persisted into the
+  vendor tree; absolute paths since.
+
+### Phase 1 test list status
+
+- **Green:** as in the M4 entry, plus P1 (damping in: peak 55.6 rad/s on
+  one motor, no fault).
+- **Failing, waiting on the owner** (gate at `loadFraction` 0.81, raw
+  output above): F9 turtle; X3 hover stick (bench), pitch rise, pitch lag,
+  yaw rise, yaw lag, chirp gain, punch, coast.
+- **Partial and not started:** unchanged from the M4 entry.
+
+### Next (waiting for the owner)
+
+1. **`loadFraction`:** 0.81 as landed, or 0.632, the value that reproduces
+   the bench hover (recommended). This moves hover stick, punch, `J` and
+   the yaw rows together; the table has both.
+2. **From the BBL header:** `vbatcellvoltage` (and whether dynamic idle is
+   on). `node tools/hover-from-log.mjs <BBL> --quadmath <clone> --auw-g 25.79
+   --rest-after 4.08 --current-scale 1.24` writes them into the reference.
+3. **Turtle:** protocol, a landing loss in the contact, or a bench turtle.
+4. **Coast:** what the band holds (the body's stop or the I-term tail).
+5. **Yaw lag and settle:** items 1 and 2 of the first message have landed;
+   their banding waits on item 1 here, which moves them.
+6. **World contact defects 2-5 above:** a contact round, or leave them.
+7. **The pack:** the stand-in current and pack values are the LAVA's.

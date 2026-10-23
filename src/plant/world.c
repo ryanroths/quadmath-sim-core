@@ -85,12 +85,14 @@ static scBox_t triggers[SC_WORLD_TRIGGER_CAP];
 static bool triggerInside[SC_WORLD_TRIGGER_CAP];
 static int triggerCount;
 static double floorZ;               // module-frame height of the ground plane, m
+static double restHeight = FLOOR_PAD_M; // the CG above the floor at rest, m
 static bool onFloor;
 // Faces touched recently, so a CONTACT event marks a new touch only.
 typedef struct {
     int ax, side;
     double plane;
     uint64_t lastUs;
+    bool crashed;                   // the last CONTACT event for it was a crash
 } scFace_t;
 static scFace_t touched[CONTACT_FACES];
 static int touchedCount;
@@ -148,6 +150,11 @@ void sc_world_set_floor(int32_t zUm)
     floorZ = zUm * 1e-6;
 }
 
+void sc_world_set_rest_height(double metres)
+{
+    restHeight = metres;
+}
+
 int sc_world_add_box(const int32_t um[6], int kind, int id)
 {
     if (boxCount >= SC_WORLD_BOX_CAP) {
@@ -176,13 +183,13 @@ int sc_world_add_trigger(const int32_t um[6], int id)
     return triggerCount++;
 }
 
-// Height above whatever is directly underneath: the floor, or the highest
-// box top below the point (H:3206-3215, the same expression).
-double sc_world_clearance_at(const double pos[3])
+// Height above whatever is directly underneath: the floor raised by floorPad,
+// or the highest box top below the point.
+static double clearanceWith(const double pos[3], double floorPad)
 {
     double w[3];
     mod2world(pos, w);
-    double top = (floorZ + FLOOR_PAD_M) * WS;
+    double top = (floorZ + floorPad) * WS;
     for (int i = 0; i < boxCount; i++) {
         const scBox_t *b = &boxes[i];
         if (w[0] >= b->min[0] && w[0] <= b->max[0] && w[2] >= b->min[2] && w[2] <= b->max[2] && b->max[1] <= w[1]
@@ -191,6 +198,21 @@ double sc_world_clearance_at(const double pos[3])
         }
     }
     return (w[1] - top) / WS;
+}
+
+// quadmath's CG point (H:3206-3215, the same expression): the floor counts
+// FLOOR_PAD_M up, where its CG rests, and a box top at the top, where it
+// rests there.
+double sc_world_clearance_at(const double pos[3])
+{
+    return clearanceWith(pos, FLOOR_PAD_M);
+}
+
+// The footprint: the hull's clearance, from the CG's height above what is
+// underneath less hullBelow, the same datum on the floor and on a box top.
+double sc_world_hull_clearance(const double pos[3], double hullBelow)
+{
+    return clearanceWith(pos, 0) - hullBelow;
 }
 
 static double vdot(const double a[3], const double b[3])
@@ -223,6 +245,9 @@ static bool ductHit(double vel[3], double omega[3], const double n[3], double in
     const double tanDamp = crashed ? 0.55 : 0.82;
     for (int k = 0; k < 3; k++) {
         vel[k] = n[k] * nn + tan[k] * tanDamp;
+    }
+    if (!omega) {
+        return crashed;     // a footprint point: its lever arm gives the spin
     }
     const double spinK = (crashed ? 1.6 : 0.48) * BOUNCE_STR * spinScale * fmin(into, 28);
     double kick[3] = {
@@ -266,7 +291,7 @@ void sc_world_edge_sync(const double pos[3])
     // One micrometre of tolerance: the pose is quantised to micrometres and
     // the floor plane is not, so a pose at resting height can land a rounding
     // step above it. Triggers are judged where the floor will put the quad.
-    const double floorY = (floorZ + FLOOR_PAD_M) * WS;
+    const double floorY = (floorZ + restHeight) * WS;
     onFloor = cp[1] <= floorY + 1e-6 * WS;
     if (cp[1] < floorY) {
         cp[1] = floorY;
@@ -358,8 +383,10 @@ static bool covered(int skip, const double cp[3], int ax, int side, double plane
 }
 
 // A touch of a box face: a CONTACT event unless the same face (axis, side,
-// plane) was touched within CONTACT_GAP_US.
-static void touchFace(int ax, int side, double plane, int id, double into, bool crashed)
+// plane) was touched within CONTACT_GAP_US. upgrade (the footprint): a crash
+// on a face whose last event was not one is reported even inside the gap, so
+// a second rim slamming down just after a softer first one is still a crash.
+static void touchFace(int ax, int side, double plane, int id, double into, bool crashed, bool upgrade)
 {
     int oldest = 0;
     for (int k = 0; k < touchedCount; k++) {
@@ -367,6 +394,10 @@ static void touchFace(int ax, int side, double plane, int id, double into, bool 
         if (f->ax == ax && f->side == side && f->plane == plane) {
             if (sc_time_us - f->lastUs > CONTACT_GAP_US) {
                 contactEvent(SC_EVENT_CONTACT, id, into, crashed);
+                f->crashed = crashed;
+            } else if (upgrade && crashed && !f->crashed) {
+                contactEvent(SC_EVENT_CONTACT, id, into, true);
+                f->crashed = true;
             }
             f->lastUs = sc_time_us;
             return;
@@ -376,24 +407,21 @@ static void touchFace(int ax, int side, double plane, int id, double into, bool 
         }
     }
     contactEvent(SC_EVENT_CONTACT, id, into, crashed);
-    const scFace_t f = { ax, side, plane, sc_time_us };
+    const scFace_t f = { ax, side, plane, sc_time_us, crashed };
     touched[touchedCount < CONTACT_FACES ? touchedCount++ : oldest] = f;
 }
 
-// After integration: floor, then the boxes (H:3150-3204, with the changes above).
-// Returns contact flags: 1 floor, 2 box.
-uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double dt, double bounceScale,
-                          double crashScale, double spinScale)
+// One contact point against the floor and the boxes (H:3150-3204, with the
+// changes above), in world units. pad: the floor plane is raised by
+// FLOOR_PAD_M for quadmath's CG point, and not for a footprint point, which is
+// the hull itself. omega: body rates for the duct-hit spin kick, or NULL for
+// a footprint point. A footprint's hard floor hits are keyed like faces, so
+// four ducts landing together are one contact.
+static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], double dt, double bounceScale,
+                             double crashScale, double spinScale, double omega[3], bool pad, bool *floorHitOut,
+                             bool *scrubOut)
 {
-    double cp[3], cv[3];
-    mod2world(pos, cp);
-    mod2world(vel, cv);
-    // Where the point was at the start of the tick, before the floor moves it.
-    double start[3];
-    for (int a = 0; a < 3; a++) {
-        start[a] = cp[a] - cv[a] * dt;
-    }
-    const double floorY = (floorZ + FLOOR_PAD_M) * WS;
+    const double floorY = (floorZ + (pad ? FLOOR_PAD_M : 0)) * WS;
     uint32_t flags = 0;
     bool floorHit = false;
     if (cp[1] < floorY) {
@@ -403,7 +431,11 @@ uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double 
         if (impact > HARD_LANDING_WU) {
             static const double up[3] = { 0, 1, 0 };
             const bool crashed = ductHit(cv, omega, up, impact, true, bounceScale, crashScale, spinScale);
-            contactEvent(SC_EVENT_CONTACT, -1, impact, crashed);
+            if (pad) {
+                contactEvent(SC_EVENT_CONTACT, -1, impact, crashed);
+            } else {
+                touchFace(1, 1, floorY, -1, impact, crashed, true);
+            }
         } else {
             cv[1] = fmax(cv[1], 0);
             cv[0] *= 0.85;
@@ -536,7 +568,7 @@ uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double 
             if (touchAxis >= 0) {
                 flags |= 2;
                 const double plane = touchSide > 0 ? b->max[touchAxis] : b->min[touchAxis];
-                touchFace(touchAxis, touchSide, plane, b->id, fmax(0, -touchSide * cv[touchAxis]), false);
+                touchFace(touchAxis, touchSide, plane, b->id, fmax(0, -touchSide * cv[touchAxis]), false, !pad);
                 continue;
             }
             // Across boxes: an exposed top first, then a surface of a box the
@@ -578,20 +610,18 @@ uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double 
         } else {
             crashed = ductHit(cv, omega, n, into, top, bounceScale, crashScale, spinScale);
         }
-        touchFace(bestAxis, bestSide, plane, b->id, into, crashed);
-    }
-    world2mod(cp, pos);
-    world2mod(cv, vel);
-    if (scrub) {
-        // Ground scrub: a tumble settles on contact (H:3196-3203).
-        const double k = exp(-dt * TUMBLE_DECAY);
-        omega[0] *= k;
-        omega[1] *= k;
-        omega[2] *= k;
+        touchFace(bestAxis, bestSide, plane, b->id, into, crashed, !pad);
     }
     if (floorHit) {
         flags |= 1;
     }
+    *floorHitOut = floorHit;
+    *scrubOut = scrub;
+    return flags;
+}
+
+static void floorEdgeAndTriggers(const double cp[3], bool floorHit)
+{
     if (floorHit != onFloor) {
         const double id = -1;
         sc_event_push(floorHit ? SC_EVENT_FLOOR_TOUCH : SC_EVENT_FLOOR_LEAVE, &id, 1);
@@ -606,5 +636,80 @@ uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double 
         }
         triggerInside[i] = inside;
     }
+}
+
+// quadmath's model: the CG is the contact point (floor raised by FLOOR_PAD_M,
+// duct-hit spin kick on the body rates). The parity model uses this.
+uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double dt, double bounceScale,
+                          double crashScale, double spinScale)
+{
+    double cp[3], cv[3];
+    mod2world(pos, cp);
+    mod2world(vel, cv);
+    // Where the point was at the start of the tick, before the floor moves it.
+    double start[3];
+    for (int a = 0; a < 3; a++) {
+        start[a] = cp[a] - cv[a] * dt;
+    }
+    bool floorHit, scrub;
+    const uint32_t flags = resolvePoint(cp, cv, start, dt, bounceScale, crashScale, spinScale, omega, true,
+                                        &floorHit, &scrub);
+    world2mod(cp, pos);
+    world2mod(cv, vel);
+    if (scrub) {
+        // Ground scrub: a tumble settles on contact (H:3196-3203).
+        const double k = exp(-dt * TUMBLE_DECAY);
+        omega[0] *= k;
+        omega[1] *= k;
+        omega[2] *= k;
+    }
+    floorEdgeAndTriggers(cp, floorHit);
     return flags;
+}
+
+uint32_t sc_world_point(double pos[3], double vel[3], const double startPos[3], double dt, double bounceScale,
+                        double crashScale, double spinScale, bool *floorHit, bool *scrub)
+{
+    double cp[3], cv[3], start[3];
+    mod2world(pos, cp);
+    mod2world(vel, cv);
+    mod2world(startPos, start);
+    const double cp0[3] = { cp[0], cp[1], cp[2] }, cv0[3] = { cv[0], cv[1], cv[2] };
+    const uint32_t flags = resolvePoint(cp, cv, start, dt, bounceScale, crashScale, spinScale, NULL, false,
+                                        floorHit, scrub);
+    // Only the components the world changed: the x WS round trip is not exact,
+    // and its last-bit noise on an untouched axis would read as a push.
+    if (cp[2] != cp0[2]) {
+        pos[0] = -cp[2] / WS;
+    }
+    if (cp[0] != cp0[0]) {
+        pos[1] = -cp[0] / WS;
+    }
+    if (cp[1] != cp0[1]) {
+        pos[2] = cp[1] / WS;
+    }
+    if (cv[2] != cv0[2]) {
+        vel[0] = -cv[2] / WS;
+    }
+    if (cv[0] != cv0[0]) {
+        vel[1] = -cv[0] / WS;
+    }
+    if (cv[1] != cv0[1]) {
+        vel[2] = cv[1] / WS;
+    }
+    return flags;
+}
+
+bool sc_world_inside(const double pos[3])
+{
+    double cp[3];
+    mod2world(pos, cp);
+    return insideAnother(-1, cp);
+}
+
+void sc_world_after_points(const double com[3], bool floorHit)
+{
+    double cp[3];
+    mod2world(com, cp);
+    floorEdgeAndTriggers(cp, floorHit);
 }

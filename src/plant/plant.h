@@ -6,9 +6,12 @@
  *                      default until a plant block arrives
  *   SC_MODEL_PHYSICAL  the M4 plant: RPM from KV x effective voltage with a
  *                      first-order motor lag loaded by prop drag torque,
- *                      thrust and torque from RPM squared, a 1S pack with cell
- *                      IR, quadratic drag (frontal and plan), quadmath's rigid
- *                      body, ground effect and contact
+ *                      thrust and torque from RPM squared plus each rotor's
+ *                      reaction torque J dw/dt, a 1S pack with cell IR,
+ *                      quadratic drag (frontal and plan) and rotational
+ *                      damping, quadmath's rigid body and ground effect, and
+ *                      contact through a five-point footprint (four duct rims
+ *                      and the canopy top)
  *   SC_MODEL_PARITY    quadmath's own motor spool, aero and battery, for the
  *                      port-parity tests P2 and P3 only
  *
@@ -69,7 +72,12 @@ enum {
     PB_BOUNCE_SCALE = 37,
     PB_CRASH_SCALE = 38,
     PB_SPIN_SCALE = 39,
-    PB_LEN = 40,
+    // Footprint (physical model): four points on the duct rims at the arm
+    // angles and one on the canopy top
+    PB_DUCT_RADIUS = 40,        // m, duct outer radius
+    PB_HULL_BELOW = 41,         // m, duct bottom below the CG (the rest height)
+    PB_HULL_ABOVE = 42,         // m, canopy top above the CG
+    PB_LEN = 43,
 };
 
 // Derived constants, computed from the block when it is set (readout only).
@@ -121,3 +129,18 @@ void sc_world_edge_sync(const double pos[3]);
 // Contact after integration; returns flags (1 floor, 2 box) and queues events.
 uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double dt, double bounceScale,
                           double crashScale, double spinScale);
+// One footprint point (module frame, m and m/s; startPos where the point was
+// at the start of the tick): floor and boxes, no floor pad, no spin kick.
+// Corrects pos and vel in place; returns flags (1 floor, 2 box).
+uint32_t sc_world_point(double pos[3], double vel[3], const double startPos[3], double dt, double bounceScale,
+                        double crashScale, double spinScale, bool *floorHit, bool *scrub);
+// Whether a module-frame point is strictly inside a box.
+bool sc_world_inside(const double pos[3]);
+// After the footprint points: floor touch and leave events, and triggers at the CG.
+void sc_world_after_points(const double com[3], bool floorHit);
+// The CG's height above the floor when resting on it (edge state after a
+// pose or a floor move).
+void sc_world_set_rest_height(double metres);
+// The footprint's hull clearance (physical model): the CG's height above the
+// floor or the box top underneath, less hullBelow.
+double sc_world_hull_clearance(const double pos[3], double hullBelow);

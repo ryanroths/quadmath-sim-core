@@ -8,14 +8,20 @@
  *
  *   motor   J dw/dt = Kt (u V - w / Kv) / R - kq w|w|      (KV x effective
  *           voltage, first-order lag, loaded by prop drag torque)
- *   prop    thrust = kt w|w|, reaction torque = -spin kq w|w|
+ *   prop    thrust = kt w|w|, reaction torque on the frame
+ *           = -spin (kq w|w| + J dw/dt): the prop's drag and the rotor's own
+ *           acceleration (owner decision 2026-10-23)
  *   pack    V = OCV(SoC) - I x cell IR, I = bench current x duty / reference
  *           duty, the reference being the hover duty on a full pack that sags
  *           at the bench current
  *
- * kt and kq are fixed by quadmath's thrust and yaw torque at full speed; R by
- * quadmath's loaded-speed fraction; J by quadmath's motor time constant at
- * hover. airframes/air65.json cites where each input comes from.
+ * kt is fixed by the airframe's full thrust tmax at w_full = loadFraction x KV
+ * x vRefCell, kq by kqRatio on that thrust (yaw torque at full speed), R by
+ * loadFraction taken as the static full-throttle point, and J by the motor
+ * time constant tau at hover. airframes/air65.json cites where each input
+ * comes from (for the Air65, tmax carries the thrust coefficient measured in
+ * the owner's bench hover, and loadFraction is that hover's measured ratio;
+ * kqRatio and tau are quadmath's).
  *
  * Frames: quadmath's module frame, X forward, Y left, Z up (QP:3). Body rates
  * in that frame are Betaflight's gyro axes directly: roll + right wing down,
@@ -33,6 +39,10 @@
 #define RPM_PER_RAD_S (60.0 / TWO_PI)
 #define FLOOR_PAD_M 0.01            // QP:90 FLOOR_CLEARANCE_M
 #define DIVERGED_RAD_S 200.0        // PROGRESS.md deliberate change 6
+#define GROUND_SCRUB 7.3            // H:3199, per second (as world.c TUMBLE_DECAY)
+#define FOOTPRINT_POINTS 5
+#define CONTACT_SWEEPS 32
+#define CONTACT_SPIN_CAP 150.0      // rad/s, below the divergence guard (as world.c)
 
 sc_plant_state_t sc_plant;
 
@@ -51,6 +61,7 @@ static const double SPIN_PROPS_IN[SC_MOTOR_COUNT] = { -1, 1, 1, -1 };
 
 // Rigid body and actuators.
 static double omegaMotor[SC_MOTOR_COUNT];   // physical: rotor speed, rad/s, signed
+static double motorAccel[SC_MOTOR_COUNT];   // physical: rotor dw/dt this tick, rad/s^2
 static double spoolOut[SC_MOTOR_COUNT];     // parity: quadmath motor output, signed
 static double thrust[SC_MOTOR_COUNT];       // N, before ground effect
 static double battCharge;                   // parity battery state
@@ -175,6 +186,8 @@ static void publishSensors(void)
     sc_sensors.current_a = sc_plant.amps;
 }
 
+static double restHeightAt(const double q[4]);
+
 // At rest on the floor, level, motors stopped, full pack.
 static void restState(void)
 {
@@ -185,11 +198,17 @@ static void restState(void)
     memset(sc_plant.rpm, 0, sizeof(sc_plant.rpm));
     memset(sc_plant.thrustN, 0, sizeof(sc_plant.thrustN));
     memset(omegaMotor, 0, sizeof(omegaMotor));
+    memset(motorAccel, 0, sizeof(motorAccel));
     memset(spoolOut, 0, sizeof(spoolOut));
     memset(thrust, 0, sizeof(thrust));
+    // The physical model stands on its duct bottoms; quadmath's CG point
+    // stands FLOOR_PAD_M up (QP:90), the same 10 mm for the Air65.
+    static const double level[4] = { 1, 0, 0, 0 };
+    const double rest = restHeightAt(level);
+    sc_world_set_rest_height(rest);
     sc_plant.pos[0] = 0;
     sc_plant.pos[1] = 0;
-    sc_plant.pos[2] = floorZ + FLOOR_PAD_M;
+    sc_plant.pos[2] = floorZ + rest;
     sc_plant.quat[0] = 1;
     sc_plant.quat[1] = sc_plant.quat[2] = sc_plant.quat[3] = 0;
     sc_plant.specificForce[0] = sc_plant.specificForce[1] = 0;
@@ -254,7 +273,9 @@ int sc_plant_configure(const double *block, int count)
         }
         if (m == SC_MODEL_PHYSICAL && !(block[PB_KV] > 0 && block[PB_V_REF_CELL] > 0 && block[PB_LOAD_FRACTION] > 0
                                         && block[PB_LOAD_FRACTION] < 1 && block[PB_KQ_RATIO] > 0
-                                        && block[PB_CAPACITY_MAH] > 0 && block[PB_I_REF] >= 0 && block[PB_CELL_IR] >= 0)) {
+                                        && block[PB_CAPACITY_MAH] > 0 && block[PB_I_REF] >= 0 && block[PB_CELL_IR] >= 0
+                                        && block[PB_DUCT_RADIUS] > 0 && block[PB_HULL_BELOW] > 0
+                                        && block[PB_HULL_ABOVE] > 0)) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -318,6 +339,7 @@ void sc_plant_floor_moved(void)
     if (model == SC_MODEL_REST) {
         sc_plant.pos[2] = sc_world_floor_z() + FLOOR_PAD_M;
     }
+    sc_world_set_rest_height(restHeightAt(sc_plant.quat));
     sc_world_edge_sync(sc_plant.pos);
 }
 
@@ -388,10 +410,12 @@ static void stepPhysical(const double duty[SC_MOTOR_COUNT], double dt)
     const double j = derived[PD_J_ROTOR], ktProp = derived[PD_KT_PROP], kqProp = derived[PD_KQ_PROP];
     const double a = kt / (j * r);
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
-        double w = omegaMotor[i];
+        const double before = omegaMotor[i];
+        double w = before;
         // Back-EMF term implicit (it is the stiff part), prop drag explicit.
         w = (w + dt * (a * duty[i] * volts - kqProp * w * fabs(w) / j)) / (1 + dt * a / kv);
         omegaMotor[i] = w;
+        motorAccel[i] = (w - before) / dt;
         const double t = ktProp * w * fabs(w);
         thrust[i] = w < 0 ? t * blk[PB_REVERSE_SCALE] : t;
         sc_plant.motorOut[i] = w / derived[PD_OMEGA_FULL];
@@ -449,6 +473,293 @@ static bool finite3(const double v[3])
     return isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]);
 }
 
+static double dot3(const double a[3], const double b[3])
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static void cross3(const double a[3], const double b[3], double out[3])
+{
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+// The inverse inertia in the world frame applied to v: R I^-1 R^T v.
+static void invInertiaWorld(const double q[4], const double v[3], double out[3])
+{
+    double vb[3];
+    qRotateInverse(q, v, vb);
+    vb[0] /= derived[PD_IXX];
+    vb[1] /= derived[PD_IYY];
+    vb[2] /= derived[PD_IZZ];
+    qRotate(q, vb, out);
+}
+
+// The velocity change at offset r from the CG (world frame) for an impulse
+// j there: K j = j / m + (I^-1 (r x j)) x r.
+static void contactResponse(const double q[4], const double r[3], const double j[3], double out[3])
+{
+    double rj[3], w[3], wr[3];
+    cross3(r, j, rj);
+    invInertiaWorld(q, rj, w);
+    cross3(w, r, wr);
+    for (int a = 0; a < 3; a++) {
+        out[a] = j[a] / blk[PB_MASS] + wr[a];
+    }
+}
+
+// The impulse j at offset r that changes that point's velocity by e: K j = e,
+// K symmetric positive definite, solved by Cramer's rule.
+static void contactImpulse(const double q[4], const double r[3], const double e[3], double j[3])
+{
+    double k[3][3];
+    for (int c = 0; c < 3; c++) {
+        double unit[3] = { 0, 0, 0 }, col[3];
+        unit[c] = 1;
+        contactResponse(q, r, unit, col);
+        for (int row = 0; row < 3; row++) {
+            k[row][c] = col[row];
+        }
+    }
+    const double det = k[0][0] * (k[1][1] * k[2][2] - k[1][2] * k[2][1])
+                       - k[0][1] * (k[1][0] * k[2][2] - k[1][2] * k[2][0])
+                       + k[0][2] * (k[1][0] * k[2][1] - k[1][1] * k[2][0]);
+    for (int c = 0; c < 3; c++) {
+        double m[3][3];
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < 3; col++) {
+                m[row][col] = col == c ? e[row] : k[row][col];
+            }
+        }
+        j[c] = (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+               / det;
+    }
+}
+
+// The footprint in the body frame: the duct rims on the arm diagonals at the
+// duct bottom, and the canopy top.
+static void footprintBody(double body[FOOTPRINT_POINTS][3])
+{
+    const double reach = (blk[PB_WHEELBASE] * 0.5 + blk[PB_DUCT_RADIUS]) * sqrt(0.5);
+    for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+        body[i][0] = MOTOR_X[i] * reach;
+        body[i][1] = MOTOR_Y[i] * reach;
+        body[i][2] = -blk[PB_HULL_BELOW];
+    }
+    body[4][0] = 0;
+    body[4][1] = 0;
+    body[4][2] = blk[PB_HULL_ABOVE];
+}
+
+// The CG's height above the floor when the lowest footprint point at attitude
+// q touches it (hullBelow when level, hullAbove inverted): the rest height a
+// pose or a floor move judges "on the floor" by. The other models rest their
+// CG point FLOOR_PAD_M up whatever the attitude.
+static double restHeightAt(const double q[4])
+{
+    if (model != SC_MODEL_PHYSICAL) {
+        return FLOOR_PAD_M;
+    }
+    double body[FOOTPRINT_POINTS][3];
+    footprintBody(body);
+    double drop = -INFINITY;
+    for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+        double r[3];
+        qRotate(q, body[k], r);
+        drop = fmax(drop, -r[2]);
+    }
+    return drop;
+}
+
+// Contact through the footprint (owner decision 2026-10-23): four points on
+// the duct rims along the arm diagonals at the duct bottom, and the canopy
+// top. Each point meets the floor and boxes as quadmath's CG point did
+// (world.c, without the floor pad or the spin kick); what the world does to
+// the point becomes a rigid-body response through its lever arm:
+//   - every point is tested on the pose the tick integrated to;
+//   - the CG moves by the largest push out along each axis;
+//   - CONTACT_SWEEPS projected Gauss-Seidel sweeps of impulses at the points
+//     steer each point's velocity toward what the world gave it: along the
+//     contact normal an accumulated push that never goes below zero (a later
+//     sweep can take back what an earlier one over-gave, so four points at
+//     rest share the load without creeping, but nothing pulls), across it the
+//     world's tangential target (its friction). A fixed sweep count keeps it
+//     deterministic.
+// The spin now comes from the lever arms, so the duct-hit spin kick is not
+// applied; the ground scrub (H:3196-3203) and the spin cap are.
+static uint32_t footprintContact(double p[3], double v[3], const double q[4], double om[3], const double p0[3],
+                                 const double q0[4], double dt)
+{
+    double body[FOOTPRINT_POINTS][3];
+    footprintBody(body);
+
+    double omW[3];
+    qRotate(q, om, omW);
+    const double spinBefore = sqrt(dot3(om, om));
+    double rw[FOOTPRINT_POINTS][3], target[FOOTPRINT_POINTS][3], normal[FOOTPRINT_POINTS][3];
+    double slip[FOOTPRINT_POINTS][3];   // unit tangential slip at contact, or zero
+    bool active[FOOTPRINT_POINTS];
+    double pushHi[3] = { 0, 0, 0 }, pushLo[3] = { 0, 0, 0 };
+    uint32_t flags = 0;
+    bool anyFloor = false, anyScrub = false;
+    for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+        active[k] = false;
+        qRotate(q, body[k], rw[k]);
+        double r0[3], wxr[3], pt[3], vt[3], st[3];
+        qRotate(q0, body[k], r0);
+        cross3(omW, rw[k], wxr);
+        for (int a = 0; a < 3; a++) {
+            pt[a] = p[a] + rw[k][a];
+            vt[a] = v[a] + wxr[a];
+            st[a] = p0[a] + r0[a];
+        }
+        const double ptIn[3] = { pt[0], pt[1], pt[2] };
+        const double vtIn[3] = { vt[0], vt[1], vt[2] };
+        bool floorHit = false, scrub = false;
+        const uint32_t f = sc_world_point(pt, vt, st, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE],
+                                          blk[PB_SPIN_SCALE], &floorHit, &scrub);
+        flags |= f;
+        anyFloor = anyFloor || floorHit;
+        anyScrub = anyScrub || scrub;
+        if (!f) {
+            continue;
+        }
+        double dp[3], dv[3];
+        for (int a = 0; a < 3; a++) {
+            dp[a] = pt[a] - ptIn[a];
+            dv[a] = vt[a] - vtIn[a];
+            pushHi[a] = fmax(pushHi[a], dp[a]);
+            pushLo[a] = fmin(pushLo[a], dp[a]);
+        }
+        // The contact normal: the way the point was pushed out, or failing
+        // that (a touch with no push) the way its velocity was turned.
+        double len = sqrt(dot3(dp, dp));
+        const double *dir = dp;
+        if (!(len > 0)) {
+            len = sqrt(dot3(dv, dv));
+            dir = dv;
+        }
+        if (!(len > 0)) {
+            continue;
+        }
+        for (int a = 0; a < 3; a++) {
+            normal[k][a] = dir[a] / len;
+            target[k][a] = vt[a];
+        }
+        // The point's slip along the surface as it arrived: friction only
+        // ever opposes it (with no slip it holds the point, static).
+        const double vin = dot3(vtIn, normal[k]);
+        double sl[3];
+        for (int a = 0; a < 3; a++) {
+            sl[a] = vtIn[a] - vin * normal[k][a];
+        }
+        const double slen = sqrt(dot3(sl, sl));
+        for (int a = 0; a < 3; a++) {
+            slip[k][a] = slen > 1e-9 ? sl[a] / slen : 0;
+        }
+        active[k] = true;
+    }
+    // Opposite pushes on one axis: a quad wedged in a gap narrower than its
+    // footprint stays put (they cancel); a quad whose CG is inside a box (a
+    // pose into the solid) leaves by the larger push.
+    const bool embedded = sc_world_inside(p);
+    for (int a = 0; a < 3; a++) {
+        if (embedded && pushHi[a] > 0 && pushLo[a] < 0) {
+            p[a] += pushHi[a] >= -pushLo[a] ? pushHi[a] : pushLo[a];
+        } else {
+            p[a] += pushHi[a] + pushLo[a];
+        }
+    }
+    double pushed[FOOTPRINT_POINTS] = { 0, 0, 0, 0, 0 };
+    double rubbed[FOOTPRINT_POINTS][3];
+    memset(rubbed, 0, sizeof(rubbed));
+    for (int sweep = 0; sweep < CONTACT_SWEEPS; sweep++) {
+        for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+            if (!active[k]) {
+                continue;
+            }
+            const double *n = normal[k];
+            const double tn = dot3(target[k], n);
+            double wxr[3], vp[3], kn[3], j[3], rj[3], dw[3], e[3];
+            // Across the normal first: the tangential target, by an impulse in
+            // the tangent plane.
+            cross3(omW, rw[k], wxr);
+            for (int a = 0; a < 3; a++) {
+                vp[a] = v[a] + wxr[a];
+            }
+            double vn = dot3(vp, n);
+            for (int a = 0; a < 3; a++) {
+                e[a] = (target[k][a] - tn * n[a]) - (vp[a] - vn * n[a]);
+            }
+            if (dot3(e, e) > 0) {
+                contactImpulse(q, rw[k], e, j);
+                const double jn = dot3(j, n);
+                for (int a = 0; a < 3; a++) {
+                    j[a] -= jn * n[a];
+                }
+                // Accumulated friction, kept opposing the arrival slip: it
+                // never pushes the point along its own slip (that would add
+                // energy through the lever arm).
+                if (dot3(slip[k], slip[k]) > 0) {
+                    double total[3];
+                    for (int a = 0; a < 3; a++) {
+                        total[a] = rubbed[k][a] + j[a];
+                    }
+                    const double along = fmin(0, dot3(total, slip[k]));
+                    for (int a = 0; a < 3; a++) {
+                        total[a] = along * slip[k][a];
+                        j[a] = total[a] - rubbed[k][a];
+                        rubbed[k][a] = total[a];
+                    }
+                }
+                cross3(rw[k], j, rj);
+                invInertiaWorld(q, rj, dw);
+                for (int a = 0; a < 3; a++) {
+                    v[a] += j[a] / blk[PB_MASS];
+                    omW[a] += dw[a];
+                }
+            }
+            // Then along it: the accumulated push, clamped at zero.
+            cross3(omW, rw[k], wxr);
+            for (int a = 0; a < 3; a++) {
+                vp[a] = v[a] + wxr[a];
+            }
+            vn = dot3(vp, n);
+            contactResponse(q, rw[k], n, kn);
+            const double total = fmax(0, pushed[k] + (tn - vn) / dot3(kn, n));
+            const double dl = total - pushed[k];
+            pushed[k] = total;
+            for (int a = 0; a < 3; a++) {
+                j[a] = dl * n[a];
+            }
+            cross3(rw[k], j, rj);
+            invInertiaWorld(q, rj, dw);
+            for (int a = 0; a < 3; a++) {
+                v[a] += j[a] / blk[PB_MASS];
+                omW[a] += dw[a];
+            }
+        }
+    }
+    qRotateInverse(q, omW, om);
+    const double spin = sqrt(dot3(om, om));
+    const double cap = fmax(CONTACT_SPIN_CAP, spinBefore);
+    if (spin > cap) {
+        for (int a = 0; a < 3; a++) {
+            om[a] *= cap / spin;        // a crash is a crash, never the divergence fault
+        }
+    }
+    if (anyScrub) {
+        const double k = exp(-dt * GROUND_SCRUB);
+        om[0] *= k;
+        om[1] *= k;
+        om[2] *= k;
+    }
+    sc_world_after_points(p, anyFloor);
+    return flags;
+}
+
 void sc_plant_step(double dt)
 {
     if (model == SC_MODEL_REST) {
@@ -459,6 +770,7 @@ void sc_plant_step(double dt)
         memcpy(sc_plant.quat, poseNext + 3, 4 * sizeof(double));
         memcpy(sc_plant.vel, poseNext + 7, 3 * sizeof(double));
         posePending = false;
+        sc_world_set_rest_height(restHeightAt(sc_plant.quat));
         sc_world_pose_sync(sc_plant.pos);
     }
     double duty[SC_MOTOR_COUNT];
@@ -474,6 +786,9 @@ void sc_plant_step(double dt)
     }
 
     double *p = sc_plant.pos, *v = sc_plant.vel, *q = sc_plant.quat, *om = sc_plant.omega;
+    // The pose at the start of the tick, for where each footprint point was.
+    const double pStart[3] = { p[0], p[1], p[2] };
+    const double qStart[4] = { q[0], q[1], q[2], q[3] };
     const double m = blk[PB_MASS];
     const double g = blk[PB_GRAVITY];
     const double arm = derived[PD_ARM];
@@ -481,7 +796,8 @@ void sc_plant_step(double dt)
     // Ground effect from the position at the end of the last tick (QP:720-727);
     // not while 3D pulls down. Thrust and roll/pitch torque only.
     double ge = 1;
-    const double clr = sc_world_clearance_at(p);
+    const double clr = model == SC_MODEL_PHYSICAL ? sc_world_hull_clearance(p, blk[PB_HULL_BELOW])
+                                                  : sc_world_clearance_at(p);
     sc_plant.groundClearance = clr;
     if (blk[PB_GROUND_K] > 0 && !(mode3d && collective < 0)) {
         const double ceil = blk[PB_PROP_DIAMETER];
@@ -501,8 +817,10 @@ void sc_plant_step(double dt)
         tq[1] -= MOTOR_X[i] * arm * t;
         double yaw;
         if (model == SC_MODEL_PHYSICAL) {
+            // The motor's torque on its rotor is the prop's drag plus what
+            // accelerates the rotor; the frame takes the opposite.
             const double w = omegaMotor[i];
-            yaw = -spin(i) * derived[PD_KQ_PROP] * w * fabs(w);
+            yaw = -spin(i) * (derived[PD_KQ_PROP] * w * fabs(w) + derived[PD_J_ROTOR] * motorAccel[i]);
         } else {
             yaw = -spin(i) * blk[PB_KQ_RATIO] * thrust[i] * (blk[PB_WHEELBASE] * 0.5);
         }
@@ -516,8 +834,8 @@ void sc_plant_step(double dt)
     // Euler's equations with the gyroscopic term. The parity model keeps
     // quadmath's explicit step (QP:744-748). The physical model takes the
     // implicit midpoint (deliberate change, PROGRESS.md M4): the explicit step
-    // adds energy to any tumble, x1e5 in 1 s at 147 rad/s of yaw, and with
-    // quadratic-only drag nothing takes it out again. Six fixed-point
+    // adds energy to any tumble, x1e5 in 1 s at 147 rad/s of yaw, more than
+    // any damping takes out again. Six fixed-point
     // iterations hold energy and |L| to 1e-6 over 1 s at 150 rad/s.
     const double inertia[3] = { derived[PD_IXX], derived[PD_IYY], derived[PD_IZZ] };
     const double om0[3] = { om[0], om[1], om[2] };
@@ -568,7 +886,12 @@ void sc_plant_step(double dt)
 
     // Floor, boxes and triggers (H:3150-3204), then what an accelerometer reads:
     // the velocity change over the tick less gravity, in the body frame.
-    sc_plant.contactFlags = sc_world_contact(p, v, om, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE], blk[PB_SPIN_SCALE]);
+    if (model == SC_MODEL_PHYSICAL) {
+        sc_plant.contactFlags = footprintContact(p, v, q, om, pStart, qStart, dt);
+    } else {
+        sc_plant.contactFlags = sc_world_contact(p, v, om, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE],
+                                                 blk[PB_SPIN_SCALE]);
+    }
     const double sfWorld[3] = { (v[0] - vBefore[0]) / dt, (v[1] - vBefore[1]) / dt, (v[2] - vBefore[2]) / dt + g };
     qRotateInverse(q, sfWorld, sc_plant.specificForce);
 

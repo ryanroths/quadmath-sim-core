@@ -49,6 +49,7 @@ const out = {
   },
   batteryFromBuild: pack,
   floatiness: { F, cdMul, spoolTauMul: 0.73, spoolDownMul: 1.40 },
+  aeroCoeffs: qp.aeroCoeffs({ propDiameter: phys.preset.propDiameter, aeroBMul: 1.85 - 0.85 * F }),
   drag: {
     userDragMul,
     cdAFront: 0.0054 * area * cdMul * userDragMul,

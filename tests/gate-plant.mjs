@@ -21,6 +21,11 @@
 //       rest at 500 ms, no divergence
 //   X2  F3: achieved full-stick rate within +-1.0% of Betaflight's setpoint
 //   X3  feel bands against WebFPV's whoop65 flying the same diff and inputs;
+//       hover stick against the owner's Air65 bench hover instead
+//       (tests/reference/air65-hover.json, 2026-10-23): Betaflight's
+//       rcCommand throttle at steady hover, as its blackbox logs it, flown
+//       with the log header's throttle path on top of the class diff, within
+//       +-0.02 of the measured 0.371;
 //       a miss fails unless the owner signed it off in tests/x3-signoff.json
 //       (PROGRESS.md: "a band is never widened")
 //
@@ -31,6 +36,7 @@ import { readFile } from 'node:fs/promises';
 import { SimCore, sticksToChannels as ch } from '../src/js/sim-core.js';
 import * as feel from './lib/feel.mjs';
 import { loadWebfpvModule } from './lib/webfpv.mjs';
+import { benchThrottlePath as benchThrottlePathOf, withSettings } from './lib/bench-hover.mjs';
 import { QuadPhysics, aeroCoeffs } from './reference/quadmath-de9b15d/quadphysics.js';
 import { stepBattery, DEFAULT_WHOOP } from './reference/quadmath-de9b15d/sim-whoop.js';
 import { batteryFromBuild, BUILD_PRESETS } from './reference/quadmath-de9b15d/sim-build.js';
@@ -40,6 +46,14 @@ const module = await WebAssembly.compile(await readFile(new URL('dist/sim-core.w
 const air65 = JSON.parse(await readFile(new URL('airframes/air65.json', root), 'utf8'));
 const diff = await readFile(new URL('configs/65mm-air65-ryfly-1219s.diff', root), 'utf8');
 const signoff = JSON.parse(await readFile(new URL('tests/x3-signoff.json', root), 'utf8'));
+// The owner's bench hover on the Air65 with blackbox (2026-10-23): the X3
+// hover-stick reference, in place of WebFPV.
+const bench = JSON.parse(await readFile(new URL('tests/reference/air65-hover.json', root), 'utf8'));
+// The log header's throttle path on top of the class diff, for the
+// hover-stick comparison (tests/lib/bench-hover.mjs). Anything the header
+// does not record (min_check) stays at Betaflight's default on both.
+const benchThrottlePath = benchThrottlePathOf(bench.header);
+const benchDiff = withSettings(diff, benchThrottlePath);
 
 const failures = [];
 function check(ok, what) {
@@ -159,6 +173,7 @@ function parityModel(quadCfg, { battery }) {
       ocv: v([3.30, 3.50, 3.60, 3.75, 3.87, 4.05, 4.20]),
       sagDrop: v(pack.sagDrop), hoverSeconds: v(battery ? pack.hoverS : 0), sagScale: v(1),
       bounceScale: v(1), crashScale: v(1), spinScale: v(1),
+      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0),
     },
   };
 }
@@ -439,6 +454,7 @@ console.log('\n== F9 3D and crash flip');
 
 // ---------------------------------------------------------------------------
 const ours = await feel.simCoreSim(SimCore, module, { diff, airframe: air65 });
+const benchSim = await feel.simCoreSim(SimCore, module, { diff: benchDiff, airframe: air65, name: 'sim-core, bench throttle path' });
 const ref = feel.webfpvSim(await loadWebfpvModule(), diff, { airframe: 1, gravity: 1, air: 1, kv: 1 }, { lenScale: feel.WEBFPV_WHOOP_LEN_SCALE, name: 'WebFPV whoop65' });
 
 console.log('\n== X2 / F3 rate tracking: throttle 0.35, full stick 1.5 s, mean of the last 0.3 s (+-1.0%)');
@@ -450,14 +466,24 @@ for (const [a, name] of ['roll', 'pitch', 'yaw'].entries()) {
 
 console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65mm-air65-ryfly-1219s), same channel inputs, gravity/air/kv 1.0');
 {
-  const run = (sim) => {
+  // Betaflight's throttle rcCommand on the last tick of a hover trim (its
+  // last trial flight is at the trimmed stick), 0..1 as the blackbox field
+  // rcCommand[3] (blackbox/blackbox.c:1149) reads: min_check and the
+  // throttle curve applied, before the mixer. sim-core only.
+  const rcHover = (sim) => {
     const hover = feel.hoverTrim(sim);
+    return { ...hover, rc: sim.core ? (sim.core.fc.rcCommand[3] - 1000) / 1000 : null };
+  };
+  const run = (sim) => {
+    const hover = rcHover(sim);
     const thr = hover.throttle;
     return {
       hover, roll: feel.step(sim, thr, 0), pitch: feel.step(sim, thr, 1), yaw: feel.step(sim, thr, 2),
       chirp: feel.chirp(sim, thr), punch: feel.punch(sim, thr), hold: feel.rollThenHold(sim, thr), hands: feel.handsOff(sim, thr),
     };
   };
+  const b = rcHover(benchSim);
+  const benchCfgOk = benchSim.config.rejected === 0 && benchSim.config.errors === 0;
   const o = run(ours);
   const r = run(ref);
   const rows = [];
@@ -466,7 +492,10 @@ console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65
   const ratio = (k) => (ov, rv) => ov !== null && rv !== null && ov <= rv * k;
   const bound = (lim) => (ov) => ov !== null && ov <= lim;
   const add = (key, band, ov, rv, test) => rows.push({ key, band, ov, rv, pass: ov !== null && ov !== undefined && test(ov, rv) });
-  add('hover stick', '+-0.03', o.hover.quantum, r.hover.quantum, abs(0.03));
+  // Hover stick against the Air65's own bench hover (owner decision
+  // 2026-10-23): rcCommand throttle, the bench throttle path, +-0.02.
+  add('hover stick (Air65 bench)', '+-0.02', benchCfgOk && !b.diverged ? b.rc : null, bench.measured.hover_stick, abs(0.02));
+  rows.at(-1).refName = 'Air65';
   // The plan restricts rise, overshoot and stop bounce to roll and pitch;
   // lag at 50% and settle have no axis restriction (PROGRESS.md band table).
   for (const ax of ['roll', 'pitch']) {
@@ -494,10 +523,11 @@ console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65
   for (const row of rows) {
     const signed = signoff.signedOff && signoff.signedOff[row.key];
     const verdict = row.pass ? 'pass' : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date})` : 'MISS';
-    console.log(`   ${row.key.padEnd(30)} sim-core ${f(row.ov, 3).padStart(9)}  WebFPV ${f(row.rv, 3).padStart(9)}  band ${row.band.padEnd(18)} ${verdict}`);
+    console.log(`   ${row.key.padEnd(30)} sim-core ${f(row.ov, 3).padStart(9)}  ${(row.refName || 'WebFPV').padEnd(6)} ${f(row.rv, 3).padStart(9)}  band ${row.band.padEnd(18)} ${verdict}`);
     if (!row.pass && !signed) failures.push(`X3 ${row.key}`);
   }
-  console.log(`   not banded: yaw overshoot sim-core ${f(o.yaw.overshootPct, 2)} % vs WebFPV ${f(r.yaw.overshootPct, 2)} %; yaw bounce ${f(o.yaw.bouncePct, 2)} % vs ${f(r.yaw.bouncePct, 2)} %; hover residual vz ${f(o.hover.vzResidual, 3)} vs ${f(r.hover.vzResidual, 3)} m/s`);
+  console.log(`   hover stick, Air65 bench row: ${benchThrottlePath.join(', ')} on the class diff (${benchSim.config.applied} lines applied, ${benchSim.config.rejected} rejected, ${benchSim.config.errors} errors); channel ${f(b.quantum, 3)}, rcCommand ${f(b.rc, 3)}, vz residual ${f(b.vzResidual, 3)} m/s; measured rcCommand ${f(bench.measured.hover_stick, 3)} (${bench.source})`);
+  console.log(`   not banded: yaw overshoot sim-core ${f(o.yaw.overshootPct, 2)} % vs WebFPV ${f(r.yaw.overshootPct, 2)} %; yaw bounce ${f(o.yaw.bouncePct, 2)} % vs ${f(r.yaw.bouncePct, 2)} %; hover residual vz ${f(o.hover.vzResidual, 3)} vs ${f(r.hover.vzResidual, 3)} m/s; hover stick on the class diff alone: sim-core channel ${f(o.hover.quantum, 3)} (rcCommand ${f(o.hover.rc, 3)}), WebFPV whoop65 channel ${f(r.hover.quantum, 3)} (the band's reference until 2026-10-23)`);
 }
 
 console.log(`\n${failures.length ? `gate-plant: FAIL (${failures.length}): ${failures.join('; ')}` : 'gate-plant: PASS'}`);

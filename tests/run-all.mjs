@@ -32,6 +32,7 @@ const TESTS = [
   ['D4 reset vs fresh load', 'tests/node/reset-vs-fresh.test.mjs'],
   ['X1 black box vs WebFPV (F1 F2 F4)', 'tests/node/blackbox-webfpv.test.mjs'],
   ['M4 plant and world API: contact, triggers, pose, pack, argument checks', 'tests/node/plant-world.test.mjs'],
+  ['M4 bench hover from a blackbox log (tools/hover-from-log.mjs, synthetic frames)', 'tests/node/hover-from-log.test.mjs'],
   ['M4 plant: P1-P5, F6, F9, X2/F3, X3 feel bands vs WebFPV', 'tests/gate-plant.mjs'],
   ['D2 Node vs headless Chrome, console clean', 'tests/browser/node-vs-chrome.test.mjs'],
 ];

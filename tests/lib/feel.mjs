@@ -66,11 +66,12 @@ export function webfpvSim(module, diff, scenario, { lenScale = 1, name = 'WebFPV
 // is) on a 4 ms RX-grid boundary, so frame timing matches WebFPV's.
 export async function simCoreSim(SimCore, module, { diff, airframe, floorZ = -100, name = 'sim-core' }) {
   const core = await SimCore.load(module, { trace: false });
-  core.configure({ diff, plant: airframe, world: { floorZ } });
+  const report = core.configure({ diff, plant: airframe, world: { floorZ } });
   const channels = (c, arm = 2000) => [1500 + q500(c.r), 1500 - q500(c.p), 1500 + q500(c.y), 1000 + q1000(c.t), arm];
   return {
     name,
     core,
+    config: report,
     fly(stick, durMs, onStep) {
       core.reinit({ freshPack: true });
       core.input(channels({ t: 0 }));

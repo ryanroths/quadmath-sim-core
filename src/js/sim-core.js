@@ -91,8 +91,13 @@ export const PLANT_FIELDS = Object.freeze([
   'cells', 'capacityMah', 'cellIR', 'iRef', 'ocv',
   'sagDrop', 'hoverSeconds', 'sagScale',
   'bounceScale', 'crashScale', 'spinScale',
+  'ductOuterRadius', 'hullBelow', 'hullAbove',
 ]);
-const PLANT_LEN = 40;
+const PLANT_LEN = 43;
+const PB_WHEELBASE = 2;
+const PB_DUCT_RADIUS = 40;
+const PB_HULL_BELOW = 41;
+const PB_HULL_ABOVE = 42;
 const PLANT_MODELS = Object.freeze({ rest: 0, physical: 1, parity: 2 });
 const PLANT_DERIVED = Object.freeze([
   'kvRad', 'ktMotor', 'omegaFull', 'ktProp', 'kqProp', 'rWinding', 'jRotor', 'omegaHover', 'dutyHover',
@@ -713,6 +718,19 @@ export class SimCore {
 
   // The plant's derived motor and body constants (src/plant/plant.h), for
   // reports; zero for the rest plant.
+  // The physical model's five contact points in the module frame (m): the four
+  // duct rims (motor order) and the canopy top, for hosts and tests. Null on
+  // the rest and parity models, which touch with the CG only.
+  get footprint() {
+    if (!this.plant || this.plant[0] !== PLANT_MODELS.physical) return null;
+    const b = this.plant;
+    const reach = (b[PB_WHEELBASE] * 0.5 + b[PB_DUCT_RADIUS]) * Math.SQRT1_2;
+    const body = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([x, y]) => [x * reach, y * reach, -b[PB_HULL_BELOW]]);
+    body.push([0, 0, b[PB_HULL_ABOVE]]);
+    const { pos, quat } = this.state;
+    return body.map((r) => rotate(quat, r).map((v, k) => v + pos[k]));
+  }
+
   get plantDerived() {
     const e = this.flight;
     const d = new Float64Array(e.memory.buffer, e.sc_plant_derived_ptr(), e.sc_plant_derived_len());
@@ -825,6 +843,15 @@ export class SimCore {
 
 function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+// v' = q v q* for q = (w, x, y, z) body to world.
+function rotate(q, v) {
+  const [w, x, y, z] = q;
+  const tx = 2 * (y * v[2] - z * v[1]);
+  const ty = 2 * (z * v[0] - x * v[2]);
+  const tz = 2 * (x * v[1] - y * v[0]);
+  return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)];
 }
 
 function vec3(v, what) {
