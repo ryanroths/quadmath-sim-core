@@ -47,9 +47,13 @@
  *     plane), so coplanar split walls are one surface, and a face touched
  *     within CONTACT_GAP_US is the same contact.
  *   - a box whose bottom is within ON_FACE_WU of the floor stands on it: it
- *     has no bottom face and reaches down to the floor plane, so a point on
- *     the floor under one lifted more than PAST_WU is still at it (it slid
- *     under the side, 16 mm in 3 s, when only the bottom face went)
+ *     has no bottom face and, for a footprint point, reaches down to the
+ *     floor plane, so a point on the floor under one lifted more than
+ *     PAST_WU is still at it (it slid under the side, 16 mm in 3 s, when
+ *     only the bottom face went). This and the next two rules are the
+ *     footprint's: quadmath's CG point (the parity model's sc_world_contact)
+ *     resolves boxes as it did, bit for bit (plant-world 39; P2 has no boxes
+ *     and P5 is the clearance query, so the gate cannot see it)
  *   - an inner face the point crossed this tick where the solid already was
  *     (where its path met the plane, other boxes all round it) ranks after
  *     the other inner faces: the point came in elsewhere, so that face is no
@@ -374,14 +378,15 @@ static bool grounded(const scBox_t *b, double floorY)
     return b->min[1] <= floorY + ON_FACE_WU;
 }
 
-// Whether a box is within PAST_WU of the point on every axis. A box standing
-// on the floor reaches down to the floor plane: a point on the floor under
-// one lifted up to ON_FACE_WU is at it.
-static bool nearBox(const scBox_t *b, const double w[3], double floorY)
+// Whether a box is within PAST_WU of the point on every axis. reach (a
+// footprint point): a box standing on the floor reaches down to the floor
+// plane, so a point on the floor under one lifted up to ON_FACE_WU is at it.
+// quadmath's CG point (the parity model) keeps the box's own bounds.
+static bool nearBox(const scBox_t *b, const double w[3], double floorY, bool reach)
 {
     return w[0] >= b->min[0] - PAST_WU && w[0] <= b->max[0] + PAST_WU && w[2] >= b->min[2] - PAST_WU
            && w[2] <= b->max[2] + PAST_WU && w[1] <= b->max[1] + PAST_WU
-           && (w[1] >= b->min[1] - PAST_WU || (grounded(b, floorY) && w[1] >= floorY - PAST_WU));
+           && (w[1] >= b->min[1] - PAST_WU || (reach && grounded(b, floorY) && w[1] >= floorY - PAST_WU));
 }
 
 // Whether the point is inside the union of the boxes with ON_FACE_WU to spare
@@ -527,7 +532,7 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             const scBox_t *b = &boxes[i];
             // Within PAST_WU: a point nanometres off a slab that meets a wall
             // must still find the slab's top or bottom.
-            if (!nearBox(b, cp, floorY)) {
+            if (!nearBox(b, cp, floorY, !pad)) {
                 continue;
             }
             anyNear = true;
@@ -535,7 +540,7 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             // Began the tick deep inside (a pose): leave through a surface.
             bool began = true;
             if (forceBegan) {
-                began = nearBox(b, start, floorY);
+                began = nearBox(b, start, floorY, !pad);
             } else {
                 for (int a = 0; a < 3 && began; a++) {
                     began = start[a] > b->min[a] + ON_FACE_WU && start[a] < b->max[a] - ON_FACE_WU;
@@ -592,10 +597,12 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
                             continue;           // farther than the point came in this tick
                         }
                         inner = covered(i, cp, ax, side, plane);
-                        if (inner && depth > fmax(0, travel) + FACE_EPS) {
+                        // Footprint points only (header); quadmath's CG point
+                        // (pad, the parity model) keeps the rules it had.
+                        if (!pad && inner && depth > fmax(0, travel) + FACE_EPS) {
                             continue;           // a seam it did not come through: no slack
                         }
-                        crossedIn = inner && crossedInside(i, start, tickPos, ax, side, plane);
+                        crossedIn = !pad && inner && crossedInside(i, start, tickPos, ax, side, plane);
                     }
                     // Top first, then surfaces, then inner faces, those it
                     // crossed inside the solid last; then depth.
