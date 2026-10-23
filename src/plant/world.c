@@ -83,12 +83,23 @@
  *     swung over it onto the shelf (12 mm of edge inside the hull); set down
  *     level with its CG 10 mm behind a table edge, it tipped over the edge
  *     with the edge 9 mm into its body
+ *   - the hull meets solids, not box pieces: boxes that meet or overlap
+ *     along one axis with the same extent on the other two (a wall, table or
+ *     shelf in pieces) are the one box they form. Piece by piece a seam was a
+ *     face: a sliver of the far piece across a split table's seam pushed the
+ *     quad up to 5 mm sideways in a tick with a phantom contact and a roll
+ *     kick, and a split shelf held its edge 2.2 um inside the hull. Solids,
+ *     and equally deep hull contacts, go in order of position, not the
+ *     order the map lists the boxes in: the contacts are taken in order in
+ *     plant.c's sweeps, and swapping two pieces in the list moved the quad
+ *     44 um
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
  *
  * This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
  */
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sc.h"
@@ -118,6 +129,7 @@ typedef struct {
 
 static scBox_t boxes[SC_WORLD_BOX_CAP];
 static int boxCount;
+static bool solidsStale = true;     // the footprint hull's solids need building (boxes changed)
 static scBox_t triggers[SC_WORLD_TRIGGER_CAP];
 static bool triggerInside[SC_WORLD_TRIGGER_CAP];
 static int triggerCount;
@@ -170,6 +182,7 @@ static bool contains(const scBox_t *b, const double w[3])
 void sc_world_reset(void)
 {
     boxCount = 0;
+    solidsStale = true;
     triggerCount = 0;
     floorZ = 0;
     onFloor = true;
@@ -203,6 +216,7 @@ int sc_world_add_box(const int32_t um[6], int kind, int id)
     boxFromUm(um, &boxes[boxCount]);
     boxes[boxCount].kind = kind;
     boxes[boxCount].id = id;
+    solidsStale = true;
     return boxCount++;
 }
 
@@ -795,6 +809,152 @@ typedef struct {
 
 static const int HULL_EDGES[8][2] = { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 }, { 0, 4 }, { 1, 4 }, { 2, 4 }, { 3, 4 } };
 
+// The hull meets solids, not box pieces: boxes that meet or overlap along
+// one axis (within PAST_WU) with the same extent on the other two (a wall,
+// table or shelf in pieces) are one solid, the box they form, so a seam is
+// neither a face nor a way out. Per piece, a sliver of the far piece across a
+// split table's seam pushed the quad sideways off the seam with a roll kick,
+// and each piece held its own end of the edge. Built when the boxes change:
+// merged along x, then y, then z, each in order of position, until a round
+// merges nothing, so the solids, their order and the order of each one's
+// pieces follow where the boxes are, not the order the map lists them in
+// (the order of the hull's contacts is the order of plant.c's sweeps).
+static scBox_t solids[SC_WORLD_BOX_CAP];   // indexed by the solid's first box; extents only
+static int solidOf[SC_WORLD_BOX_CAP];      // the solid a box is part of
+static int solidFirst[SC_WORLD_BOX_CAP];   // a solid's first piece; pieceNext links the rest
+static int pieceNext[SC_WORLD_BOX_CAP];
+static int solidOrder[SC_WORLD_BOX_CAP];   // the solids, in order of position
+static int pieceOrder[SC_WORLD_BOX_CAP];
+static int solidCount;
+static int mergeAx;
+
+// Extents a before b by position: min corner, then max corner, x y z.
+static int byPosition(const scBox_t *a, const scBox_t *b)
+{
+    for (int k = 0; k < 3; k++) {
+        if (a->min[k] != b->min[k]) {
+            return a->min[k] < b->min[k] ? -1 : 1;
+        }
+    }
+    for (int k = 0; k < 3; k++) {
+        if (a->max[k] != b->max[k]) {
+            return a->max[k] < b->max[k] ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+static int solidsByPosition(const void *pa, const void *pb)
+{
+    const int i = *(const int *)pa, j = *(const int *)pb;
+    const int c = byPosition(&solids[i], &solids[j]);
+    return c ? c : (i > j) - (i < j);
+}
+
+static int piecesByPosition(const void *pa, const void *pb)
+{
+    const int i = *(const int *)pa, j = *(const int *)pb;
+    const int c = byPosition(&boxes[i], &boxes[j]);
+    return c ? c : (i > j) - (i < j);
+}
+
+// For a merge along mergeAx: by the extent on the other two axes, then along it.
+static int solidsByCross(const void *pa, const void *pb)
+{
+    const int i = *(const int *)pa, j = *(const int *)pb;
+    const scBox_t *a = &solids[i], *b = &solids[j];
+    const int t0 = (mergeAx + 1) % 3, t1 = (mergeAx + 2) % 3;
+    const double ka[6] = { a->min[t0], a->max[t0], a->min[t1], a->max[t1], a->min[mergeAx], a->max[mergeAx] };
+    const double kb[6] = { b->min[t0], b->max[t0], b->min[t1], b->max[t1], b->min[mergeAx], b->max[mergeAx] };
+    for (int k = 0; k < 6; k++) {
+        if (ka[k] != kb[k]) {
+            return ka[k] < kb[k] ? -1 : 1;
+        }
+    }
+    return (i > j) - (i < j);
+}
+
+static void buildSolids(void)
+{
+    for (int j = 0; j < boxCount; j++) {
+        solids[j] = boxes[j];
+        solidOf[j] = j;
+    }
+    for (bool merged = true; merged;) {
+        merged = false;
+        for (mergeAx = 0; mergeAx < 3; mergeAx++) {
+            int n = 0;
+            for (int j = 0; j < boxCount; j++) {
+                if (solidOf[j] == j) {
+                    solidOrder[n++] = j;
+                }
+            }
+            qsort(solidOrder, n, sizeof(int), solidsByCross);
+            const int t0 = (mergeAx + 1) % 3, t1 = (mergeAx + 2) % 3;
+            for (int k = 0; k < n;) {
+                scBox_t *s = &solids[solidOrder[k]];
+                int m = k + 1;
+                for (; m < n; m++) {
+                    const scBox_t *o = &solids[solidOrder[m]];
+                    if (o->min[t0] != s->min[t0] || o->max[t0] != s->max[t0] || o->min[t1] != s->min[t1]
+                        || o->max[t1] != s->max[t1] || o->min[mergeAx] > s->max[mergeAx] + PAST_WU) {
+                        break;
+                    }
+                    s->max[mergeAx] = fmax(s->max[mergeAx], o->max[mergeAx]);
+                    solidOf[solidOrder[m]] = solidOrder[k];
+                    merged = true;
+                }
+                k = m;
+            }
+        }
+    }
+    solidCount = 0;
+    for (int j = 0; j < boxCount; j++) {
+        int r = j;
+        while (solidOf[r] != r) {
+            r = solidOf[r];
+        }
+        solidOf[j] = r;
+        if (r == j) {
+            solidOrder[solidCount++] = j;
+            solidFirst[j] = -1;
+        }
+        pieceOrder[j] = j;
+    }
+    qsort(solidOrder, solidCount, sizeof(int), solidsByPosition);
+    qsort(pieceOrder, boxCount, sizeof(int), piecesByPosition);
+    for (int k = boxCount - 1; k >= 0; k--) {
+        const int j = pieceOrder[k];
+        pieceNext[j] = solidFirst[solidOf[j]];
+        solidFirst[solidOf[j]] = j;
+    }
+    solidsStale = false;
+}
+
+// The piece of solid s whose face (axis ax, side) is the solid's there and
+// holds world point w (within PAST_WU along the face), the first by position:
+// the box a hull contact on that face is reported on.
+static int pieceAt(int s, int ax, int side, const double w[3])
+{
+    const double plane = side > 0 ? solids[s].max[ax] : solids[s].min[ax];
+    const int t0 = (ax + 1) % 3, t1 = (ax + 2) % 3;
+    int onPlane = -1;
+    for (int j = solidFirst[s]; j >= 0; j = pieceNext[j]) {
+        const scBox_t *b = &boxes[j];
+        if ((side > 0 ? b->max[ax] : b->min[ax]) != plane) {
+            continue;
+        }
+        if (w[t0] >= b->min[t0] - PAST_WU && w[t0] <= b->max[t0] + PAST_WU && w[t1] >= b->min[t1] - PAST_WU
+            && w[t1] <= b->max[t1] + PAST_WU) {
+            return j;
+        }
+        if (onPlane < 0) {
+            onPlane = j;
+        }
+    }
+    return onPlane >= 0 ? onPlane : solidFirst[s];
+}
+
 static void vcross(const double a[3], const double b[3], double out[3])
 {
     out[0] = a[1] * b[2] - a[2] * b[1];
@@ -1009,12 +1169,16 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
     if (!boxCount) {
         return 0;
     }
+    if (solidsStale) {
+        buildSolids();
+    }
     scHull_t h, h0;
     bool start0 = false;
     hullAt(end, &h);
     int count = 0;
-    for (int i = 0; i < boxCount; i++) {
-        const scBox_t *b = &boxes[i];
+    for (int o = 0; o < solidCount; o++) {
+        const int i = solidOrder[o];
+        const scBox_t *b = &solids[i];
         bool apart = false;
         for (int k = 0; k < 3 && !apart; k++) {
             apart = h.hi[k] <= b->min[k] + FACE_EPS || h.lo[k] >= b->max[k] - FACE_EPS;
@@ -1053,9 +1217,11 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         if (!points) {
             continue;
         }
-        // The deepest max, in box order among equals.
+        // The deepest max; among equals, in order of position (the order of
+        // the solids here), not the map's order. Compared as stored, so equal
+        // depths are equal.
         int at = count;
-        while (at > 0 && out[at - 1].depth * WS < depth) {
+        while (at > 0 && out[at - 1].depth < depth / WS) {
             at--;
         }
         if (at >= max) {
@@ -1076,10 +1242,11 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         hc->normal[1] = -n[0];
         hc->normal[2] = n[1];
         hc->depth = depth / WS;
-        hc->box = i;
-        // Keyed by the box face the hull leaves by: the one most along n.
+        // Keyed by the box face the hull leaves by: the one most along n, on
+        // the piece there.
         hc->ax = fabs(n[0]) >= fabs(n[1]) && fabs(n[0]) >= fabs(n[2]) ? 0 : fabs(n[1]) >= fabs(n[2]) ? 1 : 2;
         hc->side = n[hc->ax] > 0 ? 1 : -1;
+        hc->box = pieceAt(i, hc->ax, hc->side, held[0]);
         // Pushed out along that face's axis, as a point is, as far as clears
         // the overlap along n.
         double push[3] = { 0, 0, 0 };
