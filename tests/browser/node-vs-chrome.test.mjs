@@ -2,9 +2,8 @@
 // RPM filter on and off, 3D off and on) gives the same trace hash in Node and
 // in headless Chrome, and the harness page logs zero console errors.
 // Chrome also runs two scenarios with a jittered 144 Hz advance() cadence,
-// which must match the exact-tick Node hash (D3 in the browser). On the M3
-// rest plant the RPM filter on/off scenarios differ only in Betaflight's
-// filter-enabled flag; the filter path itself is compared once M4 feeds it.
+// which must match the exact-tick Node hash (D3 in the browser). 65mm flies
+// the Air65 plant, so the plant and the RPM filter path are compared too.
 //
 //   node tests/browser/node-vs-chrome.test.mjs
 //
@@ -13,13 +12,12 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { SimCore } from '../../src/js/sim-core.js';
-import { CLASS_DIFFS, matrix, runScenario } from '../lib/scenarios.mjs';
+import { loadPresets, matrix, runScenario } from '../lib/scenarios.mjs';
 import { launch, serve } from './chrome.mjs';
 
 const rootUrl = new URL('../../', import.meta.url);
 const module = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', rootUrl)));
-const presets = {};
-for (const [name, path] of Object.entries(CLASS_DIFFS)) presets[name] = await readFile(new URL(path, rootUrl), 'utf8');
+const presets = await loadPresets((path) => readFile(new URL(path, rootUrl), 'utf8'));
 
 const node = {};
 for (const sc of matrix()) node[sc.name] = (await runScenario(SimCore, module, presets[sc.preset], sc)).hash;

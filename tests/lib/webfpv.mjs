@@ -57,6 +57,36 @@ export class WebFpv {
     if (e.sim_reset() !== 0) throw new Error('WebFPV sim_reset');
   }
 
+  // Modes that survive sim_reset (sim_abi.h:369-472): airframe 0 five-inch,
+  // 1 whoop65; gravity, air and motor kv scales. Then a fresh reset.
+  setScenario({ airframe = 0, gravity = 1, air = 1, kv = 1 } = {}) {
+    const e = this.e;
+    if (e.sim_set_airframe(airframe) !== 0 || e.sim_set_gravity(gravity) !== 0 || e.sim_set_air(air) !== 0
+      || e.sim_set_motor_kv(kv) !== 0) throw new Error('WebFPV scenario refused');
+    this.reset();
+  }
+
+  // Back to t = 0: level, at rest, in the air, armed (sim_abi.h:96-103), with
+  // the pack at the given open-circuit cell voltage.
+  reset(cellVoltage = 4.2) {
+    if (this.e.sim_reset() !== 0 || this.e.sim_set_cell_voltage(cellVoltage) !== 0) throw new Error('WebFPV reset');
+  }
+
+  // Sticks in WebFPV's ABI convention (+roll right, +pitch nose up, +yaw
+  // nose right, throttle 0..1), stamped at tSeconds on its sim clock.
+  input(tSeconds, roll, pitch, yaw, throttle) {
+    if (this.e.sim_input(tSeconds, roll, pitch, yaw, throttle) !== 0) throw new Error('WebFPV sim_input');
+  }
+
+  // State block (sim_abi.h:65-76): t, pos, vel, quat w x y z, body rates p q r
+  // (rad/s; +q nose down, +r nose left), rpm[4], pack V, pack A.
+  state() {
+    const e = this.e;
+    if (!this.statePtr) this.statePtr = e.malloc(8 * e.sim_state_size());
+    if (e.sim_state(this.statePtr) !== 0) throw new Error('WebFPV sim_state');
+    return new Float64Array(e.memory.buffer, this.statePtr, e.sim_state_size());
+  }
+
   // One RC frame, as Betaflight channel values: the inverse of its ABI mapping.
   frame(tSeconds, [roll, pitch, yaw, throttle]) {
     const rc = this.e.sim_input(tSeconds, (roll - 1500) / 500, -(pitch - 1500) / 500, (yaw - 1500) / 500, (throttle - 1000) / 1000);

@@ -15,7 +15,7 @@
 //       refuses), and profile scoping (WebFPV has one profile).
 //
 // X2 (achieved full-stick rate) and X3 (feel bands) need a plant that
-// rotates; they arrive with the M4 plant.
+// rotates; they are in the M4 gate, tests/gate-plant.mjs.
 //
 // Identical input means identical rcData: sim-core gets integer channels;
 // WebFPV gets its ABI's sticks, which it maps back to the same channel values

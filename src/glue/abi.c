@@ -1,11 +1,11 @@
 /*
  * The exported ABI (sc_*), version 1. Everything sim-core.js calls goes
- * through here. Names follow the Phase 1 plan's ABI table (PROGRESS.md);
- * the plant, world and pose exports arrive with the M4 plant.
+ * through here. Names follow the Phase 1 plan's ABI table (PROGRESS.md).
  *
  * This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
  */
 #include <emscripten/emscripten.h>
+#include <math.h>
 #include <string.h>
 
 #include "platform.h"
@@ -23,10 +23,12 @@
 #include "flight/pid.h"
 #include "flight/rpm_filter.h"
 #include "rx/rx.h"
+#include "sensors/acceleration.h"
 #include "sensors/battery.h"
 #include "sensors/gyro.h"
 
 #include "sc.h"
+#include "plant/plant.h"
 
 extern uint8_t eepromData[EEPROM_SIZE];
 
@@ -83,7 +85,8 @@ enum {
     FC_CRASH_FLIP = 48,
     FC_MODE_3D = 49,
     FC_RPM_FILTER = 50,         // isRpmFilterEnabled()
-    FC_LEN = 51,
+    FC_ACC = 51,                // Betaflight's accelerometer, g (acc.accADC / acc_1G)
+    FC_LEN = 54,
 };
 
 static double scState[ST_LEN];
@@ -162,6 +165,9 @@ static void fillFc(void)
     f[FC_CRASH_FLIP] = isFlipOverAfterCrashActive() ? 1 : 0;
     f[FC_MODE_3D] = featureIsEnabled(FEATURE_3D) ? 1 : 0;
     f[FC_RPM_FILTER] = isRpmFilterEnabled() ? 1 : 0;
+    for (int axis = 0; axis < 3; axis++) {
+        f[FC_ACC + axis] = acc.dev.acc_1G ? acc.accADC[axis] / acc.dev.acc_1G : 0;
+    }
 }
 
 void sc_event_push(int kind, const double *values, int n)
@@ -266,7 +272,8 @@ EMSCRIPTEN_KEEPALIVE int sc_battery_carry(const double *soc2)
     if (sc_time_us != SC_BOOT_EPOCH_US) {
         return SC_ERR_BAD_STATE;
     }
-    if (!soc2 || !(soc2[0] >= 0.0 && soc2[0] <= 1.0) || !(soc2[1] > 0.0 && soc2[1] < 100.0)) {
+    // A flat physical pack publishes 0 V; its carry uses only the charge.
+    if (!soc2 || !(soc2[0] >= 0.0 && soc2[0] <= 1.0) || !(soc2[1] >= 0.0 && soc2[1] < 100.0)) {
         return SC_ERR_BAD_ARG;
     }
     sc_plant_battery_carry(soc2[0], soc2[1]);
@@ -282,6 +289,101 @@ EMSCRIPTEN_KEEPALIVE int sc_battery_state(double *out2)
     }
     out2[0] = sc_plant.soc;
     out2[1] = sc_plant.vbatFiltered;
+    return SC_OK;
+}
+
+// Plant block v1 (src/plant/plant.h), count doubles. Only after sc_boot and
+// before the first tick; it puts the quad at rest on the floor with a full
+// pack (carry the battery after it).
+EMSCRIPTEN_KEEPALIVE int sc_plant_set(const double *block, int count)
+{
+    if (sc_time_us != SC_BOOT_EPOCH_US) {
+        return SC_ERR_BAD_STATE;
+    }
+    return sc_plant_configure(block, count);
+}
+
+EMSCRIPTEN_KEEPALIVE int sc_plant_len(void) { return PB_LEN; }
+
+// Bench override, for plant tests only: motor (0..3, or -1 for all) runs at
+// duty (-1..1) whatever Betaflight sends; a duty outside -1..1 clears it. The
+// rest plant has no motors to override.
+EMSCRIPTEN_KEEPALIVE int sc_motor_override(int motor, double duty)
+{
+    if (sc_plant_model() == SC_MODEL_REST) {
+        return SC_ERR_BAD_STATE;
+    }
+    if (motor < -1 || motor >= SC_MOTOR_COUNT || !isfinite(duty)) {
+        return SC_ERR_BAD_ARG;
+    }
+    sc_plant_override(motor, duty);
+    return SC_OK;
+}
+EMSCRIPTEN_KEEPALIVE const double *sc_plant_derived_ptr(void) { return sc_plant_derived(); }
+EMSCRIPTEN_KEEPALIVE int sc_plant_derived_len(void) { return PD_LEN; }
+
+// World geometry, quantised: module-frame micrometres, box = x0 y0 z0 x1 y1 z1.
+EMSCRIPTEN_KEEPALIVE void sc_world_clear(void)
+{
+    sc_world_reset();
+    sc_plant_floor_moved();
+}
+
+// Whether the last sc_step stopped after a tick that entered a trigger.
+EMSCRIPTEN_KEEPALIVE int sc_tick_stopped(void) { return sc_tick_stop; }
+EMSCRIPTEN_KEEPALIVE void sc_world_floor(int zUm)
+{
+    sc_world_set_floor(zUm);
+    sc_plant_floor_moved();
+}
+
+EMSCRIPTEN_KEEPALIVE int sc_world_box(const int32_t *boxUm, int kind, int id)
+{
+    return boxUm ? sc_world_add_box(boxUm, kind, id) : SC_ERR_BAD_ARG;
+}
+
+EMSCRIPTEN_KEEPALIVE int sc_world_trigger(const int32_t *boxUm, int id)
+{
+    return boxUm ? sc_world_add_trigger(boxUm, id) : SC_ERR_BAD_ARG;
+}
+
+// Ground clearance (m) at a module-frame point in micrometres.
+EMSCRIPTEN_KEEPALIVE double sc_world_clearance(const int32_t *posUm)
+{
+    if (!posUm) {
+        return NAN;
+    }
+    const double pos[3] = { posUm[0] * 1e-6, posUm[1] * 1e-6, posUm[2] * 1e-6 };
+    return sc_world_clearance_at(pos);
+}
+
+// A pose event at the next tick boundary: position in micrometres, quaternion
+// (w x y z) in units of 1e-9, velocity in micrometres per second. The rest
+// plant never moves, so it refuses one.
+EMSCRIPTEN_KEEPALIVE int sc_pose(const int32_t *posUm, const int32_t *quatE9, const int32_t *velUmS)
+{
+    if (sc_plant_model() == SC_MODEL_REST) {
+        return SC_ERR_BAD_STATE;
+    }
+    if (!posUm || !quatE9 || !velUmS) {
+        return SC_ERR_BAD_ARG;
+    }
+    double q[4];
+    double n = 0;
+    for (int i = 0; i < 4; i++) {
+        q[i] = quatE9[i] * 1e-9;
+        n += q[i] * q[i];
+    }
+    if (!(n > 0)) {
+        return SC_ERR_BAD_ARG;
+    }
+    n = sqrt(n);
+    for (int i = 0; i < 4; i++) {
+        q[i] /= n;
+    }
+    const double pos[3] = { posUm[0] * 1e-6, posUm[1] * 1e-6, posUm[2] * 1e-6 };
+    const double vel[3] = { velUmS[0] * 1e-6, velUmS[1] * 1e-6, velUmS[2] * 1e-6 };
+    sc_plant_pose(pos, q, vel);
     return SC_OK;
 }
 
