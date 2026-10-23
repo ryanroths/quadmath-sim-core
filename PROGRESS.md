@@ -3394,3 +3394,38 @@ Every finding was checked by a separate skeptic agent before it counted.
    their banding waits on item 1 here, which moves them.
 6. **World contact defects 2-5 above:** a contact round, or leave them.
 7. **The pack:** the stand-in current and pack values are the LAVA's.
+
+---
+
+## 2026-10-23 | Phase 1 M4 | full `npm test` on the committed tree (`3ea7e99`)
+
+`npm test` (`node tests/run-all.mjs`), Windows, Node 24.21.0, emsdk 3.1.61 in
+WSL. Exit 1, as expected: the gate fails on the owner items in the entry
+above, and everything else passes. `QUADMATH_DIR` was not set, so the hover
+tool's decoder path did not run here (it passes with it set, entry above).
+
+- `git diff --stat vendor/betaflight` and `git -C vendor/betaflight status --porcelain`: both empty.
+- Build 1 and build 2: `dist/sim-core.wasm` 187,265 B, sha256
+  `9021d661e785842457f964cc7719583e63af9b6210c1e7a1c11c9d8effe36128` both
+  times, equal to the committed `dist/sim-core.wasm.sha256`.
+
+```
+PASS   145.2 s  B1 B2 byte-exact build, vendor untouched; F5 arm, motors
+PASS     0.1 s  B3 B4 B5 ABI surface, PG coverage, boot asserts
+PASS     0.1 s  F5 arm and motor answer the sticks
+PASS     0.9 s  C2 F5 config policy, map, link loss, bad input
+PASS     0.7 s  C1 C2 C3 config count and readback
+PASS     0.3 s  C1 diff passthrough (rates ratio, RPM filter, P)
+PASS     2.2 s  D1 determinism repeat
+PASS     1.9 s  D3 frame independence 30/60/144/240 Hz
+PASS     1.5 s  D4 reset vs fresh load
+PASS     1.2 s  X1 black box vs WebFPV (F1 F2 F4)
+PASS    40.4 s  M4 plant and world API: contact, triggers, pose, pack, argument checks
+PASS     0.1 s  M4 bench hover from a blackbox log (tools/hover-from-log.mjs, synthetic frames)
+FAIL     9.8 s  M4 plant: P1-P5, F6, F9, X2/F3, X3 feel bands vs WebFPV
+PASS    13.4 s  D2 Node vs headless Chrome, console clean
+1 of 14 failed
+```
+
+Stopped here for the owner: the table and gate are re-run. PR #2 carries
+both commits; the gate waits on the decisions listed under "Next" above.
