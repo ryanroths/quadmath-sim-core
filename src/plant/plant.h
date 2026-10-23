@@ -158,3 +158,27 @@ void sc_world_set_rest_height(double metres);
 // The footprint's hull clearance (physical model): the CG's height above the
 // floor or the box top underneath, less hullBelow.
 double sc_world_hull_clearance(const double pos[3], double hullBelow);
+// The footprint's hull (physical model): the convex hull of the four duct
+// rims, in order round the base, and the canopy at the apex.
+#define SC_HULL_POINTS 5
+// A box edge or corner inside the hull (module frame): where the hull holds
+// the box off (the box feature inside it: one point, or both ends of an edge
+// across a face), the unit direction the hull leaves the box by, how deep
+// (m), the push that clears it (along the axis of the box face most along the
+// direction), and the box and that face (world.c axes) it is keyed by.
+typedef struct {
+    double point[2][3], normal[3], depth, push[3];
+    int points, box, ax, side;
+} sc_hull_contact_t;
+// The boxes the hull (module frame, at the end of the tick after the points'
+// push, and at its start) ends the tick deeper inside than it began, with no
+// footprint point inside them: up to max contacts, deepest first.
+int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HULL_POINTS][3],
+                  sc_hull_contact_t *out, int max);
+// A hull contact's world response for the hull point there moving at vel
+// (module frame, corrected in place), as a box face hit: bounce, crash and
+// friction along the contact's normal, or a box top's soft landing (scrub),
+// along the vertical, as on the floor; normal: the one it used. Queues its
+// CONTACT event.
+uint32_t sc_world_hull_hit(const sc_hull_contact_t *c, double vel[3], double bounceScale, double crashScale,
+                           double spinScale, bool *scrub, double normal[3]);

@@ -41,6 +41,8 @@
 #define DIVERGED_RAD_S 200.0        // PROGRESS.md deliberate change 6
 #define GROUND_SCRUB 7.3            // H:3199, per second (as world.c TUMBLE_DECAY)
 #define FOOTPRINT_POINTS 5
+#define HULL_BOXES 2                // boxes held off by the footprint's hull, a tick
+#define CONTACTS (FOOTPRINT_POINTS + 2 * HULL_BOXES)
 #define CONTACT_SWEEPS 32
 #define CONTACT_SPIN_CAP 150.0      // rad/s, below the divergence guard (as world.c)
 
@@ -650,6 +652,14 @@ static double restHeightAt(const double q[4])
 //     deterministic.
 // The spin now comes from the lever arms, so the duct-hit spin kick is not
 // applied; the ground scrub (H:3196-3203) and the spin cap are.
+// A box edge or corner can pass between the points (a shelf's front edge
+// between the leading rim and the rest), so after the points' push the
+// convex hull of the five points is tested against the boxes too (world.c
+// sc_world_hull): a box it ends the tick deeper inside than it began, with no
+// point inside it, is pushed out (along a box axis, as far as clears it along
+// the axis of least overlap), and the box feature inside the hull (a corner,
+// or both ends of an edge across a face) is one or two more contacts with
+// the world's response, in the same sweeps.
 static uint32_t footprintContact(double p[3], double v[3], const double q[4], double om[3], const double p0[3],
                                  const double q0[4], double dt)
 {
@@ -659,22 +669,23 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     double omW[3];
     qRotate(q, om, omW);
     const double spinBefore = sqrt(dot3(om, om));
-    double rw[FOOTPRINT_POINTS][3], target[FOOTPRINT_POINTS][3], normal[FOOTPRINT_POINTS][3];
-    double slip[FOOTPRINT_POINTS][3];   // unit tangential slip at contact, or zero
-    bool active[FOOTPRINT_POINTS];
+    double rw[CONTACTS][3], target[CONTACTS][3], normal[CONTACTS][3];
+    double slip[CONTACTS][3];           // unit tangential slip at contact, or zero
+    double r0[FOOTPRINT_POINTS][3];
+    bool active[CONTACTS];
     double pushHi[3] = { 0, 0, 0 }, pushLo[3] = { 0, 0, 0 };
     uint32_t flags = 0;
     bool anyFloor = false, anyScrub = false;
     for (int k = 0; k < FOOTPRINT_POINTS; k++) {
         active[k] = false;
         qRotate(q, body[k], rw[k]);
-        double r0[3], wxr[3], pt[3], vt[3], st[3];
-        qRotate(q0, body[k], r0);
+        double wxr[3], pt[3], vt[3], st[3];
+        qRotate(q0, body[k], r0[k]);
         cross3(omW, rw[k], wxr);
         for (int a = 0; a < 3; a++) {
             pt[a] = p[a] + rw[k][a];
             vt[a] = v[a] + wxr[a];
-            st[a] = p0[a] + r0[a];
+            st[a] = p0[a] + r0[k][a];
         }
         const double ptIn[3] = { pt[0], pt[1], pt[2] };
         const double vtIn[3] = { vt[0], vt[1], vt[2] };
@@ -733,11 +744,62 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             p[a] += pushHi[a] + pushLo[a];
         }
     }
-    double pushed[FOOTPRINT_POINTS] = { 0, 0, 0, 0, 0 };
-    double rubbed[FOOTPRINT_POINTS][3];
+    // The hull, on the pose the points' push left (rims round the base, then
+    // the canopy), and on the pose the tick began at.
+    static const int HULL_ORDER[SC_HULL_POINTS] = { 0, 1, 3, 2, 4 };
+    double hullEnd[SC_HULL_POINTS][3], hullStart[SC_HULL_POINTS][3];
+    for (int j = 0; j < SC_HULL_POINTS; j++) {
+        for (int a = 0; a < 3; a++) {
+            hullEnd[j][a] = p[a] + rw[HULL_ORDER[j]][a];
+            hullStart[j][a] = p0[a] + r0[HULL_ORDER[j]][a];
+        }
+    }
+    sc_hull_contact_t hull[HULL_BOXES];
+    const int hullCount = sc_world_hull(hullEnd, hullStart, hull, HULL_BOXES);
+    double hullHi[3] = { 0, 0, 0 }, hullLo[3] = { 0, 0, 0 };
+    int contacts = FOOTPRINT_POINTS;
+    for (int j = 0; j < hullCount; j++) {
+        for (int a = 0; a < 3; a++) {
+            hullHi[a] = fmax(hullHi[a], hull[j].push[a]);
+            hullLo[a] = fmin(hullLo[a], hull[j].push[a]);
+        }
+        for (int m = 0; m < hull[j].points; m++) {
+            const int k = contacts++;
+            double wxr[3], vt[3], vtIn[3];
+            for (int a = 0; a < 3; a++) {
+                rw[k][a] = hull[j].point[m][a] - p[a];
+            }
+            cross3(omW, rw[k], wxr);
+            for (int a = 0; a < 3; a++) {
+                vt[a] = v[a] + wxr[a];
+                vtIn[a] = vt[a];
+            }
+            bool scrub = false;
+            flags |= sc_world_hull_hit(&hull[j], vt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE],
+                                       blk[PB_SPIN_SCALE], &scrub, normal[k]);
+            anyScrub = anyScrub || scrub;
+            const double vin = dot3(vtIn, normal[k]);
+            double sl[3];
+            for (int a = 0; a < 3; a++) {
+                target[k][a] = vt[a];
+                sl[a] = vtIn[a] - vin * normal[k][a];
+            }
+            const double slen = sqrt(dot3(sl, sl));
+            for (int a = 0; a < 3; a++) {
+                slip[k][a] = slen > 1e-9 ? sl[a] / slen : 0;
+            }
+            active[k] = true;
+        }
+    }
+    for (int a = 0; a < 3; a++) {
+        p[a] += hullHi[a] + hullLo[a];
+    }
+    double pushed[CONTACTS];
+    double rubbed[CONTACTS][3];
+    memset(pushed, 0, sizeof(pushed));
     memset(rubbed, 0, sizeof(rubbed));
     for (int sweep = 0; sweep < CONTACT_SWEEPS; sweep++) {
-        for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+        for (int k = 0; k < contacts; k++) {
             if (!active[k]) {
                 continue;
             }

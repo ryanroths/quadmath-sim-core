@@ -62,6 +62,23 @@
  *     wall as it rose into the ceiling beside the seam, 20 to 90 um from it
  *     and not moving across it, was pushed onto the seam, a touch whose
  *     friction cut its speed into the ceiling from 2.45 to 2.01 m/s
+ *   - the footprint's hull (plant.c): a box edge or corner that ends a tick
+ *     inside the convex hull of the five points (a square pyramid, the rims
+ *     round the base, the canopy at the apex), with no point inside the box,
+ *     is held off. The separating axis of least overlap finds how far; the
+ *     push is along the axis of the box face most along it, as a point's
+ *     is, and the box feature inside the hull (a corner, or both ends of an
+ *     edge across a face: one point there rocked the quad) is one or two
+ *     contacts with a box hit's response, keyed by that face; a soft one on
+ *     a box top is along the vertical, as on the floor (along the hull's
+ *     tilted face it walked a quad resting on a table edge sideways).
+ *     A box the hull began the tick in at least as deep (a pose, a post
+ *     through the quad's middle) is not one it is passing into. Pressed up
+ *     under a shelf shallower than the quad against a wall, the shelf's
+ *     front edge passed between the leading rim and the rest and the quad
+ *     swung over it onto the shelf (12 mm of edge inside the hull); set down
+ *     level with its CG 10 mm behind a table edge, it tipped over the edge
+ *     with the edge 9 mm into its body
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
  *
@@ -754,6 +771,345 @@ uint32_t sc_world_point(double pos[3], double vel[3], const double startPos[3], 
         vel[2] = cv[1] / WS;
     }
     return flags;
+}
+
+// The footprint's hull. Five points can straddle a box edge: pressed up under
+// a shelf shallower than the quad, the shelf's front edge passed between the
+// leading rim and the rest of the footprint. The convex hull of the points is
+// a square pyramid (the duct rims round the base, the canopy at the apex);
+// a box edge or corner that ends a tick inside it is a contact like a
+// point's, held at the box feature inside the hull.
+typedef struct {
+    double v[SC_HULL_POINTS][3];    // world units: the rims round the base, then the apex
+    double lo[3], hi[3];
+    double n[5][3], d[5];           // the base and four sides: n.x <= d inside
+    bool faces;                     // n and d set
+} scHull_t;
+
+static const int HULL_EDGES[8][2] = { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 }, { 0, 4 }, { 1, 4 }, { 2, 4 }, { 3, 4 } };
+
+static void vcross(const double a[3], const double b[3], double out[3])
+{
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+// The hull's corners (module frame in) in world units, and its bounds.
+static void hullAt(const double mod[SC_HULL_POINTS][3], scHull_t *h)
+{
+    for (int k = 0; k < SC_HULL_POINTS; k++) {
+        mod2world(mod[k], h->v[k]);
+        for (int a = 0; a < 3; a++) {
+            h->lo[a] = k ? fmin(h->lo[a], h->v[k][a]) : h->v[k][a];
+            h->hi[a] = k ? fmax(h->hi[a], h->v[k][a]) : h->v[k][a];
+        }
+    }
+    h->faces = false;
+}
+
+// Its faces, the first time a box is near.
+static void hullFaces(scHull_t *h)
+{
+    if (h->faces) {
+        return;
+    }
+    double c[3] = { 0, 0, 0 };
+    for (int k = 0; k < SC_HULL_POINTS; k++) {
+        for (int a = 0; a < 3; a++) {
+            c[a] += h->v[k][a] / SC_HULL_POINTS;
+        }
+    }
+    for (int f = 0; f < 5; f++) {
+        const double *a = h->v[f ? f - 1 : 0], *b = h->v[f ? f % 4 : 1], *e = h->v[f ? 4 : 2];
+        const double ab[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+        const double ae[3] = { e[0] - a[0], e[1] - a[1], e[2] - a[2] };
+        const double ac[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+        double n[3];
+        vcross(ab, ae, n);
+        const double len = sqrt(vdot(n, n)) * (vdot(n, ac) > 0 ? -1 : 1);
+        for (int k = 0; k < 3; k++) {
+            h->n[f][k] = n[k] / len;
+        }
+        h->d[f] = vdot(h->n[f], a);
+    }
+    h->faces = true;
+}
+
+// Box b against hull h along the unit axis a: how far the hull must move along
+// a (dir 1) or against it (dir -1) to clear the box, the shorter.
+static double satOverlap(const scBox_t *b, const scHull_t *h, const double a[3], int *dir)
+{
+    double lo = INFINITY, hi = -INFINITY, c = 0, r = 0;
+    for (int k = 0; k < SC_HULL_POINTS; k++) {
+        const double s = vdot(h->v[k], a);
+        lo = fmin(lo, s);
+        hi = fmax(hi, s);
+    }
+    for (int k = 0; k < 3; k++) {
+        c += (b->min[k] + b->max[k]) * 0.5 * a[k];
+        r += (b->max[k] - b->min[k]) * 0.5 * fabs(a[k]);
+    }
+    const double up = c + r - lo, down = hi - (c - r);
+    *dir = up <= down ? 1 : -1;
+    return fmin(up, down);
+}
+
+// The separating-axis test of box b against hull h (the box's three axes, the
+// hull's five faces, and each box axis across each of the hull's eight
+// edges): 0 when an axis separates them to within FACE_EPS, otherwise the
+// least overlap, with n the unit direction the hull leaves the box by.
+static double hullDepth(const scBox_t *b, scHull_t *h, double n[3])
+{
+    hullFaces(h);
+    double best = INFINITY;
+    for (int t = 0; t < 32; t++) {
+        double a[3] = { 0, 0, 0 };
+        if (t < 3) {
+            a[t] = 1;
+        } else if (t < 8) {
+            memcpy(a, h->n[t - 3], sizeof(a));
+        } else {
+            const int *e = HULL_EDGES[(t - 8) % 8];
+            const double ed[3] = { h->v[e[1]][0] - h->v[e[0]][0], h->v[e[1]][1] - h->v[e[0]][1],
+                                   h->v[e[1]][2] - h->v[e[0]][2] };
+            double u[3] = { 0, 0, 0 };
+            u[(t - 8) / 8] = 1;
+            vcross(u, ed, a);
+            const double len = sqrt(vdot(a, a));
+            if (!(len > 1e-9 * sqrt(vdot(ed, ed)))) {
+                continue;                   // parallel: a face axis covers it
+            }
+            for (int k = 0; k < 3; k++) {
+                a[k] /= len;
+            }
+        }
+        int dir;
+        const double o = satOverlap(b, h, a, &dir);
+        if (o <= FACE_EPS) {
+            return 0;
+        }
+        if (o < best) {
+            best = o;
+            for (int k = 0; k < 3; k++) {
+                n[k] = dir * a[k];
+            }
+        }
+    }
+    return best;
+}
+
+// The part of segment a-e (t0..t1) inside the hull, or false.
+static bool clipHull(const scHull_t *h, const double a[3], const double e[3], double *t0, double *t1)
+{
+    for (int f = 0; f < 5; f++) {
+        const double da = vdot(h->n[f], a) - h->d[f], de = vdot(h->n[f], e) - h->d[f];
+        if (da > 0 && de > 0) {
+            return false;
+        }
+        if (da > 0) {
+            *t0 = fmax(*t0, da / (da - de));
+        } else if (de > 0) {
+            *t1 = fmin(*t1, da / (da - de));
+        }
+    }
+    return *t0 <= *t1;
+}
+
+// The part of segment a-e (t0..t1) inside box b, or false.
+static bool clipBox(const scBox_t *b, const double a[3], const double e[3], double *t0, double *t1)
+{
+    for (int k = 0; k < 3; k++) {
+        const double dk = e[k] - a[k];
+        if (dk == 0) {
+            if (a[k] < b->min[k] || a[k] > b->max[k]) {
+                return false;
+            }
+            continue;
+        }
+        const double u0 = (b->min[k] - a[k]) / dk, u1 = (b->max[k] - a[k]) / dk;
+        *t0 = fmax(*t0, fmin(u0, u1));
+        *t1 = fmin(*t1, fmax(u0, u1));
+        if (*t0 > *t1) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Where the hull holds box b off: the box's edges clipped to the hull (the
+// box feature inside it), or, when no edge of the box is in it (a hull edge
+// through a box face), the hull's edges clipped to the box. Of the ends,
+// the deepest (along n into the hull, or against it into the box) and the
+// one farthest from it: a box edge across a hull face is held at both ends,
+// a corner at the corner.
+static int holdPoints(const scBox_t *b, const scHull_t *h, const double n[3], double out[2][3])
+{
+    double ends[24][3];
+    int count = 0, pass = 0;
+    for (; pass < 2 && !count; pass++) {
+        for (int s = 0; s < (pass ? 8 : 12); s++) {
+            double a[3], e[3], t0 = 0, t1 = 1;
+            bool in;
+            if (!pass) {
+                const int k = s / 4, k1 = (k + 1) % 3, k2 = (k + 2) % 3;
+                a[k] = b->min[k];
+                e[k] = b->max[k];
+                a[k1] = e[k1] = (s & 1) ? b->max[k1] : b->min[k1];
+                a[k2] = e[k2] = (s & 2) ? b->max[k2] : b->min[k2];
+                in = clipHull(h, a, e, &t0, &t1);
+            } else {
+                memcpy(a, h->v[HULL_EDGES[s][0]], sizeof(a));
+                memcpy(e, h->v[HULL_EDGES[s][1]], sizeof(e));
+                in = clipBox(b, a, e, &t0, &t1);
+            }
+            if (in) {
+                for (int k = 0; k < 3; k++) {
+                    ends[count][k] = a[k] + t0 * (e[k] - a[k]);
+                    ends[count + 1][k] = a[k] + t1 * (e[k] - a[k]);
+                }
+                count += 2;
+            }
+        }
+    }
+    if (!count) {
+        return 0;
+    }
+    const double into = pass == 1 ? 1 : -1;     // the pass that found them: 1 the box's, 2 the hull's
+    int deep = 0, far = 0;
+    for (int j = 1; j < count; j++) {
+        if (into * vdot(ends[j], n) > into * vdot(ends[deep], n)) {
+            deep = j;
+        }
+    }
+    double farD = 0;
+    for (int j = 0; j < count; j++) {
+        const double d[3] = { ends[j][0] - ends[deep][0], ends[j][1] - ends[deep][1], ends[j][2] - ends[deep][2] };
+        if (vdot(d, d) > farD) {
+            farD = vdot(d, d);
+            far = j;
+        }
+    }
+    memcpy(out[0], ends[deep], sizeof(out[0]));
+    memcpy(out[1], ends[far], sizeof(out[1]));
+    return farD > PAST_WU * PAST_WU ? 2 : 1;
+}
+
+
+int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HULL_POINTS][3],
+                  sc_hull_contact_t *out, int max)
+{
+    if (!boxCount) {
+        return 0;
+    }
+    scHull_t h, h0;
+    bool start0 = false;
+    hullAt(end, &h);
+    int count = 0;
+    for (int i = 0; i < boxCount; i++) {
+        const scBox_t *b = &boxes[i];
+        bool apart = false;
+        for (int k = 0; k < 3 && !apart; k++) {
+            apart = h.hi[k] <= b->min[k] + FACE_EPS || h.lo[k] >= b->max[k] - FACE_EPS;
+        }
+        if (apart) {
+            continue;
+        }
+        // A box a footprint point is inside: the point resolves it.
+        bool pointIn = false;
+        for (int k = 0; k < SC_HULL_POINTS && !pointIn; k++) {
+            const double *v = h.v[k];
+            pointIn = v[0] > b->min[0] + FACE_EPS && v[0] < b->max[0] - FACE_EPS && v[1] > b->min[1] + FACE_EPS
+                      && v[1] < b->max[1] - FACE_EPS && v[2] > b->min[2] + FACE_EPS && v[2] < b->max[2] - FACE_EPS;
+        }
+        if (pointIn) {
+            continue;
+        }
+        double n[3];
+        const double depth = hullDepth(b, &h, n);
+        if (!(depth > 0)) {
+            continue;
+        }
+        // A box the hull began the tick in at least as deep (a pose, or a post
+        // through the quad's middle): not passing into it this tick.
+        if (!start0) {
+            hullAt(start, &h0);
+            start0 = true;
+        }
+        double n0[3];
+        const double depth0 = hullDepth(b, &h0, n0);
+        if (depth0 > 0 && depth <= depth0 + FACE_EPS) {
+            continue;
+        }
+        double held[2][3];
+        const int points = holdPoints(b, &h, n, held);
+        if (!points) {
+            continue;
+        }
+        // The deepest max, in box order among equals.
+        int at = count;
+        while (at > 0 && out[at - 1].depth * WS < depth) {
+            at--;
+        }
+        if (at >= max) {
+            continue;
+        }
+        for (int k = count < max ? count : max - 1; k > at; k--) {
+            out[k] = out[k - 1];
+        }
+        if (count < max) {
+            count++;
+        }
+        sc_hull_contact_t *hc = &out[at];
+        for (int j = 0; j < 2; j++) {
+            world2mod(held[j], hc->point[j]);
+        }
+        hc->points = points;
+        hc->normal[0] = -n[2];
+        hc->normal[1] = -n[0];
+        hc->normal[2] = n[1];
+        hc->depth = depth / WS;
+        hc->box = i;
+        // Keyed by the box face the hull leaves by: the one most along n.
+        hc->ax = fabs(n[0]) >= fabs(n[1]) && fabs(n[0]) >= fabs(n[2]) ? 0 : fabs(n[1]) >= fabs(n[2]) ? 1 : 2;
+        hc->side = n[hc->ax] > 0 ? 1 : -1;
+        // Pushed out along that face's axis, as a point is, as far as clears
+        // the overlap along n.
+        double push[3] = { 0, 0, 0 };
+        push[hc->ax] = depth / n[hc->ax];
+        world2mod(push, hc->push);
+    }
+    return count;
+}
+
+uint32_t sc_world_hull_hit(const sc_hull_contact_t *c, double vel[3], double bounceScale, double crashScale,
+                           double spinScale, bool *scrub, double normal[3])
+{
+    const scBox_t *b = &boxes[c->box];
+    const double n[3] = { -c->normal[1], c->normal[2], -c->normal[0] };
+    double cv[3];
+    mod2world(vel, cv);
+    const double vn = vdot(cv, n);
+    const double into = fmax(0, -vn);
+    const bool top = c->ax == 1 && c->side > 0;
+    bool crashed = false;
+    *scrub = false;
+    memcpy(normal, c->normal, 3 * sizeof(double));
+    if (top && into <= HARD_LANDING_WU) {
+        // Resting on or landing softly on a box top's edge: as on the floor,
+        // up (a tilted normal would walk the quad off the edge slowly).
+        cv[1] = fmax(cv[1], 0);
+        cv[0] *= 0.85;
+        cv[2] *= 0.85;
+        normal[0] = normal[1] = 0;
+        normal[2] = 1;
+        *scrub = true;
+    } else {
+        crashed = ductHit(cv, NULL, n, into, top, bounceScale, crashScale, spinScale);
+    }
+    touchFace(c->ax, c->side, c->side > 0 ? b->max[c->ax] : b->min[c->ax], b->id, into, crashed, true);
+    world2mod(cv, vel);
+    return 2;
 }
 
 bool sc_world_inside(const double pos[3])
