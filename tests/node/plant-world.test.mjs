@@ -2169,7 +2169,106 @@ const mapFixture = async (id) => JSON.parse(await readFile(new URL(`tests/fixtur
   assert.ok(Math.abs(c.state.pos[2] - REST) < 5e-4, 'resting on the floor');
 }
 
+// Map flights from a pose for 42 and after (from a regression sweep of random
+// poses in the map fixtures): Betaflight angle mode with 24's altitude hold
+// at zHold, sticks held ('tele'), or all four motors at a fixed duty
+// ('press'). Per tick: the deepest a footprint point is inside the solid (the
+// union of the boxes, the shortest way out along an axis), the ticks with a
+// point more than 1 mm in, the largest one-tick push (the CG's move less
+// what its velocity explains, from the tick after the pose), and the lowest
+// rim.
+const unionDepth = (boxes, p) => {
+  if (!boxes.some((b) => [0, 1, 2].every((a) => p[a] > b.min[a] && p[a] < b.max[a]))) return 0;
+  let best = Infinity;
+  for (let a = 0; a < 3; a++) {
+    for (const s of [-1, 1]) {
+      let t = 0;
+      for (let g = 0; g < 64; g++) {
+        const q = p.slice();
+        q[a] += s * t;
+        let ext = -1;
+        for (const b of boxes) {
+          if (![0, 1, 2].every((k) => q[k] >= b.min[k] - 2e-6 && q[k] <= b.max[k] + 2e-6)) continue;
+          const e = s > 0 ? b.max[a] - p[a] : p[a] - b.min[a];
+          if (e > t + 1e-9) ext = Math.max(ext, e);
+        }
+        if (ext < 0) break;
+        t = ext;
+      }
+      best = Math.min(best, t);
+    }
+  }
+  return best;
+};
+const flyPose = async (boxes, { pose, duty, zHold, sticks, ticks }) => {
+  const c = await flight({ floorZ: 0, boxes });
+  const chs = (s) => ch(s, [2000, 2000]);
+  if (duty === undefined) {
+    c.input(chs({ throttle: 0 }));
+    c.step(100);
+  }
+  c.teleport(pose);
+  if (duty !== undefined) c.motorOverride(-1, duty);
+  let prev = c.state;
+  const r = { inside: 0, deepTicks: 0, push: 0, low: 0 };
+  for (let k = 0; k < ticks; k++) {
+    if (duty === undefined && k % 4 === 0) {
+      const s = c.state;
+      c.input(chs({ throttle: Math.max(0, Math.min(1, 0.38 + 0.25 * (zHold - s.pos[2]) - 0.15 * s.vel[2])), ...sticks }));
+    }
+    c.step(1);
+    c.events();
+    const s = c.state;
+    const fp = c.footprint;
+    const din = Math.max(...fp.map((p) => unionDepth(boxes, p)));
+    r.inside = Math.max(r.inside, din);
+    if (din > 1e-3) r.deepTicks++;
+    r.low = Math.min(r.low, ...fp.map((p) => p[2]));
+    const d = [0, 1, 2].map((a) => s.pos[a] - prev.pos[a]);
+    if (k > 0) r.push = Math.max(r.push, Math.min(Math.hypot(...d.map((v, a) => v - prev.vel[a] * 1e-3)), Math.hypot(...d.map((v, a) => v - s.vel[a] * 1e-3))));
+    prev = s;
+  }
+  r.fault = c.fault;
+  r.end = c.state.pos;
+  return r;
+};
+const fmtPose = (r) => `${(r.inside * 1e3).toFixed(2)} mm in (${r.deepTicks} ticks > 1 mm), push ${(r.push * 1e3).toFixed(1)} mm, lowest rim ${(r.low * 1e3).toFixed(2)} mm`;
+
+// 42. A hull overlap the quad began the tick with is pushed back only as far
+// as it went deeper this tick (world.c sc_world_hull), and a solid a
+// footprint point began the tick inside is left to that point. The overlap
+// a pose leaves, or opposite hull pushes that cancel, used to be carried
+// until it grew by 28 nm and then pushed out whole in one tick, whatever
+// else was there: between two gym posts 43 mm apart a 19.5 mm push threw the
+// quad 22 mm into the next post and that one threw it back. Six poses from a
+// sweep of the gym, office and backyard: clean, against posts under a bench
+// (1.5 s at 0.125), and posed across a seam, a slab and a post, give no
+// one-tick push over 5 mm (21 to 41 mm before; the build before the hull, 0.9
+// to 4.1 mm); posed with a thin wall through the quad and a rim beside it,
+// no rim is held inside the wall (the hull holding the wall at its depth kept
+// a rim 9.9 mm in it when the point's solid was not left to the point).
+{
+  const maps = {};
+  for (const id of ['gym', 'office', 'backyard']) maps[id] = await mapFixture(id);
+  const poses = [
+    ['gym, clean, posts 70 and 79 under bench 78', 'gym', { pos: [-1.206141, -5.572899, 1.066924], quat: [0.12360403657049014, -0.007755651928591021, 0.002760218489604517, 0.9922974721324916], vel: [-0.460586, 0.102564, 0.042379] }, 0.12485433015972375],
+    ['gym, posed across seam 61/58', 'gym', { pos: [-7.54818, -5.195096, 0.356278], quat: [-0.8878893283170867, -0.02574103581107849, 0.004789797304898303, 0.4593114385444624], vel: [-1.464351, 8.111448, 0.298202] }, 0.15625133514404296],
+    ['gym, posed across seam 21/18', 'gym', { pos: [-7.496143, 5.214499, 0.320935], quat: [-0.5949891253785448, -0.022519397961825643, 0.27627648406604444, 0.7544217134658943], vel: [-1.594593, -3.903893, -0.44409] }, 0.3201125621795654],
+    ['office, posed across seam 79/76', 'office', { pos: [-3.6169, 1.957242, 0.373651], quat: [-0.9583604029563483, 0.00935002721375848, 0.0007611195693421739, 0.2854073154869175], vel: [0.227051, -0.132998, 0.134752] }, 0.3384892702102661],
+    ['office, posed at box 65', 'office', { pos: [-3.225434, 4.671019, 0.040892], quat: [0.4743427241172406, 0.13894981159139036, 0.01016627583630364, 0.869245981740136], vel: [4.404882, -7.034932, 4.925329] }, 0.07794291973114013],
+    ['backyard, posed with thin wall 46 through the quad', 'backyard', { pos: [-0.343597, 0.758099, 0.69806], quat: [0.9987510352172345, -0.00874539080904451, 0.005781718884875036, 0.048851402424452114], vel: [0.842135, -0.893103, -0.619923] }, 0.16360745429992676],
+  ];
+  const lines = [];
+  for (const [name, map, pose, duty] of poses) {
+    const r = await flyPose(maps[map], { pose, duty, ticks: 1500 });
+    lines.push(`${name}: ${fmtPose(r)}`);
+    assert.ok(r.fault === 0 && r.push <= 5e-3, `${name}: no push over 5 mm in a tick: ${fmtPose(r)}`);
+    if (map === 'backyard') assert.ok(r.deepTicks <= 20, `${name}: no rim held inside the wall: ${fmtPose(r)}`);
+  }
+  console.log(`hull overlaps carried from the tick before, 6 map poses for 1.5 s:\n  ${lines.join('\n  ')}`);
+}
+
 for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
 const failing = open.filter((x) => !investigation[x.key]);
 assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
-console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down: PASS');
+console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down, carried hull overlaps pushed only as far as they deepen: PASS');
