@@ -77,7 +77,13 @@
  *     a box top is along the vertical, as on the floor (along the hull's
  *     tilted face it walked a quad resting on a table edge sideways).
  *     A box the hull began the tick in at least as deep (a pose, a post
- *     through the quad's middle) is not one it is passing into. Pressed up
+ *     through the quad's middle) is not one it is passing into; one it began
+ *     in less deep is pushed back only as far as it went deeper this tick
+ *     (pushed out whole, a carried 19 mm overlap threw the quad into the
+ *     next post, and that one threw it back: 20 to 40 mm one-tick pushes),
+ *     and one a footprint point began the tick inside is left to that point
+ *     (held at its depth, a thin wall through the quad kept a rim 9.9 mm
+ *     inside it). Pressed up
  *     under a shelf shallower than the quad against a wall, the shelf's
  *     front edge passed between the leading rim and the rest and the quad
  *     swung over it onto the shelf (12 mm of edge inside the hull); set down
@@ -1173,6 +1179,18 @@ static int holdPoints(const scBox_t *b, const scHull_t *h, const double n[3], do
     return farD > PAST_WU * PAST_WU ? 2 : 1;
 }
 
+// Whether a footprint point (a corner of hull h) is strictly inside box b.
+static bool pointIn(const scBox_t *b, const scHull_t *h)
+{
+    for (int k = 0; k < SC_HULL_POINTS; k++) {
+        const double *v = h->v[k];
+        if (v[0] > b->min[0] + FACE_EPS && v[0] < b->max[0] - FACE_EPS && v[1] > b->min[1] + FACE_EPS
+            && v[1] < b->max[1] - FACE_EPS && v[2] > b->min[2] + FACE_EPS && v[2] < b->max[2] - FACE_EPS) {
+            return true;
+        }
+    }
+    return false;
+}
 
 int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HULL_POINTS][3],
                   sc_hull_contact_t *out, int max)
@@ -1197,14 +1215,8 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         if (apart) {
             continue;
         }
-        // A box a footprint point is inside: the point resolves it.
-        bool pointIn = false;
-        for (int k = 0; k < SC_HULL_POINTS && !pointIn; k++) {
-            const double *v = h.v[k];
-            pointIn = v[0] > b->min[0] + FACE_EPS && v[0] < b->max[0] - FACE_EPS && v[1] > b->min[1] + FACE_EPS
-                      && v[1] < b->max[1] - FACE_EPS && v[2] > b->min[2] + FACE_EPS && v[2] < b->max[2] - FACE_EPS;
-        }
-        if (pointIn) {
+        // A solid a footprint point is inside: the point resolves it.
+        if (pointIn(b, &h)) {
             continue;
         }
         double n[3];
@@ -1212,17 +1224,23 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         if (!(depth > 0)) {
             continue;
         }
-        // A box the hull began the tick in at least as deep (a pose, or a post
-        // through the quad's middle): not passing into it this tick.
+        // A solid the hull began the tick in at least as deep (a pose, or a
+        // post through the quad's middle): not passing into it this tick. One
+        // it began in less deep is pushed back only as far as it went deeper
+        // this tick: all of a carried overlap at once (19 mm) threw the quad
+        // into the next post, and that one threw it back. A solid a point
+        // began the tick inside is left to that point (a thin wall through
+        // the quad, held at its depth by the hull, kept a rim inside it).
         if (!start0) {
             hullAt(start, &h0);
             start0 = true;
         }
         double n0[3];
         const double depth0 = hullDepth(b, &h0, n0);
-        if (depth0 > 0 && depth <= depth0 + FACE_EPS) {
+        if ((depth0 > 0 && depth <= depth0 + FACE_EPS) || pointIn(b, &h0)) {
             continue;
         }
+        const double deeper = depth0 > 0 ? depth - depth0 : depth;
         double held[2][3];
         const int points = holdPoints(b, &h, n, held);
         if (!points) {
@@ -1259,9 +1277,9 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         hc->side = n[hc->ax] > 0 ? 1 : -1;
         hc->box = pieceAt(i, hc->ax, hc->side, held[0]);
         // Pushed out along that face's axis, as a point is, as far as clears
-        // the overlap along n.
+        // the overlap along n (what it went deeper this tick).
         double push[3] = { 0, 0, 0 };
-        push[hc->ax] = depth / n[hc->ax];
+        push[hc->ax] = deeper / n[hc->ax];
         world2mod(push, hc->push);
     }
     return count;
