@@ -56,6 +56,12 @@
  *     way out. A rim deeper into a concave corner than past a split post's
  *     seam saw only the upper piece, all its faces inner, and the seam, the
  *     shallowest, held it at the split: an invisible ledge
+ *   - an inner face is one the point came in through only if it travelled
+ *     that deep into it this tick: the ON_FACE_WU allowance is for a point
+ *     on a surface, not for a seam beside it. A rim pressed into a split
+ *     wall as it rose into the ceiling beside the seam, 20 to 90 um from it
+ *     and not moving across it, was pushed onto the seam, a touch whose
+ *     friction cut its speed into the ceiling from 2.45 to 2.01 m/s
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
  *
@@ -569,6 +575,9 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
                             continue;           // farther than the point came in this tick
                         }
                         inner = covered(i, cp, ax, side, plane);
+                        if (inner && depth > fmax(0, travel) + FACE_EPS) {
+                            continue;           // a seam it did not come through: no slack
+                        }
                         crossedIn = inner && crossedInside(i, start, tickPos, ax, side, plane);
                     }
                     // Top first, then surfaces, then inner faces, those it

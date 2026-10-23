@@ -1680,6 +1680,104 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   console.log(`concave corner, rim 3 deeper into the corner than past the post's split, ${hits.length} hits: footprints at most ${worst.toExponential(2)} m from the post in one piece`);
 }
 
+// 37. Pressed into a split wall as it rises into the ceiling beside the
+// seam (29, now with 0.5 m/s into the wall): the same as the wall in one
+// piece. Rim 1 ends the first tick inside the wall piece 20 to 90 um from
+// the seam, past the wall face (an inner face there, under the ceiling) and
+// into the ceiling (whose bottom is an inner face where the wall is). The
+// seam face was the shallowest of the three inner faces and passed world.c's
+// travel check on its 0.1 mm allowance (ON_FACE_WU) with no travel across
+// it: the rim was pushed onto the seam, an extra wall contact whose friction
+// took 18% off its speed into the ceiling. Contacts are compared by surface
+// (a wall piece or the ceiling), impact and crash flag.
+{
+  const mapBoxes = async (id) => JSON.parse(await readFile(new URL(`tests/fixtures/maps/${id}.json`, root), 'utf8')).boxes
+    .map((b, i) => ({ min: b.um.slice(0, 3).map((v) => v * 1e-6), max: b.um.slice(3).map((v) => v * 1e-6), id: i }));
+  const room = await mapBoxes('room');
+  const merged = [{ min: [0, 1, 2].map((a) => Math.min(room[0].min[a], room[1].min[a], room[2].min[a])), max: [0, 1, 2].map((a) => Math.max(room[0].max[a], room[1].max[a], room[2].max[a])), id: 0 }, ...room.slice(3)];
+  // The pose of 29: on its tail, belly to the +x wall, rim 1 on the wall
+  // face 0.5 mm under the ceiling, rimY from the seam.
+  const L = REACH * Math.SQRT2;
+  const c22 = Math.cos(Math.PI / 8);
+  const s22 = Math.sin(Math.PI / 8);
+  const up = [c22 * Math.SQRT1_2, -s22 * Math.SQRT1_2, -c22 * Math.SQRT1_2, s22 * Math.SQRT1_2];
+  const wallX = room[0].min[0];
+  const seamY = room[1].max[1];
+  const ceilZ = room[12].min[2];
+  const surface = (e) => (e.box >= 0 && e.box <= 2 ? 'wall' : e.box);
+  let differ = 0;
+  let hitMin = Infinity;
+  // Beside the seam at 0.05 to 1.5 m/s into the wall, rising at 1 or 3 m/s,
+  // still or drifting off the seam; then across it, and 2 mm off it (29's).
+  const aims = [
+    [0.00002, [0.5, 0, 3]], [0.00005, [0.5, 0, 3]], [0.00009, [0.5, 0, 3]], [-0.00003, [0.5, 0, 3]], [-0.00008, [0.5, 0, 3]],
+    [0.00003, [0.05, 0, 3]], [0.00003, [1.5, 0, 3]], [0.00001, [0.5, 0, 1]], [0.00006, [0.5, 0.01, 3]],
+    [0.00002, [0.5, -0.05, 3]], [-0.002, [0.5, 4, 3]],
+  ];
+  for (const [rimY, vel] of aims) {
+    const pos = [wallX - REST, seamY + rimY, ceilZ - 5e-4 - L];
+    const run = async (boxes) => {
+      const c = await flight({ floorZ: 0, boxes });
+      c.teleport({ pos, quat: up, vel });
+      c.events();
+      c.step(1);
+      const r = c.footprint[1];
+      const first = kinds(c.events(), 'contact');
+      const ev = [...first];
+      for (let k = 1; k < 20; k++) {
+        c.step(1);
+        ev.push(...kinds(c.events(), 'contact'));
+      }
+      return { r, ev: ev.map((e) => [surface(e), Number(e.impactMs.toFixed(6)), e.crashed]), first: first.map((e) => [surface(e), e.impactMs]), vel: c.state.vel, pos: c.state.pos };
+    };
+    const a = await run(room);
+    const b = await run(merged);
+    // Not vacuous: rim 1 met the ceiling on the first tick, on the wall face
+    // (to 1 nm) beside the seam, and the wall reported the press.
+    const ceiling = a.first.find((e) => e[0] === 12);
+    assert.ok(ceiling && Math.abs(a.r[0] - wallX) <= 1e-9 && Math.abs(a.r[2] - ceilZ) <= 1e-6 && a.first.some((e) => e[0] === 'wall' && e[1] > 0.9 * vel[0]), `rim 1 at y ${rimY} pressed into the wall-ceiling edge: ${JSON.stringify(a.first)}`);
+    hitMin = Math.min(hitMin, ceiling[1]);
+    if (JSON.stringify(a.ev) !== JSON.stringify(b.ev) || a.vel.some((v, k) => Math.abs(v - b.vel[k]) > 1e-9) || a.pos.some((v, k) => Math.abs(v - b.pos[k]) > 1e-9)) {
+      differ++;
+      console.log(`  pressed up the split wall into the ceiling differs at ${JSON.stringify([rimY, vel])}: split ${JSON.stringify(a.ev)} vs one piece ${JSON.stringify(b.ev)}, rim 1 y after the first tick ${(a.r[1] - seamY).toExponential(2)} m from the seam`);
+    }
+  }
+  console.log(`pressed into a split wall rising into the ceiling beside its seam, ${aims.length} aimed (rim 1 hit the ceiling at ${hitMin.toFixed(3)} m/s or more): ${differ} differ from the wall in one piece`);
+  assert.equal(differ, 0);
+
+  // The T-join of 26 (a table against a wall split at y = 0, the leading rim
+  // on the table top at the seam, leaning into the wall, pressed for 3 s):
+  // the same footprint path and contacts as against the wall in one piece
+  // (a seam touch 361 ms in, from the allowance, took it 0.15 mm apart).
+  // Pitched 0.52 rad into the wall: the leading rim (motor 1, +x -y) from the CG.
+  const tq = [Math.cos(0.26), 0, Math.sin(0.26), 0];
+  const lead = [REACH * Math.cos(0.52) - REST * Math.sin(0.52), -REACH, -REACH * Math.sin(0.52) - REST * Math.cos(0.52)];
+  const tPos = [1.99 - lead[0], -lead[1], 0.5 - lead[2]];
+  const table = { min: [1, -1, 0], max: [2, 1, 0.5], id: 1 };
+  const join = async (wall) => {
+    const c = await flight({ floorZ: 0, boxes: [table, ...wall] });
+    c.teleport({ pos: tPos, quat: tq });
+    c.events();
+    c.motorOverride(-1, D(0.3));
+    const path = [];
+    const ev = [];
+    let seam = 0;
+    for (let k = 0; k < 3000; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [k, e.box === 1 ? 'table' : 'wall', Number(e.impactMs.toFixed(6))]));
+      path.push(c.footprint);
+      if (c.footprint.some((p) => p[0] > 2 - 1e-4 && Math.abs(p[1]) < 1e-3 && Math.abs(p[2] - 0.5) < 1e-4)) seam++;
+    }
+    return { path, ev, seam };
+  };
+  const tSplit = await join([{ min: [2, -1, 0], max: [2.2, 0, 2], id: 2 }, { min: [2, 0, 0], max: [2.2, 1, 2], id: 3 }]);
+  const tOne = await join([{ min: [2, -1, 0], max: [2.2, 1, 2], id: 2 }]);
+  const tApart = Math.max(...tSplit.path.map((fp, k) => Math.max(...fp.map((p, i) => maxAbs(p.map((u, a) => u - tOne.path[k][i][a]))))));
+  console.log(`T-join against the split wall, pressed 3 s: ${tSplit.seam} ms with a rim in the join, contacts ${JSON.stringify(tSplit.ev)} (one piece ${JSON.stringify(tOne.ev)}), footprints ${tApart.toExponential(2)} m apart`);
+  assert.ok(tSplit.seam >= 1000, 'pressed into the T-join');
+  assert.ok(tApart < 1e-9 && JSON.stringify(tSplit.ev) === JSON.stringify(tOne.ev), 'the T-join as against the wall in one piece');
+}
+
 for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
 const failing = open.filter((x) => !investigation[x.key]);
 assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
