@@ -40,6 +40,9 @@ const TABLES = {
   tpa_mode: ['PD', 'D'],                                             // lookupTableTpaMode
   motor_pwm_protocol: ['PWM', 'ONESHOT125', 'ONESHOT42', 'MULTISHOT', 'BRUSHED', 'DSHOT150', 'DSHOT300', 'DSHOT600', 'PROSHOT1000', 'DISABLED'], // lookupTablePwmProtocol
   throttle_limit_type: ['OFF', 'SCALE', 'CLIP'],
+  feedforward_averaging: ['OFF', '2_POINT', '3_POINT', '4_POINT'],    // lookupTableFeedforwardAveraging
+  gyro_to_use: ['FIRST', 'SECOND', 'BOTH'],                          // lookupTableGyro
+  altitude_source: ['DEFAULT', 'BARO_ONLY', 'GPS_ONLY'],             // lookupTablePositionAltitudeSource
 };
 // Header values Betaflight logs scaled (blackbox/blackbox.c:1541): name -> divisor.
 const SCALED = { acc_lpf_hz: 100 };

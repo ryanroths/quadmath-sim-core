@@ -1,5 +1,5 @@
 # Settings the log header records and configs/air65-ryfly-2026-10-23.txt does not reproduce (tools/config-from-log.mjs).
 # From BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_090813_BETAFPVG473.BBL; each line cites its header entry and the value the diff left.
-# 114 header settings compared, 0 differ.
+# 117 header settings compared, 0 differ.
 # Differs, kept by sim policy: pid_process_denom 2 (the sim keeps 1: the sim runs the PID on every gyro sample, at SC_LOOP_HZ).
-# Not compared (no lookup table here): acc_hardware (header 0, Betaflight AUTO); altitude_source (header 0, Betaflight DEFAULT); feedforward_averaging (header 1, Betaflight 2_POINT); gyro_to_use (header 0, Betaflight FIRST); debug_mode (header 6, Betaflight GYRO_SCALED).
+# Not compared (no lookup table here): acc_hardware (header 0, Betaflight AUTO); debug_mode (header 6, Betaflight GYRO_SCALED).

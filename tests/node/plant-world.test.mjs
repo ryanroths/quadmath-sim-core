@@ -480,16 +480,17 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   // Tilted 0.8 rad into the wall (+x), the two leading duct rims start where
   // the old CG point did: 1 mm from the face, 60 mm above the seam between
   // the blocks at z 0.5. The wall's friction on the pressed rims holds the
-  // slide to about 10 mm/s, so it runs 7 s and the rims cross the seam at
-  // about 3.7 s. The press is D(0.34): at loadFraction 0.632 the old D(0.35)
-  // holds the quad on the face (it ends 46 mm above the seam), where at 0.81
-  // it slid past at 4.7 s.
+  // slide to some 20 mm/s, so it runs 7 s and the rims cross the seam at
+  // about 2.8 s. The press is D(0.32): the wall's friction holds the quad on
+  // the face at D(0.34) and above (a stick-slip edge that moves with the pack's
+  // sag: between D(0.335) and D(0.34) with cellIR 57 mOhm), so the press sits
+  // clear of it. At loadFraction 0.81 the old D(0.35) slid past at 4.7 s.
   const tilt = 0.8;
   const lead = [REACH * Math.cos(tilt) - REST * Math.sin(tilt), -REACH * Math.sin(tilt) - REST * Math.cos(tilt)];
   const slide = async (boxes) => {
     const core = await flight({ floorZ: 0, boxes });
     core.teleport({ pos: [1.999 - lead[0], 0, 0.56 - lead[1]], vel: [0.5, 0, -0.3], quat: [Math.cos(tilt / 2), 0, Math.sin(tilt / 2), 0] });
-    core.motorOverride(-1, D(0.34));
+    core.motorOverride(-1, D(0.32));
     const path = [];
     let maxX = -Infinity;
     let inside = 0;
