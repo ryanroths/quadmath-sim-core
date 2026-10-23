@@ -1784,6 +1784,79 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   assert.ok(tApart < 1e-9 && JSON.stringify(tSplit.ev) === JSON.stringify(tOne.ev), 'the T-join as against the wall in one piece');
 }
 
+// The footprint hull checks of 38 and after: the hull of the five points,
+// how deep a box's edges are inside it, and 27's pose against a wall.
+const CANOPY = air65.values.hullAbove.value;
+// The hull's faces (rims 0 1 3 2 round the base, the canopy at the apex),
+// pointing out, and how deep a point is inside it (negative outside).
+const hullDepthAt = (fp) => {
+  const v = [fp[0], fp[1], fp[3], fp[2], fp[4]];
+  const c = [0, 1, 2].map((a) => v.reduce((s, p) => s + p[a], 0) / 5);
+  const sub = (a, b) => a.map((x, i) => x - b[i]);
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const planes = [[0, 1, 2], [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]].map(([i, j, k]) => {
+    const [p, q, r] = [sub(v[j], v[i]), sub(v[k], v[i]), sub(c, v[i])];
+    const n = [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+    const len = Math.hypot(...n) * (dot(n, r) > 0 ? -1 : 1);
+    const u = n.map((x) => x / len);
+    return { u, d: dot(u, v[i]) };
+  });
+  return { planes, at: (x) => Math.min(...planes.map(({ u, d }) => d - dot(u, x))) };
+};
+// The deepest any point of the box's twelve edges is inside the hull: each
+// edge clipped to the hull, then sampled.
+const edgeIn = (fp, box) => {
+  const { planes, at } = hullDepthAt(fp);
+  let worst = 0;
+  for (let s = 0; s < 12; s++) {
+    const k = Math.floor(s / 4);
+    const [k1, k2] = [(k + 1) % 3, (k + 2) % 3];
+    const a = [0, 0, 0];
+    const e = [0, 0, 0];
+    a[k] = box.min[k];
+    e[k] = box.max[k];
+    a[k1] = e[k1] = s & 1 ? box.max[k1] : box.min[k1];
+    a[k2] = e[k2] = s & 2 ? box.max[k2] : box.min[k2];
+    let [t0, t1] = [0, 1];
+    for (const { u, d } of planes) {
+      const [da, de] = [u[0] * a[0] + u[1] * a[1] + u[2] * a[2] - d, u[0] * e[0] + u[1] * e[1] + u[2] * e[2] - d];
+      if (da > 0 && de > 0) t0 = 2;
+      else if (da > 0) t0 = Math.max(t0, da / (da - de));
+      else if (de > 0) t1 = Math.min(t1, da / (da - de));
+    }
+    for (let j = 0; t0 <= t1 && j <= 32; j++) {
+      const t = t0 + ((t1 - t0) * j) / 32;
+      worst = Math.max(worst, at(a.map((x, i) => x + t * (e[i] - x))));
+    }
+  }
+  return worst;
+};
+// 27's pose: pitched tilt into +x after a yaw just past 45 deg, rim 1 on
+// the wall face, on the quaternion the plant gets.
+const pose = (tilt, yaw) => {
+  const [cp, sp, cy, sy] = [Math.cos(tilt / 2), Math.sin(tilt / 2), Math.cos(yaw / 2), Math.sin(yaw / 2)];
+  const quat = [cp * cy, sp * sy, sp * cy, cp * sy];
+  const r = quat.map((v) => Math.round(v * 1e9) * 1e-9);
+  const n = Math.sqrt(r.reduce((s, v) => s + v * v, 0));
+  const [w, x, y, z] = r.map((v) => v / n);
+  const rot = (v) => {
+    const t = [2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])];
+    return [v[0] + w * t[0] + (y * t[2] - z * t[1]), v[1] + w * t[1] + (z * t[0] - x * t[2]), v[2] + w * t[2] + (x * t[1] - y * t[0])];
+  };
+  return { quat, rim: rot([REACH, -REACH, -REST]), canopy: rot([0, 0, CANOPY]) };
+};
+const onFace = (tilt) => {
+  const ahead = Math.floor(pose(tilt, Math.PI / 4).rim[0] * 1e6 + 1e-9) * 1e-6;
+  let lo = Math.PI / 4;
+  let hi = pose(tilt, lo).rim[0] <= ahead ? lo : lo + 0.05;
+  while (hi > lo && hi - lo > 1e-15) {
+    const m = (lo + hi) / 2;
+    if (pose(tilt, m).rim[0] > ahead) lo = m;
+    else hi = m;
+  }
+  return { ...pose(tilt, hi), cgX: 2 - ahead };
+};
+
 // 38. A box edge never passes through the footprint's hull, the convex hull
 // of the five points (a square pyramid: the duct rims round the base, the
 // canopy 28 mm above them at the apex). Pressed up under a shelf shallower
@@ -1799,76 +1872,6 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
 // behind the edge and its front rims over it rests on its back rims and the
 // edge, still and level, rather than tipping with the edge through its hull.
 {
-  const CANOPY = air65.values.hullAbove.value;
-  // The hull's faces (rims 0 1 3 2 round the base, the canopy at the apex),
-  // pointing out, and how deep a point is inside it (negative outside).
-  const hullDepthAt = (fp) => {
-    const v = [fp[0], fp[1], fp[3], fp[2], fp[4]];
-    const c = [0, 1, 2].map((a) => v.reduce((s, p) => s + p[a], 0) / 5);
-    const sub = (a, b) => a.map((x, i) => x - b[i]);
-    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    const planes = [[0, 1, 2], [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]].map(([i, j, k]) => {
-      const [p, q, r] = [sub(v[j], v[i]), sub(v[k], v[i]), sub(c, v[i])];
-      const n = [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
-      const len = Math.hypot(...n) * (dot(n, r) > 0 ? -1 : 1);
-      const u = n.map((x) => x / len);
-      return { u, d: dot(u, v[i]) };
-    });
-    return { planes, at: (x) => Math.min(...planes.map(({ u, d }) => d - dot(u, x))) };
-  };
-  // The deepest any point of the box's twelve edges is inside the hull: each
-  // edge clipped to the hull, then sampled.
-  const edgeIn = (fp, box) => {
-    const { planes, at } = hullDepthAt(fp);
-    let worst = 0;
-    for (let s = 0; s < 12; s++) {
-      const k = Math.floor(s / 4);
-      const [k1, k2] = [(k + 1) % 3, (k + 2) % 3];
-      const a = [0, 0, 0];
-      const e = [0, 0, 0];
-      a[k] = box.min[k];
-      e[k] = box.max[k];
-      a[k1] = e[k1] = s & 1 ? box.max[k1] : box.min[k1];
-      a[k2] = e[k2] = s & 2 ? box.max[k2] : box.min[k2];
-      let [t0, t1] = [0, 1];
-      for (const { u, d } of planes) {
-        const [da, de] = [u[0] * a[0] + u[1] * a[1] + u[2] * a[2] - d, u[0] * e[0] + u[1] * e[1] + u[2] * e[2] - d];
-        if (da > 0 && de > 0) t0 = 2;
-        else if (da > 0) t0 = Math.max(t0, da / (da - de));
-        else if (de > 0) t1 = Math.min(t1, da / (da - de));
-      }
-      for (let j = 0; t0 <= t1 && j <= 32; j++) {
-        const t = t0 + ((t1 - t0) * j) / 32;
-        worst = Math.max(worst, at(a.map((x, i) => x + t * (e[i] - x))));
-      }
-    }
-    return worst;
-  };
-  // 27's pose: pitched tilt into +x after a yaw just past 45 deg, rim 1 on
-  // the wall face, on the quaternion the plant gets.
-  const pose = (tilt, yaw) => {
-    const [cp, sp, cy, sy] = [Math.cos(tilt / 2), Math.sin(tilt / 2), Math.cos(yaw / 2), Math.sin(yaw / 2)];
-    const quat = [cp * cy, sp * sy, sp * cy, cp * sy];
-    const r = quat.map((v) => Math.round(v * 1e9) * 1e-9);
-    const n = Math.sqrt(r.reduce((s, v) => s + v * v, 0));
-    const [w, x, y, z] = r.map((v) => v / n);
-    const rot = (v) => {
-      const t = [2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])];
-      return [v[0] + w * t[0] + (y * t[2] - z * t[1]), v[1] + w * t[1] + (z * t[0] - x * t[2]), v[2] + w * t[2] + (x * t[1] - y * t[0])];
-    };
-    return { quat, rim: rot([REACH, -REACH, -REST]), canopy: rot([0, 0, CANOPY]) };
-  };
-  const onFace = (tilt) => {
-    const ahead = Math.floor(pose(tilt, Math.PI / 4).rim[0] * 1e6 + 1e-9) * 1e-6;
-    let lo = Math.PI / 4;
-    let hi = pose(tilt, lo).rim[0] <= ahead ? lo : lo + 0.05;
-    while (hi > lo && hi - lo > 1e-15) {
-      const m = (lo + hi) / 2;
-      if (pose(tilt, m).rim[0] > ahead) lo = m;
-      else hi = m;
-    }
-    return { ...pose(tilt, hi), cgX: 2 - ahead };
-  };
   let worst = 0;
   let inside = 0;
   let hullFirst = 0;
@@ -2015,7 +2018,99 @@ const mapFixture = async (id) => JSON.parse(await readFile(new URL(`tests/fixtur
   assert.ok(Math.abs(whole.vel[2] + 0.979411859) < 1e-8, 'one piece: the same velocity');
 }
 
+// 40. A solid in pieces meets the footprint's hull as the same solid in one
+// piece (world.c buildSolids): a table split near, under or across the edge
+// the quad lands on, in two, three or four pieces, and 38's shelf split along
+// and across its front edge, give the same footprint path tick by tick and
+// the same contacts as the box in one piece, the shelf's edge staying out of
+// the hull; and every order of the pieces in the map's list gives the same
+// path (the hull's contacts are taken in order in plant.c's sweeps). Per
+// piece, a seam was a face: a sliver of the far piece across it pushed the
+// quad up to 5 mm sideways in one tick with a phantom contact and a roll
+// kick, the split shelf held its edge 2.2 um inside the hull, and swapping
+// two pieces in the list moved the quad 44 um.
+{
+  const cut = (boxes, ax, at) => boxes.flatMap((b) => (b.min[ax] < at && at < b.max[ax]
+    ? [{ ...b, max: b.max.map((v, a) => (a === ax ? at : v)) }, { ...b, min: b.min.map((v, a) => (a === ax ? at : v)) }]
+    : [b]));
+  const yawQ = (yaw) => [Math.cos(yaw / 2), 0, 0, Math.sin(yaw / 2)];
+  const fly = async (boxes, { pos, vel, quat, duty }, ticks, edgeOf) => {
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport({ pos, vel, quat });
+    c.events();
+    if (duty) c.motorOverride(-1, duty);
+    const path = [];
+    const ev = [];
+    let edge = 0;
+    for (let k = 0; k < ticks; k++) {
+      c.step(1);
+      path.push(c.footprint);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [k, e.box, Number(e.impactMs.toFixed(6)), e.crashed]));
+      if (edgeOf) edge = Math.max(edge, edgeIn(c.footprint, edgeOf));
+    }
+    return { path, ev, edge };
+  };
+  const apart = (a, b) => Math.max(...a.path.map((fp, k) => Math.max(...fp.map((p, i) => maxAbs(p.map((v, ax) => v - b.path[k][i][ax]))))));
+  let runs = 0;
+  let worst = 0;
+  const differ = [];
+  const same = (what, split, whole) => {
+    const d = apart(split, whole);
+    runs++;
+    worst = Math.max(worst, d);
+    if (!(d < 1e-9) || JSON.stringify(split.ev) !== JSON.stringify(whole.ev)) differ.push(`${what}: ${d.toExponential(2)} m apart, contacts ${JSON.stringify(split.ev.slice(0, 4))} vs ${JSON.stringify(whole.ev.slice(0, 4))}`);
+  };
+
+  // The table, the pieces all reporting its id.
+  const table = [{ min: [1, -1, 0], max: [2, 1, 0.5], id: 1 }];
+  const ySeams = [REACH - 3e-3, REACH - 1e-4, -(REACH - 1e-4), 0.0338, 0.01, 0];
+  const splits = [
+    ...ySeams.map((y) => [`y ${y.toFixed(4)}`, cut(table, 1, y)]),
+    ['y -0.005 and 0.008', cut(cut(table, 1, -0.005), 1, 0.008)],
+    ['x 1.995', cut(table, 0, 1.995)],
+    ['x 1.97', cut(table, 0, 1.97)],
+    ['z 0.3', cut(table, 2, 0.3)],
+    ['quartered', cut(cut(table, 1, 0), 0, 1.97)],
+  ];
+  // Dropped level or yawed onto the edge, the CG 10 mm behind it.
+  for (const [vz, yaw, up] of [[-1, 0, 2e-3], [-2, 0, 2e-3], [-1, 0.3, 2e-3], [-3, 0, 5e-4]]) {
+    const start = { pos: [1.99, 0, 0.5 + REST + up], vel: [0, 0, vz], quat: yawQ(yaw) };
+    const whole = await fly(table, start, 600);
+    for (const [name, boxes] of splits.slice(0, ySeams.length)) same(`dropped at ${vz} m/s yaw ${yaw}, cut at ${name}`, await fly(boxes, start, 600), whole);
+  }
+  // Set down level on the edge (38's table) for 2 s.
+  const setDown = { pos: [1.99, 0, 0.5 + REST + 5e-4] };
+  const rest = await fly(table, setDown, 2000);
+  for (const [name, boxes] of splits) same(`set down, cut at ${name}`, await fly(boxes, setDown, 2000), rest);
+  // Set down 3 mm off a seam, the pieces in every order.
+  const perms = (a) => (a.length <= 1 ? [a] : a.flatMap((x, i) => perms([...a.slice(0, i), ...a.slice(i + 1)]).map((p) => [x, ...p])));
+  const offSeam = { pos: [1.99, 0.003, 0.5 + REST + 5e-4] };
+  const restOff = await fly(table, offSeam, 2000);
+  for (const pieces of [cut(table, 1, 0), cut(cut(table, 1, -0.005), 1, 0.008)]) {
+    for (const order of perms(pieces)) same(`set down 3 mm off the seam, ${order.length} pieces in the order ${order.map((b) => b.min[1]).join(' ')}`, await fly(order, offSeam, 2000), restOff);
+  }
+
+  // 38's shelf press, the shelf split along and across its front edge.
+  const shelf = [{ min: [1.96, -1, 0.9], max: [2, 1, 0.94], id: 1 }];
+  const wall = { min: [2, -1, 0], max: [2.08, 1, 2.4], id: 2 };
+  let shelfEdge = 0;
+  for (const [tilt, duty] of [[1e-3, D(0.62)], [1e-4, D(0.62)]]) {
+    const { quat, rim, cgX } = onFace(tilt);
+    const press = { pos: [cgX, 0, 0.87 - rim[2]], quat, vel: [0, 0, 0.5], duty };
+    const whole = await fly([...shelf, wall], press, 3000, shelf[0]);
+    for (const [name, pieces] of [['y 0', cut(shelf, 1, 0)], ['y 0.02', cut(shelf, 1, 0.02)], ['y -0.02', cut(shelf, 1, -0.02)], ['y 0.045', cut(shelf, 1, 0.045)], ['y -0.045', cut(shelf, 1, -0.045)], ['x 1.98', cut(shelf, 0, 1.98)], ['z 0.92', cut(shelf, 2, 0.92)]]) {
+      const split = await fly([...pieces, wall], press, 3000, shelf[0]);
+      shelfEdge = Math.max(shelfEdge, split.edge);
+      same(`shelf press tilt ${tilt}, cut at ${name}`, split, whole);
+    }
+  }
+  console.log(`a table and a shelf in pieces against the same in one piece, ${runs} flights (cuts along, across and under the edge, 2 to 4 pieces, every order of 2 and 3): ${differ.length} differ, footprints at most ${worst.toExponential(2)} m apart; the split shelf's edge at most ${(shelfEdge * 1e6).toFixed(3)} um inside the hull`);
+  for (const d of differ.slice(0, 6)) console.log(`  ${d}`);
+  assert.equal(differ.length, 0, 'a solid in pieces meets the hull as the solid in one piece');
+  assert.ok(shelfEdge < 1e-6, 'the split shelf edge never through the hull');
+}
+
 for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
 const failing = open.filter((x) => !investigation[x.key]);
 assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
-console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed: PASS');
+console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece: PASS');
