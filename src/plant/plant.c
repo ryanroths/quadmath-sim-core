@@ -42,7 +42,7 @@
 #define GROUND_SCRUB 7.3            // H:3199, per second (as world.c TUMBLE_DECAY)
 #define FOOTPRINT_POINTS 5
 #define HULL_BOXES 2                // boxes held off by the footprint's hull, a tick
-#define CONTACTS (FOOTPRINT_POINTS + 2 * HULL_BOXES)
+#define CONTACTS (FOOTPRINT_POINTS + 2 * HULL_BOXES + FOOTPRINT_POINTS)
 #define CONTACT_SWEEPS 32
 #define CONTACT_SPIN_CAP 150.0      // rad/s, below the divergence guard (as world.c)
 
@@ -659,7 +659,10 @@ static double restHeightAt(const double q[4])
 // point inside it, is pushed out (along a box axis, as far as clears it along
 // the axis of least overlap), and the box feature inside the hull (a corner,
 // or both ends of an edge across a face) is one or two more contacts with
-// the world's response, in the same sweeps.
+// the world's response, in the same sweeps. The hull's push moves the points
+// too, so they are resolved again from where the points' push left them,
+// each push one more contact (world.c chooses a push that takes no point
+// into a solid, but a point lying on a seam plane is in none).
 static uint32_t footprintContact(double p[3], double v[3], const double q[4], double om[3], const double p0[3],
                                  const double q0[4], double dt)
 {
@@ -791,8 +794,65 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             active[k] = true;
         }
     }
+    const double pHull[3] = { p[0], p[1], p[2] };
+    bool hullMoved = false;
     for (int a = 0; a < 3; a++) {
         p[a] += hullHi[a] + hullLo[a];
+        hullMoved = hullMoved || p[a] != pHull[a];
+    }
+    // The hull's push moves the points too: each is resolved again, from
+    // where the points' push left it to where the hull's push carried it, and
+    // what the world does to it is one more contact, the CG moving by the
+    // largest push each way as before. world.c pushes the hull only along an
+    // axis that takes no point into a solid, but a point lying on a seam
+    // plane is in none: a rim on a desk top beside a keyboard was carried
+    // 1.3 mm under the keyboard's edge, and the next tick found it deep in
+    // the solid and pushed it out through the bottom of the desk (29 mm).
+    if (hullMoved) {
+        double reHi[3] = { 0, 0, 0 }, reLo[3] = { 0, 0, 0 };
+        for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+            double wxr[3], pt[3], vt[3], st[3];
+            cross3(omW, rw[k], wxr);
+            for (int a = 0; a < 3; a++) {
+                pt[a] = p[a] + rw[k][a];
+                vt[a] = v[a] + wxr[a];
+                st[a] = pHull[a] + rw[k][a];
+            }
+            const double ptIn[3] = { pt[0], pt[1], pt[2] };
+            const double vtIn[3] = { vt[0], vt[1], vt[2] };
+            bool floorHit = false, scrub = false;
+            flags |= sc_world_point(pt, vt, st, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE], blk[PB_SPIN_SCALE],
+                                    &floorHit, &scrub);
+            anyFloor = anyFloor || floorHit;
+            anyScrub = anyScrub || scrub;
+            double dp[3];
+            for (int a = 0; a < 3; a++) {
+                dp[a] = pt[a] - ptIn[a];
+                reHi[a] = fmax(reHi[a], dp[a]);
+                reLo[a] = fmin(reLo[a], dp[a]);
+            }
+            const double len = sqrt(dot3(dp, dp));
+            if (!(len > 0)) {
+                continue;
+            }
+            const int c = contacts++;
+            const double vin = dot3(vtIn, dp) / len;
+            double sl[3];
+            for (int a = 0; a < 3; a++) {
+                rw[c][a] = rw[k][a];
+                normal[c][a] = dp[a] / len;
+                target[c][a] = vt[a];
+                sl[a] = vtIn[a] - vin * normal[c][a];
+            }
+            const double slen = sqrt(dot3(sl, sl));
+            for (int a = 0; a < 3; a++) {
+                slip[c][a] = slen > 1e-9 ? sl[a] / slen : 0;
+            }
+            active[c] = true;
+        }
+        for (int a = 0; a < 3; a++) {
+            p[a] += reHi[a] + reLo[a];
+        }
     }
     double pushed[CONTACTS];
     double rubbed[CONTACTS][3];

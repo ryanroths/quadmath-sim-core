@@ -106,6 +106,18 @@
  *     vertical) pushed the quad down through the floor: rims 5.75 mm under
  *     it skimming into a post, 25 mm under it (and held there, the floor
  *     lifting and the hull pushing down every tick) posed beside one
+ *   - the hull's push takes no footprint point into the solid: it is along
+ *     the box face axis most along the separating axis, or failing that the
+ *     next one at least half along it, whose push, swept, takes no point
+ *     under the floor or into a solid it was not in; with none there is no
+ *     push, and the contact's response alone holds the quad (plant.c then
+ *     resolves the five points again from where the points' push left
+ *     them). Mostly vertical on the pyramid's sloped sides, the push drove
+ *     a quad flying into a slot lower than the hull down into the table
+ *     under it (rims through a 3 mm plate in one tick) or the floor, and
+ *     wedged between boxes closer together than the footprint it pushed a
+ *     rim back into the box the points had just left, every tick (5 to
+ *     21 mm deep)
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
  *
@@ -1179,6 +1191,39 @@ static int holdPoints(const scBox_t *b, const scHull_t *h, const double n[3], do
     return farD > PAST_WU * PAST_WU ? 2 : 1;
 }
 
+// Whether moving hull h by d along axis ax (world units) takes a footprint
+// point under the floor, or into a solid it was not inside, on the way: the
+// move is swept (at 6 m/s a 4.6 mm push carried rims right through a 3 mm
+// plate and out of it).
+static bool drivesIn(const scHull_t *h, int ax, double d)
+{
+    if (ax == 1 && d < 0 && h->lo[1] + d < floorZ * WS - FACE_EPS) {
+        return true;
+    }
+    for (int o = 0; o < solidCount; o++) {
+        const scBox_t *b = &solids[solidOrder[o]];
+        bool clear = false;             // the hull's bounds, swept, clear of it
+        for (int a = 0; a < 3 && !clear; a++) {
+            const double lo = h->lo[a] + (a == ax ? fmin(d, 0) : 0), hi = h->hi[a] + (a == ax ? fmax(d, 0) : 0);
+            clear = hi <= b->min[a] + FACE_EPS || lo >= b->max[a] - FACE_EPS;
+        }
+        for (int k = 0; k < SC_HULL_POINTS && !clear; k++) {
+            const double *v = h->v[k];
+            const double lo = fmin(v[ax], v[ax] + d), hi = fmax(v[ax], v[ax] + d);
+            bool across = lo < b->max[ax] - FACE_EPS && hi > b->min[ax] + FACE_EPS, was = true;
+            for (int a = 0; a < 3; a++) {
+                const bool in = v[a] > b->min[a] + FACE_EPS && v[a] < b->max[a] - FACE_EPS;
+                across = across && (a == ax || in);
+                was = was && in;
+            }
+            if (across && !was) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Whether a footprint point (a corner of hull h) is strictly inside box b.
 static bool pointIn(const scBox_t *b, const scHull_t *h)
 {
@@ -1271,15 +1316,31 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         hc->normal[1] = -n[0];
         hc->normal[2] = n[1];
         hc->depth = depth / WS;
-        // Keyed by the box face the hull leaves by: the one most along n, on
-        // the piece there.
-        hc->ax = fabs(n[0]) >= fabs(n[1]) && fabs(n[0]) >= fabs(n[2]) ? 0 : fabs(n[1]) >= fabs(n[2]) ? 1 : 2;
+        // Pushed out along a box face's axis, as a point is, as far as clears
+        // the overlap along n (what it went deeper this tick): the face most
+        // along n, or failing that the next at least half along it, whose
+        // push takes no footprint point under the floor or into a solid it
+        // was not in. With none, no push: the contact's response holds it.
+        // Keyed by that face (or the one most along n), on the piece there.
+        int order[3] = { 0, 1, 2 };     // axes by |n|, ties in axis order
+        for (int j = 1; j < 3; j++) {
+            for (int k = j; k > 0 && fabs(n[order[k]]) > fabs(n[order[k - 1]]); k--) {
+                const int t = order[k];
+                order[k] = order[k - 1];
+                order[k - 1] = t;
+            }
+        }
+        double push[3] = { 0, 0, 0 };
+        hc->ax = order[0];
+        for (int j = 0; j < 3 && fabs(n[order[j]]) >= 0.5; j++) {
+            if (!drivesIn(&h, order[j], deeper / n[order[j]])) {
+                hc->ax = order[j];
+                push[hc->ax] = deeper / n[hc->ax];
+                break;
+            }
+        }
         hc->side = n[hc->ax] > 0 ? 1 : -1;
         hc->box = pieceAt(i, hc->ax, hc->side, held[0]);
-        // Pushed out along that face's axis, as a point is, as far as clears
-        // the overlap along n (what it went deeper this tick).
-        double push[3] = { 0, 0, 0 };
-        push[hc->ax] = deeper / n[hc->ax];
         world2mod(push, hc->push);
     }
     return count;

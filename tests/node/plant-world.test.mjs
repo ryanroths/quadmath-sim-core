@@ -2173,12 +2173,13 @@ const mapFixture = async (id) => JSON.parse(await readFile(new URL(`tests/fixtur
 // poses in the map fixtures): Betaflight angle mode with 24's altitude hold
 // at zHold, sticks held ('tele'), or all four motors at a fixed duty
 // ('press'). Per tick: the deepest a footprint point is inside the solid (the
-// union of the boxes, the shortest way out along an axis), the ticks with a
-// point more than 1 mm in, the largest one-tick push (the CG's move less
-// what its velocity explains, from the tick after the pose), and the lowest
-// rim.
+// union of the boxes, the shortest way out along an axis, gaps under 2 um
+// bridged, for a point more than 0.1 um inside a box: one on a face in a
+// concave corner is on the surface), the ticks with a point more than 1 mm
+// in, the largest one-tick push (the CG's move less what its velocity
+// explains, from the tick after the pose), and the lowest rim.
 const unionDepth = (boxes, p) => {
-  if (!boxes.some((b) => [0, 1, 2].every((a) => p[a] > b.min[a] && p[a] < b.max[a]))) return 0;
+  if (!boxes.some((b) => [0, 1, 2].every((a) => p[a] > b.min[a] + 1e-7 && p[a] < b.max[a] - 1e-7))) return 0;
   let best = Infinity;
   for (let a = 0; a < 3; a++) {
     for (const s of [-1, 1]) {
@@ -2268,7 +2269,124 @@ const fmtPose = (r) => `${(r.inside * 1e3).toFixed(2)} mm in (${r.deepTicks} tic
   console.log(`hull overlaps carried from the tick before, 6 map poses for 1.5 s:\n  ${lines.join('\n  ')}`);
 }
 
+// 43. The hull's push never takes a footprint point into the solid. It came
+// after the points' push with nothing after it: pushed along the box face
+// axis most along the separating axis, which on the pyramid's sloped sides is
+// mostly vertical, a shelf edge meeting the hull over a slot lower than the
+// hull pushed the quad down into the table it flew over (rims through a 3 mm
+// plate in one tick), or under the floor below an overhang; wedged between
+// two boxes closer together than the footprint, the hull pushed it back into
+// the box the points had just left, every tick, and a rim crept 5 to 21 mm
+// into it; and a rim lying on a desk top was carried 1.3 mm under a
+// keyboard's edge onto the seam, where the next tick found it deep in the
+// solid and pushed it 29 mm out through the bottom of the desk. world.c
+// pushes the hull along the face axis most along the separating axis, or
+// the next one at least half along it, whose swept push takes no point into
+// a solid or under the floor (with none, no push: the contact's response
+// holds it), and plant.c resolves the five points again after the hull's
+// push, from where the points' push left them.
+{
+  // Level at the hover duty, the leading rims 5 mm short of a lower plate's
+  // edge and 0.5 mm above its top, flown in under an upper plate.
+  const slot = async (boxes) => {
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport({ pos: [0, 0, 5] });
+    c.motorOverride(-1, HOVER_DUTY);
+    c.step(300);
+    return c;
+  };
+  const depthIn = (p, b) => Math.min(...[0, 1, 2].map((a) => Math.min(p[a] - b.min[a], b.max[a] - p[a])));
+  // A 100 mm table with a shelf 20 mm above it, at 1 m/s (the shelf edge
+  // meets the hull's front face).
+  const table = { min: [2, -1, 0.4], max: [2.5, 1, 0.5], id: 1 };
+  const shelf = { min: [2, -1, 0.52], max: [2.5, 1, 0.6], id: 2 };
+  const c = await slot([table, shelf]);
+  c.teleport({ pos: [2 - REACH - 0.005, 0, 0.5 + REST + 5e-4], vel: [1, 0, 0] });
+  c.events();
+  c.motorOverride(-1, HOVER_DUTY);
+  let tableIn = 0;
+  let met = false;
+  for (let k = 0; k < 200; k++) {
+    c.step(1);
+    met = met || kinds(c.events(), 'contact').some((e) => e.box === 2);
+    tableIn = Math.max(tableIn, ...c.footprint.map((p) => depthIn(p, table)));
+  }
+  const shelfEdge = edgeIn(c.footprint, shelf);
+  console.log(`flown at 1 m/s over a table under a shelf 20 mm above it: the shelf met ${met}, a point at most ${(tableIn * 1e6).toFixed(1)} um inside the table, the shelf edge ${(shelfEdge * 1e6).toFixed(3)} um inside the hull after 200 ms`);
+  assert.ok(met && tableIn < 1e-6, 'the hull meets the shelf and pushes no rim into the table');
+  assert.ok(shelfEdge < 1e-6, 'the shelf edge out of the hull');
+
+  // 3 and 6 mm plates with a plate 12 or 20 mm above, at 2 and 6 m/s: no
+  // point through the lower plate in a tick, none ending a tick inside one.
+  let through = 0;
+  let plateIn = 0;
+  let entries = 0;
+  for (const T of [0.003, 0.006]) {
+    for (const G of [0.012, 0.02]) {
+      for (const vx of [2, 6]) {
+        const lower = { min: [2, -1, 0.5 - T], max: [2.5, 1, 0.5], id: 1 };
+        const upper = { min: [2, -1, 0.5 + G], max: [2.5, 1, 0.6], id: 2 };
+        const p = await slot([lower, upper]);
+        p.teleport({ pos: [2 - REACH - 0.005, 0, 0.5 + REST + 5e-4], vel: [vx, 0, 0] });
+        p.events();
+        p.motorOverride(-1, HOVER_DUTY);
+        let prev = p.footprint;
+        for (let k = 0; k < 400; k++) {
+          p.step(1);
+          p.events();
+          const fp = p.footprint;
+          for (let i = 0; i < 5; i++) {
+            const [a, b] = [prev[i], fp[i]];
+            if (a[0] > 2 && b[0] > 2 && a[0] < 2.5 && b[0] < 2.5 && a[2] >= 0.5 - 1e-9 && b[2] < 0.5 - T) through++;
+            plateIn = Math.max(plateIn, depthIn(b, lower), depthIn(b, upper));
+          }
+          prev = fp;
+        }
+        entries++;
+      }
+    }
+  }
+  // Under an overhang 12 or 20 mm above the floor, at 2 and 6 m/s.
+  let under = 0;
+  for (const G of [0.012, 0.02]) {
+    for (const vx of [2, 6]) {
+      const o = await slot([{ min: [2, -1, G], max: [2.5, 1, 0.3], id: 2 }]);
+      o.teleport({ pos: [2 - REACH - 0.005, 0, REST + 5e-4], vel: [vx, 0, 0] });
+      o.events();
+      o.motorOverride(-1, HOVER_DUTY);
+      for (let k = 0; k < 400; k++) {
+        o.step(1);
+        o.events();
+        under = Math.max(under, -footMin(o, 2));
+      }
+      entries++;
+    }
+  }
+  console.log(`flown into slots lower than the hull, ${entries} entries: ${through} ticks with a point through the lower plate, a point at most ${(plateIn * 1e6).toFixed(1)} um inside a plate and ${(under * 1e6).toFixed(1)} um under the floor`);
+  assert.equal(through, 0, 'no point through the lower plate');
+  assert.ok(plateIn < 1e-6 && under < 1e-6, 'no point pushed into a plate or under the floor');
+
+  // Map flights from a sweep: Betaflight angle mode, 24's altitude hold, held
+  // between two boxes closer together than the footprint (an office table
+  // leg and a partition, the room's wall and a low box, the backyard's beam
+  // and a roof slab 60 mm apart), and landing on the office desk beside the
+  // keyboard (5.3 m/s).
+  const lines = [];
+  for (const [name, map, pose, zHold, sticks] of [
+    ['office, table leg 41 and partition 37', 'office', { pos: [0.105893, 4.60203, 0.152758], quat: [-0.3886696315182631, -0.009984701395721962, 0.006956920319340776, 0.9212968167388652], vel: [0.999223, 0.551991, -0.424379] }, 0.152757684053421, { pitch: -0.22789168269250093, roll: -0.37585837651343124, yaw: 0 }],
+    ['room, wall 10 and box 15', 'room', { pos: [-1.048826, -1.739526, 0.214697], quat: [0.39288832325546275, 0.11502417072863094, -0.10557673667500096, 0.9062349354724522], vel: [0.158267, 0.251165, 0.025668] }, 0.21469748803406954, { pitch: -0.15592447640421242, roll: 0.04756093639224333, yaw: -0.09935929826460778 }],
+    ['backyard, beam 11 and roof slab 10', 'backyard', { pos: [1.25931, -3.742787, 3.404201], quat: [-0.36996368121153633, -0.003315394665742849, 0.09285792813793554, 0.9243880613273568], vel: [-4.636253, 0.369212, 0.530182] }, 3.404200709402714, { pitch: 0.2111138653981522, roll: 0.022243550890769098, yaw: 0 }],
+    ['office desk 64 beside keyboard 70', 'office', { pos: [-3.343331, 3.961153, 0.403577], quat: [-0.7918971866949445, -0.1269360413928296, 0.15879881422178174, 0.5758203050448171], vel: [-1.996532, 4.126, -2.691447] }, 0.40357710212221, { pitch: -0.17791794918871284, roll: 0.004814905242936384, yaw: 0 }],
+  ]) {
+    const r = await flyPose(await mapFixture(map), { pose, zHold, sticks, ticks: 2500 });
+    lines.push(`${name}: ${fmtPose(r)}`);
+    assert.ok(r.fault === 0 && r.deepTicks === 0 && r.low > -5e-4, `${name}: no point held inside a box or under the floor: ${fmtPose(r)}`);
+    assert.ok(r.push < 3e-3, `${name}: no push over 3 mm in a tick: ${fmtPose(r)}`);
+  }
+  console.log(`map flights for 2.5 s held between boxes closer than the footprint, and onto a desk:\n  ${lines.join('\n  ')}`);
+}
+
 for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
 const failing = open.filter((x) => !investigation[x.key]);
 assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
-console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down, carried hull overlaps pushed only as far as they deepen: PASS');
+console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down, carried hull overlaps pushed only as far as they deepen, hull pushes taking no point into the solid: PASS');
