@@ -1,0 +1,71 @@
+{
+  "source": "BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_090813_BETAFPVG473.BBL",
+  "stretch_s": [
+    0,
+    66.074
+  ],
+  "log": {
+    "frames": 131230,
+    "rate_hz": 1986.1
+  },
+  "sim": {
+    "ticks": 66075,
+    "rate_hz": 1000,
+    "flightModeFlags": 1,
+    "aux": [
+      1900,
+      1900,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000
+    ],
+    "height_m": [
+      0.01,
+      3.293
+    ]
+  },
+  "log_flight_mode_flags": 1,
+  "rc_readback_max_error": [
+    0,
+    0,
+    0,
+    1.99
+  ],
+  "axes": [
+    {
+      "name": "roll",
+      "gyroRmsLog": 5.04,
+      "gyroRmsSim": 7.21,
+      "gyroErrRms": 8.37,
+      "setpointErrRms": 0.263,
+      "stepLog": null,
+      "stepSim": null
+    },
+    {
+      "name": "pitch",
+      "gyroRmsLog": 3.85,
+      "gyroRmsSim": 6.57,
+      "gyroErrRms": 7.43,
+      "setpointErrRms": 0.221,
+      "stepLog": null,
+      "stepSim": null
+    },
+    {
+      "name": "yaw",
+      "gyroRmsLog": 2.26,
+      "gyroRmsSim": 4.67,
+      "gyroErrRms": 4.81,
+      "setpointErrRms": 0.143,
+      "stepLog": null,
+      "stepSim": null
+    }
+  ],
+  "diff": "configs/air65-ryfly-2026-10-23.txt"
+}

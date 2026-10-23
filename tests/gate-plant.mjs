@@ -20,12 +20,12 @@
 //       at up-z > -0.5 (a pulse, as pilots fly it): upright and at rest at
 //       500 ms, no divergence; held until upright is reported, not gated
 //   X2  F3: achieved full-stick rate within +-1.0% of Betaflight's setpoint
-//   X3  feel bands against WebFPV's whoop65 flying the same diff and inputs;
+//   X3  feel bands against WebFPV's whoop65, both on quadmath's class diff
+//       and the same inputs (WebFPV cannot fly the Air65's full config);
 //       hover stick against the owner's Air65 bench hover instead
 //       (tests/reference/air65-hover.json, 2026-10-23): Betaflight's
 //       rcCommand throttle at steady hover, as its blackbox logs it, flown
-//       with the log header's throttle path on top of the class diff, within
-//       +-0.02 of the measured 0.371;
+//       on the config that log flew, within +-0.02 of the measured 0.371;
 //       a miss fails unless the owner signed it off in tests/x3-signoff.json
 //       (PROGRESS.md: "a band is never widened")
 //
@@ -36,7 +36,6 @@ import { readFile } from 'node:fs/promises';
 import { SimCore, sticksToChannels as ch } from '../src/js/sim-core.js';
 import * as feel from './lib/feel.mjs';
 import { loadWebfpvModule } from './lib/webfpv.mjs';
-import { benchThrottlePath as benchThrottlePathOf, withSettings } from './lib/bench-hover.mjs';
 import { QuadPhysics, aeroCoeffs } from './reference/quadmath-de9b15d/quadphysics.js';
 import { stepBattery, DEFAULT_WHOOP } from './reference/quadmath-de9b15d/sim-whoop.js';
 import { batteryFromBuild, BUILD_PRESETS } from './reference/quadmath-de9b15d/sim-build.js';
@@ -44,16 +43,38 @@ import { batteryFromBuild, BUILD_PRESETS } from './reference/quadmath-de9b15d/si
 const root = new URL('..', import.meta.url);
 const module = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', root)));
 const air65 = JSON.parse(await readFile(new URL('airframes/air65.json', root), 'utf8'));
-const diff = await readFile(new URL('configs/65mm-air65-ryfly-1219s.diff', root), 'utf8');
+// The Air65 flies the config its bench-hover log flew (owner decision
+// 2026-10-23): the owner's diff all, then any setting the log's header
+// records that the diff does not reproduce (tools/config-from-log.mjs; none
+// for this log, the file says why). Lines sim-core does not apply (board
+// identity, VTX, OSD, calibration, pid_process_denom) are refused with a
+// reason and printed below as warnings.
+const AIR65_CONFIG = ['configs/air65-ryfly-2026-10-23.txt', 'configs/air65-ryfly-2026-10-23.from-header.txt'];
+const diff = (await Promise.all(AIR65_CONFIG.map((p) => readFile(new URL(p, root), 'utf8')))).join('\n');
+// quadmath's class diff for the 65 mm Air65 (PIDs and rates only): what
+// WebFPV's whoop65 flies for the X3 reference, which cannot fly the full dump
+// (its hover trim falls to 0 on it), and the parity checks P2, P3 and P5.
+const classDiff = await readFile(new URL('configs/65mm-air65-ryfly-1219s.diff', root), 'utf8');
+// An aux channel (0 = AUX1) the config gives a Betaflight box id: ARM 0,
+// ANGLE 1, FLIP OVER AFTER CRASH 35 (msp/msp_box.c).
+const auxOf = (config, box) => {
+  for (const line of config.split('\n')) {
+    const m = line.trim().match(/^aux\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/);
+    if (m && Number(m[1]) === box && Number(m[3]) < Number(m[4])) return Number(m[2]);
+  }
+  throw new Error(`the Air65 config has no aux range for box ${box}`);
+};
+const AUX = { arm: auxOf(diff, 0), angle: auxOf(diff, 1), crashFlip: auxOf(diff, 35) };
+// Aux channel values with the given boxes on (1900) and the rest low.
+const auxOn = (...boxes) => {
+  const a = new Array(4).fill(1000);
+  for (const b of boxes) a[AUX[b]] = 1900;
+  return a;
+};
 const signoff = JSON.parse(await readFile(new URL('tests/x3-signoff.json', root), 'utf8'));
 // The owner's bench hover on the Air65 with blackbox (2026-10-23): the X3
 // hover-stick reference, in place of WebFPV.
 const bench = JSON.parse(await readFile(new URL('tests/reference/air65-hover.json', root), 'utf8'));
-// The log header's throttle path on top of the class diff, for the
-// hover-stick comparison (tests/lib/bench-hover.mjs). Anything the header
-// does not record (min_check) stays at Betaflight's default on both.
-const benchThrottlePath = benchThrottlePathOf(bench.header);
-const benchDiff = withSettings(diff, benchThrottlePath);
 
 const failures = [];
 function check(ok, what) {
@@ -65,7 +86,7 @@ const DEG = 180 / Math.PI;
 
 // A flight instance armed on a floor far below, then put level and still at
 // the origin, in the air.
-async function airborne(extraDiff = '', { aux = [2000], throttle = 0, mode3d = false } = {}) {
+async function airborne(extraDiff = '', { aux = auxOn('arm'), throttle = 0, mode3d = false } = {}) {
   const core = await SimCore.load(module, { trace: false });
   core.configure({ diff: `${diff}\n${extraDiff}`, plant: air65, world: { floorZ: -100 } });
   core.input(ch({ throttle }, aux, { mode3d }));
@@ -114,7 +135,7 @@ console.log('\n== P1 single-motor step, Air65 plant, from rest in free air (benc
 {
   const t63 = (rpm, final) => rpm.findIndex((v) => v >= 0.632 * final) + 1;
   for (let m = 0; m < 4; m++) {
-    const core = await airborne('', { aux: [1000] });
+    const core = await airborne('', { aux: auxOn() });
     core.motorOverride(m, 1);
     const rpm = [];
     let peak = 0;
@@ -138,7 +159,7 @@ console.log('\n== P1 single-motor step, Air65 plant, from rest in free air (benc
   // All four together (no body rotation), 2 s: no divergence. The rpm keeps
   // falling slowly after the step because full-throttle current drains the
   // pack; the voltage is printed beside it.
-  const core = await airborne('', { aux: [1000] });
+  const core = await airborne('', { aux: auxOn() });
   core.motorOverride(-1, 1);
   const rpm = [];
   const volts = [];
@@ -201,7 +222,7 @@ function commands(k) {
 
 async function parityCore(model) {
   const core = await SimCore.load(module, { trace: false });
-  core.configure({ diff, plant: model, world: { floorZ: -100 } });
+  core.configure({ diff: classDiff, plant: model, world: { floorZ: -100 } });
   core.teleport({ pos: [0, 0, 10] });
   return core;
 }
@@ -288,7 +309,7 @@ console.log('\n== P5 ground clearance: C query vs quadmath sim.html groundCleara
     const fix = JSON.parse(await readFile(new URL(`tests/fixtures/maps/${id}.json`, root), 'utf8'));
     const world = { floorZ: 0, boxes: fix.boxes.map((b) => ({ min: b.um.slice(0, 3).map((v) => v * 1e-6), max: b.um.slice(3).map((v) => v * 1e-6) })) };
     const core = await SimCore.load(module, { trace: false });
-    core.configure({ diff, world });
+    core.configure({ diff: classDiff, world });
     const quantised = fix.boxes.map((b) => fromUm(b.um));
     const original = fix.boxes.map((b) => ({ min: { x: b.world[0], y: b.world[1], z: b.world[2] }, max: { x: b.world[3], y: b.world[4], z: b.world[5] } }));
     // Points: a grid over the map, plus each box's top corners and centre just
@@ -343,7 +364,7 @@ for (const [name, sticks, angle, expect] of [
   ['angle roll right', { roll: 0.5 }, true, (g, e, v, sp, att) => e.roll > 3 && att[0] > 3 && Math.abs(att[0] - e.roll) < 3 && v[1] < 0],
   ['angle pitch forward', { pitch: 0.5 }, true, (g, e, v, sp, att) => e.pitch > 3 && att[1] > 3 && Math.abs(att[1] - e.pitch) < 3 && v[0] > 0],
 ]) {
-  const aux = [2000, angle ? 2000 : 1000];
+  const aux = angle ? auxOn('arm', 'angle') : auxOn('arm');
   const core = await airborne('', { aux });
   core.input(ch({ throttle: 0.4 }, aux));
   core.step(500);
@@ -362,7 +383,7 @@ console.log('\n== F9 3D and crash flip');
   // 3D: arm at mid throttle, then full reverse, then back into the deadband.
   const core = await airborne('feature 3D', { mode3d: true });
   console.log(`   3D armed ${core.fc.armed} (mode3d ${core.fc.mode3d})`);
-  core.input(ch({ throttle: -1 }, [2000], { mode3d: true }));
+  core.input(ch({ throttle: -1 }, auxOn('arm'), { mode3d: true }));
   core.step(300);
   let s = core.state;
   const reverse = s.thrustN.every((t) => t < 0);
@@ -374,15 +395,15 @@ console.log('\n== F9 3D and crash flip');
   // there is idle thrust, not zero. PROGRESS.md M4 argues the plan's
   // "deadband gives zero" wording.
   const tmax = air65.values.tmax.value;
-  core.input(ch({ throttle: 0 }, [2000], { mode3d: true }));
+  core.input(ch({ throttle: 0 }, auxOn('arm'), { mode3d: true }));
   core.step(500);
   s = core.state;
   const revIdle = s.motorDshot.every((v) => v > 48 && v < 1048) && s.thrustN.every((t) => t < 0 && -t < 0.01 * tmax);
   const revIdleN = s.thrustN[0];
   console.log(`   deadband after reverse: DShot ${s.motorDshot.join(' ')}, thrust ${s.thrustN.map((t) => f(t, 6)).join(' ')} N (${f(-revIdleN / tmax * 100, 3)} % of full, reverse 3D idle) -> ${check(revIdle, 'F9 deadband reverse idle')}`);
-  core.input(ch({ throttle: 1 }, [2000], { mode3d: true }));
+  core.input(ch({ throttle: 1 }, auxOn('arm'), { mode3d: true }));
   core.step(300);
-  core.input(ch({ throttle: 0 }, [2000], { mode3d: true }));
+  core.input(ch({ throttle: 0 }, auxOn('arm'), { mode3d: true }));
   core.step(500);
   s = core.state;
   const fwdIdle = s.motorDshot.every((v) => v >= 1048) && s.thrustN.every((t) => t > 0 && t < 0.01 * tmax);
@@ -396,10 +417,10 @@ console.log('\n== F9 3D and crash flip');
   for (const mode3d of [false, true]) {
     const c = await SimCore.load(module, { trace: false });
     c.configure({ diff: `${diff}\n${mode3d ? 'feature 3D' : ''}`, plant: air65, world: { floorZ: -100 } });
-    c.input(ch({ throttle: 0 }, [1000, 1000, 1000, 2000], { mode3d }));
+    c.input(ch({ throttle: 0 }, auxOn('crashFlip'), { mode3d }));
     c.step(50);
     c.teleport({ pos: [0, 0, 0] });
-    c.input(ch({ throttle: 0, roll: 1 }, [2000, 1000, 1000, 2000], { mode3d }));
+    c.input(ch({ throttle: 0, roll: 1 }, auxOn('arm', 'crashFlip'), { mode3d }));
     c.step(50);
     const q = c.state;
     const flags = c.fc;
@@ -421,13 +442,13 @@ console.log('\n== F9 3D and crash flip');
       const c = await SimCore.load(module, { trace: false });
       c.configure({ diff, plant: air65 });
       c.teleport({ pos: [0, 0, 0.01], quat: [0, 1, 0, 0] });
-      c.input(ch({ throttle: 0 }, [1000, 1000, 1000, 2000]));
+      c.input(ch({ throttle: 0 }, auxOn('crashFlip')));
       c.step(300);
-      c.input(ch({ throttle: 0 }, [2000, 1000, 1000, 2000]));
+      c.input(ch({ throttle: 0 }, auxOn('arm', 'crashFlip')));
       c.step(50);
       const armed = c.fc.armed && c.fc.crashFlip;
       const up0 = upZ(c.state.quat);
-      c.input(ch({ throttle: 0, roll: 1 }, [2000, 1000, 1000, 2000]));
+      c.input(ch({ throttle: 0, roll: 1 }, auxOn('arm', 'crashFlip')));
       let peak = 0;
       let faultAt = null;
       let releasedAt = null;
@@ -443,7 +464,7 @@ console.log('\n== F9 3D and crash flip');
         if (releasedAt === null && upZ(st.quat) > releaseAt) {
           releasedAt = k + 1;
           releaseRate = Math.hypot(...st.omega);
-          c.input(ch({ throttle: 0 }, [2000, 1000, 1000, 2000]));
+          c.input(ch({ throttle: 0 }, auxOn('arm', 'crashFlip')));
         }
       }
       const end = c.state;
@@ -461,18 +482,27 @@ console.log('\n== F9 3D and crash flip');
 }
 
 // ---------------------------------------------------------------------------
+// sim-core on the Air65 config (X2, and the X3 hover stick against the
+// bench); sim-core on the class diff beside WebFPV on it (X3 feel rows, the
+// same diff and inputs on both until they are re-banded against the owner's
+// freestyle log).
 const ours = await feel.simCoreSim(SimCore, module, { diff, airframe: air65 });
-const benchSim = await feel.simCoreSim(SimCore, module, { diff: benchDiff, airframe: air65, name: 'sim-core, bench throttle path' });
-const ref = feel.webfpvSim(await loadWebfpvModule(), diff, { airframe: 1, gravity: 1, air: 1, kv: 1 }, { lenScale: feel.WEBFPV_WHOOP_LEN_SCALE, name: 'WebFPV whoop65' });
+const oursClass = await feel.simCoreSim(SimCore, module, { diff: classDiff, airframe: air65, name: 'sim-core, class diff' });
+const ref = feel.webfpvSim(await loadWebfpvModule(), classDiff, { airframe: 1, gravity: 1, air: 1, kv: 1 }, { lenScale: feel.WEBFPV_WHOOP_LEN_SCALE, name: 'WebFPV whoop65' });
+{
+  const warned = ours.config.lines.filter((l) => l.status === 'rejected' || l.status === 'error');
+  console.log(`\n== Air65 config ${AIR65_CONFIG.join(' + ')}: ${ours.config.applied} lines applied, ${warned.length} not (warnings, per the config rule)`);
+  for (const l of warned) console.log(`   warning: line ${l.n} ${l.status}: ${l.text.trim()} (${l.msg})`);
+}
 
 console.log('\n== X2 / F3 rate tracking: throttle 0.35, full stick 1.5 s, mean of the last 0.3 s (+-1.0%)');
 for (const [a, name] of ['roll', 'pitch', 'yaw'].entries()) {
   const o = feel.rateTracking(ours, a);
-  const r = feel.rateTracking(ref, a);
+  const r = feel.rateTracking(ref, a);   // WebFPV on the class diff, for reference only
   console.log(`   ${name.padEnd(5)} sim-core ${f(o.achieved, 2)} deg/s vs setpoint ${f(o.setpoint, 2)} (${f(o.errPct, 3)} %); WebFPV ${f(r.achieved, 2)} (${f(r.errPct, 3)} %) -> ${check(!o.diverged && Math.abs(o.errPct) <= 1.0, `X2 ${name}`)}`);
 }
 
-console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65mm-air65-ryfly-1219s), same channel inputs, gravity/air/kv 1.0');
+console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, both on the class diff (65mm-air65-ryfly-1219s), same channel inputs, gravity/air/kv 1.0; hover stick: sim-core on the Air65 config vs the bench');
 {
   // Betaflight's throttle rcCommand on the last tick of a hover trim (its
   // last trial flight is at the trimmed stick), 0..1 as the blackbox field
@@ -490,9 +520,8 @@ console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65
       chirp: feel.chirp(sim, thr), punch: feel.punch(sim, thr), hold: feel.rollThenHold(sim, thr), hands: feel.handsOff(sim, thr),
     };
   };
-  const b = rcHover(benchSim);
-  const benchCfgOk = benchSim.config.rejected === 0 && benchSim.config.errors === 0;
-  const o = run(ours);
+  const b = rcHover(ours);
+  const o = run(oursClass);
   const r = run(ref);
   const rows = [];
   const rel = (pct, minAbs = 0) => (ov, rv) => Math.abs(ov - rv) <= Math.max(Math.abs(rv) * pct, minAbs);
@@ -502,7 +531,7 @@ console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65
   const add = (key, band, ov, rv, test) => rows.push({ key, band, ov, rv, pass: ov !== null && ov !== undefined && test(ov, rv) });
   // Hover stick against the Air65's own bench hover (owner decision
   // 2026-10-23): rcCommand throttle, the bench throttle path, +-0.02.
-  add('hover stick (Air65 bench)', '+-0.02', benchCfgOk && !b.diverged ? b.rc : null, bench.measured.hover_stick, abs(0.02));
+  add('hover stick (Air65 bench)', '+-0.02', !b.diverged ? b.rc : null, bench.measured.hover_stick, abs(0.02));
   rows.at(-1).refName = 'Air65';
   // The plan restricts rise, overshoot and stop bounce to roll and pitch;
   // lag at 50% and settle have no axis restriction (PROGRESS.md band table).
@@ -534,7 +563,7 @@ console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65
     console.log(`   ${row.key.padEnd(30)} sim-core ${f(row.ov, 3).padStart(9)}  ${(row.refName || 'WebFPV').padEnd(6)} ${f(row.rv, 3).padStart(9)}  band ${row.band.padEnd(18)} ${verdict}`);
     if (!row.pass && !signed) failures.push(`X3 ${row.key}`);
   }
-  console.log(`   hover stick, Air65 bench row: ${benchThrottlePath.join(', ')} on the class diff (${benchSim.config.applied} lines applied, ${benchSim.config.rejected} rejected, ${benchSim.config.errors} errors); channel ${f(b.quantum, 3)}, rcCommand ${f(b.rc, 3)}, vz residual ${f(b.vzResidual, 3)} m/s; measured rcCommand ${f(bench.measured.hover_stick, 3)} (${bench.source})`);
+  console.log(`   hover stick, Air65 bench row: on the Air65 config; channel ${f(b.quantum, 3)}, rcCommand ${f(b.rc, 3)}, vz residual ${f(b.vzResidual, 3)} m/s; measured rcCommand ${f(bench.measured.hover_stick, 3)} (${bench.source})`);
   console.log(`   not banded: yaw overshoot sim-core ${f(o.yaw.overshootPct, 2)} % vs WebFPV ${f(r.yaw.overshootPct, 2)} %; yaw bounce ${f(o.yaw.bouncePct, 2)} % vs ${f(r.yaw.bouncePct, 2)} %; hover residual vz ${f(o.hover.vzResidual, 3)} vs ${f(r.hover.vzResidual, 3)} m/s; hover stick on the class diff alone: sim-core channel ${f(o.hover.quantum, 3)} (rcCommand ${f(o.hover.rc, 3)}), WebFPV whoop65 channel ${f(r.hover.quantum, 3)} (the band's reference until 2026-10-23)`);
 }
 

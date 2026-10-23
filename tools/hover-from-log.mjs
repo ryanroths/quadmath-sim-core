@@ -63,7 +63,7 @@ const TWO_PI = 2 * Math.PI;
 // header's motorOutput: that is the mixer's range, which starts above 48 with
 // static idle and ends below 2047 with motor_output_limit.
 const dutyOf = (motor) => (motor - 48) / 1999;
-const WINDOW_RULES = 'mean accZ within 5 % of 1 g, accZ sd < 10 % of 1 g, gyro rms < 10 deg/s, setpoint rms < 10 deg/s, motors above logged idle';
+const WINDOW_RULES = 'mean accZ within 10 % of 1 g, accZ sd < 12 % of 1 g, gyro and setpoint rms < 12 deg/s, motors above logged idle; the longest run of such seconds, less one second at each end';
 
 // Per-second bins of the decoded rows (t in s from the first frame).
 export function binRows(rows) {
@@ -88,9 +88,14 @@ export function binRows(rows) {
 }
 
 // The longest run of consecutive steady-hover bins, as [first s, last s + 1].
+// The owner's criteria for the Air65 hover (tests/reference/air65-hover.json
+// window_note), with the limits the owner's own window [3, 59] of that log keeps
+// inside: its seconds reach 6.3 % off 1 g in mean accZ, 10.3 % in its spread and 10.5 deg/s of gyro
+// rms. The run's first and last seconds are the climb into the hover and the
+// move out of it, so they are left out.
 export function findWindow(bins, { acc1G, motorIdle }) {
-  const steady = (b) => Math.abs(b.accZ / acc1G - 1) < 0.05 && b.accZsd < 0.1 * acc1G
-    && b.gyroRms < 10 && b.setpRms < 10 && b.motor > motorIdle;
+  const steady = (b) => Math.abs(b.accZ / acc1G - 1) < 0.1 && b.accZsd < 0.12 * acc1G
+    && b.gyroRms < 12 && b.setpRms < 12 && b.motor > motorIdle;
   let best = null;
   let start = null;
   for (let i = 0; i <= bins.length; i++) {
@@ -101,7 +106,8 @@ export function findWindow(bins, { acc1G, motorIdle }) {
       start = i < bins.length && steady(bins[i]) ? i : null;
     }
   }
-  return best ? [bins[best[0]].s, bins[best[1] - 1].s + 1] : null;
+  if (!best || best[1] - best[0] < 3) return null;
+  return [bins[best[0]].s + 1, bins[best[1] - 1].s];
 }
 
 // The hover numbers over a window of bins, and what follows for the plant.
@@ -222,7 +228,8 @@ export async function readLog(logPath, quadmathDir, li = 0) {
     thrust_linear: headerNum(u, 'thrust_linear'), vbat_sag_compensation: headerNum(u, 'vbat_sag_compensation'),
     throttle_boost: headerNum(u, 'throttle_boost'), rates_type: headerNum(u, 'rates_type'),
     thr_mid: headerNum(u, 'thr_mid'), thr_expo: headerNum(u, 'thr_expo'),
-    // The rest of the throttle path (tests/lib/bench-hover.mjs flies them).
+    // The rest of the throttle path (tools/config-from-log.mjs checks the
+    // whole header against a diff).
     // vbatcellvoltage is min, warning, max in 0.01 V; the warning voltage sets
     // the range vbat_sag_compensation works over (flight/mixer_init.c:350-354).
     dyn_idle_min_rpm: headerNum(u, 'dyn_idle_min_rpm'), dshot_idle_value: headerNum(u, 'dshot_idle_value'),
@@ -236,7 +243,13 @@ export async function readLog(logPath, quadmathDir, li = 0) {
   if (!acc1G) throw new Error('header has no acc_1G');
 
   const frames = [];
-  for (const ev of h.getDataParser()) if (ev.kind === 'main') frames.push(ev.data);
+  // Slow frames carry the flight mode flags; kept with the index of the main
+  // frame they follow.
+  const slow = [];
+  for (const ev of h.getDataParser()) {
+    if (ev.kind === 'main') frames.push(ev.data);
+    else if (ev.kind === 'slow' && ev.data && ev.data.fields) slow.push({ at: frames.length, flightModeFlags: ev.data.fields.get('flightModeFlags') ?? null });
+  }
   if (frames.length < 64) throw new Error(`log ${li} has ${frames.length} main frames`);
   const get = (fr, k) => fr.fields.get(k);
   // blackbox_high_resolution logs rcCommand, setpoint and gyro x10
@@ -246,6 +259,7 @@ export async function readLog(logPath, quadmathDir, li = 0) {
   const rows = frames.map((fr) => ({
     t: fr.time - t0,
     thr: get(fr, 'rcCommand[3]') / hiRes,
+    rc: [0, 1, 2, 3].map((i) => get(fr, `rcCommand[${i}]`) / hiRes),
     vbat: (get(fr, 'vbatLatest') ?? 0) / 100,
     amps: (get(fr, 'amperageLatest') ?? 0) / 100,
     m: [0, 1, 2, 3].map((i) => get(fr, `motor[${i}]`)),
@@ -255,8 +269,16 @@ export async function readLog(logPath, quadmathDir, li = 0) {
     setp: [0, 1, 2].map((i) => get(fr, `setpoint[${i}]`) / hiRes),
   }));
   if (rows.some((r) => r.erpm.some((v) => v == null))) throw new Error('log has no eRPM fields (dshot_bidir off?)');
+  // A corrupt frame can decode as a huge value (quadmath blackbox-extract.js
+  // holds the last good sample for the same reason); frames with a motor
+  // outside DShot's 0..2047 or a negative eRPM are dropped and counted.
+  const good = rows.filter((r) => r.m.every((v) => v >= 0 && v <= 2047) && r.erpm.every((v) => v >= 0));
+  const dropped = rows.length - good.length;
   return {
-    logCount: file.logCount, header, acc1G, rows,
+    logCount: file.logCount, header, acc1G, rows: good, dropped,
+    // Each slow frame at the time of the main frame before it.
+    slow: slow.map((x) => ({ t: frames[Math.max(0, x.at - 1)].time - t0, flightModeFlags: x.flightModeFlags })),
+    rawHeader: Object.fromEntries(u),
     info: { datetime: u.get('Log start datetime') ?? null, craft: h.craftName, board: h.boardInfo, firmware: h.firmwareRevision },
   };
 }
@@ -288,7 +310,7 @@ export async function hoverFromLog(logPath, quadmathDir, air, opts = {}, print =
   return {
     source: basename(logPath),
     flown: [log.info.datetime, log.info.craft, log.info.board, log.info.firmware].filter(Boolean).join(', '),
-    log: { frames: rows.length, duration_s: round(dur, 1), rate_hz: Math.round(rows.length / dur), logs_in_file: log.logCount },
+    log: { frames: rows.length, duration_s: round(dur, 1), rate_hz: Math.round(rows.length / dur), logs_in_file: log.logCount, corrupt_frames_dropped: log.dropped },
     window_s: window,
     window_note: opts.window ? 'given with --window' : `the longest steady run: ${WINDOW_RULES} (tools/hover-from-log.mjs)`,
     header: log.header,
