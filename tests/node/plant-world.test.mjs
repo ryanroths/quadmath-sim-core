@@ -7,6 +7,7 @@
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { SimCore, plantBlock, sticksToChannels as ch } from '../../src/js/sim-core.js';
 import * as feel from '../lib/feel.mjs';
@@ -1921,7 +1922,100 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   assert.ok(spin < 1e-3, 'and still');
 }
 
+// The boxes of a quadmath map fixture (ids: the box's index in the map).
+const mapFixture = async (id) => JSON.parse(await readFile(new URL(`tests/fixtures/maps/${id}.json`, root), 'utf8')).boxes
+  .map((b, i) => ({ min: b.um.slice(0, 3).map((v) => v * 1e-6), max: b.um.slice(3).map((v) => v * 1e-6), id: i }));
+
+// 39. The parity model's box contact is quadmath's CG point as committed in
+// 2a8ec95: the footprint's three rules in world.c resolvePoint (a box
+// standing on the floor reaching down to it, an inner face crossed inside the
+// solid ranking last, no on-face allowance for an inner face) are not
+// applied to it. The gate cannot see this (P2 flies with no boxes, P5 checks
+// the clearance query), so it is pinned here: seeded parity flights into the
+// boxes of eight maps hash to 2a8ec95's states and events; a box whose bottom
+// is 10.03 to 10.09 mm up (within ON_FACE_WU of the CG's padded floor) lets
+// the sliding CG pass under it, as quadmath's does; and the CG pressed into
+// the room's split wall as it rises into the ceiling beside the seam meets
+// the wall first, as it did (with the footprint's rules it met the ceiling
+// first, at 2.99 m/s).
+{
+  const parity = { ...air65, id: 'parity-box-contact', model: 'parity' };
+  let seed = 12345;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  const all = createHash('sha256');
+  let runs = 0;
+  let contacts = 0;
+  for (const id of ['room', 'garage', 'office', 'living', 'gym', 'warehouse', 'backyard', 'trainer']) {
+    const boxes = await mapFixture(id);
+    const h = createHash('sha256');
+    const c = await flight({ floorZ: 0, boxes }, parity);
+    for (let r = 0; r < 60; r++) {
+      // Near a random face of a random box, flying into it.
+      const b = boxes[Math.floor(rnd() * boxes.length)];
+      const ax = Math.floor(rnd() * 3);
+      const side = rnd() < 0.5 ? -1 : 1;
+      const pos = [0, 1, 2].map((a) => b.min[a] + rnd() * (b.max[a] - b.min[a]));
+      pos[ax] = (side > 0 ? b.max[ax] : b.min[ax]) + side * (0.0002 + rnd() * 0.02);
+      if (pos[2] < 0.01) pos[2] = 0.01 + rnd() * 0.02;
+      const vel = [0, 1, 2].map(() => (rnd() - 0.5) * 6);
+      vel[ax] = -side * (0.2 + rnd() * 8);
+      c.teleport({ pos, vel });
+      c.events();
+      for (let k = 0; k < 120; k++) {
+        c.step(1);
+        const ev = c.events();
+        contacts += kinds(ev, 'contact').length;
+        const s = c.state;
+        h.update(JSON.stringify([s.pos, s.vel, s.omega, ev]));
+      }
+      runs++;
+    }
+    all.update(h.digest('hex'));
+  }
+  const digest = all.digest('hex').slice(0, 16);
+  console.log(`parity model flown into the boxes of 8 maps, ${runs} flights, ${contacts} contact events: digest ${digest} (2a8ec95: 577, 1b06c2d6b3e71136)`);
+  assert.equal(contacts, 577, 'the same contact events as 2a8ec95');
+  assert.equal(digest, '1b06c2d6b3e71136', 'the same states and events as 2a8ec95');
+
+  const under = [];
+  for (const [lift, x0, vx, cgX] of [[0.01003, 1.9995, 3, 2.019383], [0.01005, 1.9995, 3, 2.019383], [0.01009, 1.9995, 3, 2.019383], [0.01005, 1.999, 0.5, 2.00232]]) {
+    const c = await flight({ floorZ: 0, boxes: [{ min: [2, -1, lift], max: [2.3, 1, 0.5], id: 5 }] }, parity);
+    c.teleport({ pos: [x0, 0, 0.01], vel: [vx, 0, 0] });
+    c.events();
+    const ev = [];
+    for (let k = 0; k < 100; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact'));
+    }
+    under.push(`${(lift * 1e3).toFixed(2)} mm up at ${vx} m/s: x ${c.state.pos[0].toFixed(6)}, ${ev.length} contacts`);
+    assert.ok(ev.length === 0 && Math.abs(c.state.pos[0] - cgX) < 1e-6, `the CG passes under the box: ${under.at(-1)}`);
+  }
+  console.log(`parity CG sliding on its floor toward a box: ${under.join('; ')}`);
+
+  const room = await mapFixture('room');
+  const merged = [{ min: [0, 1, 2].map((a) => Math.min(...room.slice(0, 3).map((b) => b.min[a]))), max: [0, 1, 2].map((a) => Math.max(...room.slice(0, 3).map((b) => b.max[a]))), id: 0 }, ...room.slice(3)];
+  const [wallX, seamY, ceilZ] = [room[0].min[0], room[1].max[1], room[12].min[2]];
+  const press = async (boxes) => {
+    const c = await flight({ floorZ: 0, boxes }, parity);
+    c.teleport({ pos: [wallX - 2e-4, seamY + 2e-5, ceilZ - 1e-3], vel: [0.5, 0, 3] });
+    c.events();
+    const ev = [];
+    for (let k = 0; k < 20; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [e.box <= 2 ? 'wall' : e.box, Number(e.impactMs.toFixed(4))]));
+    }
+    return { ev, vel: c.state.vel };
+  };
+  const split = await press(room);
+  const whole = await press(merged);
+  console.log(`parity CG pressed into the room's split wall, rising into the ceiling 20 um from the seam: ${JSON.stringify(split.ev)}, vel z ${split.vel[2].toFixed(6)}; the wall in one piece ${JSON.stringify(whole.ev)}, vel z ${whole.vel[2].toFixed(6)}`);
+  assert.deepEqual(split.ev, [['wall', 0], ['wall', 0.4097], [12, 2.0092]], 'split wall: the wall first, as committed');
+  assert.ok(Math.abs(split.vel[2] + 0.837070343) < 1e-8, 'split wall: the same velocity');
+  assert.deepEqual(whole.ev, [['wall', 0.4997], [12, 2.4502]], 'one piece: the wall first, as committed');
+  assert.ok(Math.abs(whole.vel[2] + 0.979411859) < 1e-8, 'one piece: the same velocity');
+}
+
 for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
 const failing = open.filter((x) => !investigation[x.key]);
 assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
-console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current: PASS');
+console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed: PASS');
