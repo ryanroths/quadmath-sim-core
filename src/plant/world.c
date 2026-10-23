@@ -71,11 +71,14 @@
  *     round the base, the canopy at the apex), with no point inside the box,
  *     is held off. The separating axis of least overlap finds how far; the
  *     push is along the axis of the box face most along it, as a point's
- *     is, and the box feature inside the hull (a corner, or both ends of an
- *     edge across a face: one point there rocked the quad) is one or two
- *     contacts with a box hit's response, keyed by that face; a soft one on
- *     a box top is along the vertical, as on the floor (along the hull's
- *     tilted face it walked a quad resting on a table edge sideways).
+ *     is, and the box feature inside the hull (a corner, both ends of an
+ *     edge across a face: one point there rocked the quad; or the corners
+ *     of a box top between the rims: on a diagonal of a beam's top the quad
+ *     rocked at up to 0.9 rad/s with its motors off and crept along it) is
+ *     one to four contacts with a box hit's response, keyed by that face; a
+ *     soft one on a box top is along the vertical, as on the floor (along
+ *     the hull's tilted face it walked a quad resting on a table edge
+ *     sideways).
  *     A box the hull began the tick in at least as deep (a pose, a post
  *     through the quad's middle) is not one it is passing into; one it began
  *     in less deep is pushed back only as far as it went deeper this tick
@@ -1136,10 +1139,14 @@ static bool clipBox(const scBox_t *b, const double a[3], const double e[3], doub
 // Where the hull holds box b off: the box's edges clipped to the hull (the
 // box feature inside it), or, when no edge of the box is in it (a hull edge
 // through a box face), the hull's edges clipped to the box. Of the ends,
-// the deepest (along n into the hull, or against it into the box) and the
-// one farthest from it: a box edge across a hull face is held at both ends,
-// a corner at the corner.
-static int holdPoints(const scBox_t *b, const scHull_t *h, const double n[3], double out[2][3])
+// the deepest (along n into the hull, or against it into the box), the one
+// farthest from it, and, more than PAST_WU off the line between them (seen
+// along n), the farthest on each side: a box edge across a hull face is held
+// at both ends, a corner at the corner, and a box top between the rims (a
+// beam, a post) at its corners in the hull. On a diagonal of the beam's top
+// the quad tipped about it and the support flipped between diagonals: it
+// rocked at up to 0.9 rad/s with the motors off and crept along the beam.
+static int holdPoints(const scBox_t *b, const scHull_t *h, const double n[3], double out[SC_HULL_HOLD][3])
 {
     double ends[24][3];
     int count = 0, pass = 0;
@@ -1187,8 +1194,32 @@ static int holdPoints(const scBox_t *b, const scHull_t *h, const double n[3], do
         }
     }
     memcpy(out[0], ends[deep], sizeof(out[0]));
+    if (!(farD > PAST_WU * PAST_WU)) {
+        return 1;
+    }
     memcpy(out[1], ends[far], sizeof(out[1]));
-    return farD > PAST_WU * PAST_WU ? 2 : 1;
+    // Off the line deep-far: (l x d) . n is |l| times the offset seen along n.
+    const double l[3] = { ends[far][0] - ends[deep][0], ends[far][1] - ends[deep][1], ends[far][2] - ends[deep][2] };
+    int side[2] = { -1, -1 };
+    double sideD[2] = { PAST_WU * sqrt(farD), PAST_WU * sqrt(farD) };
+    for (int j = 0; j < count; j++) {
+        const double d[3] = { ends[j][0] - ends[deep][0], ends[j][1] - ends[deep][1], ends[j][2] - ends[deep][2] };
+        double c[3];
+        vcross(l, d, c);
+        const double s = vdot(c, n);
+        const int k = s > 0 ? 0 : 1;
+        if (fabs(s) > sideD[k]) {
+            sideD[k] = fabs(s);
+            side[k] = j;
+        }
+    }
+    int points = 2;
+    for (int k = 0; k < 2; k++) {
+        if (side[k] >= 0) {
+            memcpy(out[points++], ends[side[k]], sizeof(out[0]));
+        }
+    }
+    return points;
 }
 
 // Whether moving hull h by d along axis ax (world units) takes a footprint
@@ -1286,7 +1317,7 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
             continue;
         }
         const double deeper = depth0 > 0 ? depth - depth0 : depth;
-        double held[2][3];
+        double held[SC_HULL_HOLD][3];
         const int points = holdPoints(b, &h, n, held);
         if (!points) {
             continue;
@@ -1308,7 +1339,7 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
             count++;
         }
         sc_hull_contact_t *hc = &out[at];
-        for (int j = 0; j < 2; j++) {
+        for (int j = 0; j < points; j++) {
             world2mod(held[j], hc->point[j]);
         }
         hc->points = points;

@@ -42,7 +42,7 @@
 #define GROUND_SCRUB 7.3            // H:3199, per second (as world.c TUMBLE_DECAY)
 #define FOOTPRINT_POINTS 5
 #define HULL_BOXES 2                // boxes held off by the footprint's hull, a tick
-#define CONTACTS (FOOTPRINT_POINTS + 2 * HULL_BOXES + FOOTPRINT_POINTS)
+#define CONTACTS (FOOTPRINT_POINTS + SC_HULL_HOLD * HULL_BOXES + FOOTPRINT_POINTS)
 #define CONTACT_SWEEPS 32
 #define CONTACT_SPIN_CAP 150.0      // rad/s, below the divergence guard (as world.c)
 
@@ -658,8 +658,9 @@ static double restHeightAt(const double q[4])
 // sc_world_hull): a box it ends the tick deeper inside than it began, with no
 // point inside it, is pushed out (along a box axis, as far as clears it along
 // the axis of least overlap), and the box feature inside the hull (a corner,
-// or both ends of an edge across a face) is one or two more contacts with
-// the world's response, in the same sweeps. The hull's push moves the points
+// both ends of an edge across a face, or up to four corners of a box top
+// between the rims) is one to four more contacts with the world's response,
+// in the same sweeps. The hull's push moves the points
 // too, so they are resolved again from where the points' push left them,
 // each push one more contact (world.c chooses a push that takes no point
 // into a solid, but a point lying on a seam plane is in none).

@@ -162,12 +162,14 @@ double sc_world_hull_clearance(const double pos[3], double hullBelow);
 // rims, in order round the base, and the canopy at the apex.
 #define SC_HULL_POINTS 5
 // A box edge or corner inside the hull (module frame): where the hull holds
-// the box off (the box feature inside it: one point, or both ends of an edge
-// across a face), the unit direction the hull leaves the box by, how deep
-// (m), the push that clears it (along the axis of the box face most along the
-// direction), and the box and that face (world.c axes) it is keyed by.
+// the box off (the box feature inside it: a corner, both ends of an edge
+// across a face, or up to four corners of a box top between the rims), the
+// unit direction the hull leaves the box by, how deep (m), the push that
+// clears it (along a box face axis, or none), and the box and that face
+// (world.c axes) it is keyed by.
+#define SC_HULL_HOLD 4
 typedef struct {
-    double point[2][3], normal[3], depth, push[3];
+    double point[SC_HULL_HOLD][3], normal[3], depth, push[3];
     int points, box, ax, side;
 } sc_hull_contact_t;
 // The boxes the hull (module frame, at the end of the tick after the points'

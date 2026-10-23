@@ -2424,7 +2424,69 @@ const fmtPose = (r) => `${(r.inside * 1e3).toFixed(2)} mm in (${r.deepTicks} tic
   assert.ok(spin < 100, 'the quad not wound up toward the spin cap');
 }
 
+// 45. A box top smaller than the footprint, between the rims (a beam, a post,
+// a cube, a partition), holds a quad resting on it still: world.c holds a box
+// at up to four of the ends inside the hull (the deepest, the farthest from
+// it, and the farthest each side of the line between them), so the top is
+// held at its corners in the hull. Held at two, a diagonal of the top, the
+// quad tipped about it, the support flipped between the diagonals, and with
+// the motors off it rocked at up to 0.9 rad/s and crept along the box for
+// good. Set down level on a 20 mm beam (centred and 2 mm off), on a 20 mm
+// post 2 and 1 mm off and yawed 0.3 rad, dropped tilted onto a 16 mm cube,
+// and on office partition #14 and backyard beam #16 with the map loaded:
+// |omega| under 2e-3 rad/s and the CG within 10 um over the late seconds
+// (on the yawed post a yaw twitch of about 1e-3 rad/s, decaying in a few
+// ms, about once a second; the rest are under 1e-5 rad/s).
+{
+  const quatOf = (roll, pitch, yaw) => {
+    const [cr, sr, cp, sp, cy, sy] = [Math.cos(roll / 2), Math.sin(roll / 2), Math.cos(pitch / 2), Math.sin(pitch / 2), Math.cos(yaw / 2), Math.sin(yaw / 2)];
+    return [cr * cp * cy + sr * sp * sy, sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy, cr * cp * sy - sr * sp * cy];
+  };
+  const rest = async (boxes, pose, ticks, late) => {
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport(pose);
+    c.events();
+    let spin = 0;
+    let from = null;
+    for (let k = 0; k < ticks; k++) {
+      c.step(1);
+      c.events();
+      if (k === ticks - late) from = [...c.state.pos];
+      if (k >= ticks - late) spin = Math.max(spin, Math.hypot(...c.state.omega));
+    }
+    return { spin, creep: Math.hypot(...c.state.pos.map((v, a) => v - from[a])) };
+  };
+  const top = 0.5 + REST + 5e-4;
+  const beam = [{ min: [1.99, -1, 0], max: [2.01, 1, 0.5], id: 1 }];
+  const cases = [
+    ['20 mm beam, centred', beam, { pos: [2, 0, top] }],
+    ['20 mm beam, 2 mm off', beam, { pos: [2.002, 0, top] }],
+    ['20 mm post, 2 and 1 mm off, yawed 0.3', [{ min: [1.99, -0.01, 0], max: [2.01, 0.01, 0.5], id: 1 }], { pos: [2.002, 0.001, top], quat: quatOf(0, 0, 0.3) }],
+    ['16 mm cube, dropped tilted', [{ min: [-0.00182, -0.00896, 0.484], max: [0.01418, 0.00704, 0.5], id: 1 }], { pos: [0, 0, 0.53], quat: quatOf(-0.0335, 0.032, 1.869), vel: [0, 0, -0.235] }],
+  ];
+  const lines = [];
+  let worstSpin = 0;
+  let worstCreep = 0;
+  for (const [name, boxes, pose] of cases) {
+    const r = await rest(boxes, pose, 10000, 7000);
+    lines.push(`${name}: |omega| ${r.spin.toExponential(2)} rad/s, moved ${(r.creep * 1e6).toFixed(2)} um`);
+    worstSpin = Math.max(worstSpin, r.spin);
+    worstCreep = Math.max(worstCreep, r.creep);
+  }
+  for (const [map, i] of [['office', 14], ['backyard', 16]]) {
+    const boxes = await mapFixture(map);
+    const b = boxes[i];
+    const r = await rest(boxes, { pos: [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, b.max[2] + REST + 5e-4] }, 6000, 3000);
+    lines.push(`${map} #${i} (${((b.max[0] - b.min[0]) * 1e3).toFixed(0)} x ${((b.max[1] - b.min[1]) * 1e3).toFixed(0)} mm), map loaded: |omega| ${r.spin.toExponential(2)} rad/s, moved ${(r.creep * 1e6).toFixed(2)} um`);
+    worstSpin = Math.max(worstSpin, r.spin);
+    worstCreep = Math.max(worstCreep, r.creep);
+  }
+  console.log(`resting on box tops smaller than the footprint, motors off (the last 7 s of 10, or 3 of 6 in a map):\n  ${lines.join('\n  ')}`);
+  assert.ok(worstSpin < 2e-3, 'still on a narrow box top');
+  assert.ok(worstCreep < 1e-5, 'no creep on a narrow box top');
+}
+
 for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
 const failing = open.filter((x) => !investigation[x.key]);
 assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
-console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down, carried hull overlaps pushed only as far as they deepen, hull pushes taking no point into the solid, held hull contacts only stopping motion: PASS');
+console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down, carried hull overlaps pushed only as far as they deepen, hull pushes taking no point into the solid, held hull contacts only stopping motion, quads resting still on box tops smaller than the footprint: PASS');
