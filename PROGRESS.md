@@ -2677,3 +2677,36 @@ Refuted along the way:
    - the D5 non-finite plant fault test
    - B5's ATTITUDE and acc-LPF asserts
    - the 75 mm plant (bench decision)
+
+---
+
+## 2026-10-22 | Phase 1 M4 | full `npm test` on the committed tree (`fa2862b`)
+
+`npm test` (`node tests/run-all.mjs`), Windows, Node 24.21.0, emsdk 3.1.61 in
+WSL. Exit 1, as expected: the gate fails on the owner items above, and
+everything else passes.
+
+- `git diff --stat vendor/betaflight` and `git -C vendor/betaflight status --porcelain`: both empty.
+- Build 1 and build 2: `dist/sim-core.wasm` 181,262 B, sha256
+  `6d7aa37f202cde98f4d5f3a7b7b186c3684ba31c5a687ff6b0cc45f74812b405` both
+  times, equal to the committed `dist/sim-core.wasm.sha256`.
+
+```
+PASS   135.7 s  B1 B2 byte-exact build, vendor untouched; F5 arm, motors
+PASS     0.1 s  B3 B4 B5 ABI surface, PG coverage, boot asserts
+PASS     0.1 s  F5 arm and motor answer the sticks
+PASS     0.9 s  C2 F5 config policy, map, link loss, bad input
+PASS     0.6 s  C1 C2 C3 config count and readback
+PASS     0.3 s  C1 diff passthrough (rates ratio, RPM filter, P)
+PASS     1.0 s  D1 determinism repeat
+PASS     0.7 s  D3 frame independence 30/60/144/240 Hz
+PASS     0.8 s  D4 reset vs fresh load
+PASS     1.2 s  X1 black box vs WebFPV (F1 F2 F4)
+PASS     4.3 s  M4 plant and world API: contact, triggers, pose, pack, argument checks
+FAIL     2.8 s  M4 plant: P1-P5, F6, F9, X2/F3, X3 feel bands vs WebFPV
+PASS    12.0 s  D2 Node vs headless Chrome, console clean
+1 of 13 failed
+```
+
+Stopped here for the owner. PR #2 is open; the gate waits on the decisions in
+the M4 entry.
