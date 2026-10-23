@@ -46,6 +46,10 @@
  *     into the chosen face. CONTACT events are keyed by face (axis, side,
  *     plane), so coplanar split walls are one surface, and a face touched
  *     within CONTACT_GAP_US is the same contact.
+ *   - a box whose bottom is within ON_FACE_WU of the floor stands on it: it
+ *     has no bottom face and reaches down to the floor plane, so a point on
+ *     the floor under one lifted more than PAST_WU is still at it (it slid
+ *     under the side, 16 mm in 3 s, when only the bottom face went)
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
  *
@@ -334,11 +338,21 @@ static double alongFace(const scBox_t *b, int t, double v)
     return v < lo ? lo : v > hi ? hi : v;
 }
 
-// Whether a box is within PAST_WU of the point on every axis.
-static bool nearBox(const scBox_t *b, const double w[3])
+// A box standing on the floor (its bottom within ON_FACE_WU of the floor
+// plane floorY) has no bottom face.
+static bool grounded(const scBox_t *b, double floorY)
 {
-    return w[0] >= b->min[0] - PAST_WU && w[0] <= b->max[0] + PAST_WU && w[1] >= b->min[1] - PAST_WU
-           && w[1] <= b->max[1] + PAST_WU && w[2] >= b->min[2] - PAST_WU && w[2] <= b->max[2] + PAST_WU;
+    return b->min[1] <= floorY + ON_FACE_WU;
+}
+
+// Whether a box is within PAST_WU of the point on every axis. A box standing
+// on the floor reaches down to the floor plane: a point on the floor under
+// one lifted up to ON_FACE_WU is at it.
+static bool nearBox(const scBox_t *b, const double w[3], double floorY)
+{
+    return w[0] >= b->min[0] - PAST_WU && w[0] <= b->max[0] + PAST_WU && w[2] >= b->min[2] - PAST_WU
+           && w[2] <= b->max[2] + PAST_WU && w[1] <= b->max[1] + PAST_WU
+           && (w[1] >= b->min[1] - PAST_WU || (grounded(b, floorY) && w[1] >= floorY - PAST_WU));
 }
 
 // Whether the point is inside the union of the boxes with ON_FACE_WU to spare
@@ -458,16 +472,15 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             const scBox_t *b = &boxes[i];
             // Within PAST_WU: a point nanometres off a slab that meets a wall
             // must still find the slab's top or bottom.
-            if (!nearBox(b, cp)) {
+            if (!nearBox(b, cp, floorY)) {
                 continue;
             }
             anyNear = true;
-            // A box standing on the floor has no bottom face.
-            const bool grounded = b->min[1] <= floorY + ON_FACE_WU;
+            const bool onFloor = grounded(b, floorY);
             // Began the tick deep inside (a pose): leave through a surface.
             bool began = true;
             if (forceBegan) {
-                began = nearBox(b, start);
+                began = nearBox(b, start, floorY);
             } else {
                 for (int a = 0; a < 3 && began; a++) {
                     began = start[a] > b->min[a] + ON_FACE_WU && start[a] < b->max[a] - ON_FACE_WU;
@@ -482,8 +495,8 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             bool faceTop = false, faceInner = true;
             for (int ax = 0; ax < 3 && !outside; ax++) {
                 for (int side = -1; side <= 1; side += 2) {
-                    if (ax == 1 && side < 0 && grounded) {
-                        continue;
+                    if (ax == 1 && side < 0 && onFloor) {
+                        continue;           // standing on the floor: no bottom face
                     }
                     const double plane = side > 0 ? b->max[ax] : b->min[ax];
                     const double depth = side > 0 ? plane - cp[ax] : cp[ax] - plane;

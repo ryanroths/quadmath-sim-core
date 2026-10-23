@@ -1572,6 +1572,48 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   }
 }
 
+// 35. A box lifted off the floor by less than world.c's grounding tolerance
+// (ON_FACE_WU, 0.1 mm) stands on it: it has no bottom face, so it reaches
+// down to the floor, or a rim lying on the floor under it is outside the
+// 5 um near-box window (PAST_WU) and slides under the side. The press of 22
+// against the box on the floor plane and lifted 6, 20, 50 and 99 um: the
+// same footprint path every tick, the front rims held on the floor at the
+// foot of the side.
+{
+  const a = 0.5;
+  const ahead = REACH * Math.cos(a) - REST * Math.sin(a);
+  const below = REACH * Math.sin(a) + REST * Math.cos(a);
+  const rows = [];
+  for (const lift of [0, 6e-6, 20e-6, 50e-6, 99e-6]) {
+    const core = await flight({ floorZ: 0, boxes: [{ min: [2, -1, lift], max: [2.3, 1, 0.5], id: 5 }] });
+    core.teleport({ pos: [1.995 - ahead, 0, below], quat: [Math.cos(a / 2), 0, Math.sin(a / 2), 0], vel: [0.5, 0, 0] });
+    core.events();
+    core.motorOverride(-1, D(0.33));
+    const path = [];
+    let deepest = -Infinity;    // farthest x of any point below the top
+    let pressed = 0;            // ticks a rim lay on the floor against the side, touching both
+    let hits = 0;
+    for (let t = 0; t < 3000; t++) {
+      core.step(1);
+      hits += kinds(core.events(), 'contact').filter((e) => e.box === 5).length;
+      const fp = core.footprint;
+      path.push(fp);
+      if (core.state.contactFlags === 3 && fp.some((p) => Math.abs(p[0] - 2) < 1e-3 && Math.abs(p[2]) < 1e-6)) pressed++;
+      deepest = Math.max(deepest, ...fp.filter((p) => p[2] < 0.499).map((p) => p[0]));
+    }
+    rows.push({ lift, path, deepest, pressed, hits });
+  }
+  const [flat] = rows;
+  for (const r of rows) r.apart = Math.max(...r.path.map((fp, k) => Math.max(...fp.map((p, i) => maxAbs(p.map((v, ax) => v - flat.path[k][i][ax]))))));
+  const lifted = rows.slice(1);
+  console.log(`boxes lifted ${lifted.map((r) => r.lift * 1e6).join(', ')} um off the floor, pressed into at floor level for 3 s: deepest below the top x ${lifted.map((r) => r.deepest.toFixed(6)).join(', ')}; ${lifted.map((r) => r.pressed).join(', ')} ticks on the floor against the side (on the floor plane ${flat.pressed}); footprints at most ${Math.max(...lifted.map((r) => r.apart)).toExponential(2)} m from the floor-plane box's`);
+  assert.ok(flat.pressed >= 1000 && flat.deepest <= 2.000001, 'the box on the floor plane holds the rims at its foot');
+  for (const r of lifted) {
+    assert.ok(r.deepest <= 2.000001, `lifted ${r.lift * 1e6} um: kept out from under the box`);
+    assert.ok(r.apart < 1e-9 && r.hits === flat.hits, `lifted ${r.lift * 1e6} um: as the box on the floor plane`);
+  }
+}
+
 for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
 const failing = open.filter((x) => !investigation[x.key]);
 assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
