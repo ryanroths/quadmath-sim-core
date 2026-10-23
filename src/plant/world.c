@@ -1320,7 +1320,8 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         // the overlap along n (what it went deeper this tick): the face most
         // along n, or failing that the next at least half along it, whose
         // push takes no footprint point under the floor or into a solid it
-        // was not in. With none, no push: the contact's response holds it.
+        // was not in. With none, no push: the contact's response holds it
+        // (only stopping the hull moving into the box, sc_world_hull_hit).
         // Keyed by that face (or the one most along n), on the piece there.
         int order[3] = { 0, 1, 2 };     // axes by |n|, ties in axis order
         for (int j = 1; j < 3; j++) {
@@ -1370,6 +1371,21 @@ uint32_t sc_world_hull_hit(const sc_hull_contact_t *c, double vel[3], double bou
         *scrub = true;
     } else {
         crashed = ductHit(cv, NULL, n, into, top, bounceScale, crashScale, spinScale);
+    }
+    // A contact the hull is not pushed out of (each push tried takes a point
+    // into the solid or under the floor) only stops it moving into the box: no
+    // bounce, and no holding the speed it was leaving at. Holding it fought
+    // the points on the far side of a thin wall posed through the quad, and
+    // the quad wound up to the spin cap and 4.6 m/s with its motors below
+    // hover.
+    if (!(c->push[0] || c->push[1] || c->push[2])) {
+        const double u[3] = { -normal[1], normal[2], -normal[0] };
+        const double un = vdot(cv, u);
+        if (un > 0) {
+            for (int k = 0; k < 3; k++) {
+                cv[k] -= un * u[k];
+            }
+        }
     }
     touchFace(c->ax, c->side, c->side > 0 ? b->max[c->ax] : b->min[c->ax], b->id, into, crashed, true);
     world2mod(cv, vel);
