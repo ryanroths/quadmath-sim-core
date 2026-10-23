@@ -50,6 +50,12 @@
  *     has no bottom face and reaches down to the floor plane, so a point on
  *     the floor under one lifted more than PAST_WU is still at it (it slid
  *     under the side, 16 mm in 3 s, when only the bottom face went)
+ *   - an inner face the point crossed this tick where the solid already was
+ *     (where its path met the plane, other boxes all round it) ranks after
+ *     the other inner faces: the point came in elsewhere, so that face is no
+ *     way out. A rim deeper into a concave corner than past a split post's
+ *     seam saw only the upper piece, all its faces inner, and the seam, the
+ *     shallowest, held it at the split: an invisible ledge
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
  *
@@ -396,6 +402,32 @@ static bool covered(int skip, const double cp[3], int ax, int side, double plane
     return true;
 }
 
+// Whether the point crossed box skip's inner face at plane (axis ax, outward
+// side) this tick inside the solid: where its path from start to end crossed
+// the plane, four points PAST_WU outside the face, offset diagonally along it,
+// are all inside other boxes. It came in somewhere else (a split post's seam
+// crossed in a concave corner), so the face is not its way back out.
+static bool crossedInside(int skip, const double start[3], const double end[3], int ax, int side, double plane)
+{
+    if (side > 0 ? !(start[ax] >= plane && end[ax] < plane) : !(start[ax] <= plane && end[ax] > plane)) {
+        return false;                   // not crossed on the way in this tick
+    }
+    const double f = (plane - start[ax]) / (end[ax] - start[ax]);
+    const int t0 = (ax + 1) % 3, t1 = (ax + 2) % 3;
+    for (int s0 = -1; s0 <= 1; s0 += 2) {
+        for (int s1 = -1; s1 <= 1; s1 += 2) {
+            double q[3];
+            q[ax] = plane + side * PAST_WU;
+            q[t0] = start[t0] + f * (end[t0] - start[t0]) + s0 * PAST_WU;
+            q[t1] = start[t1] + f * (end[t1] - start[t1]) + s1 * PAST_WU;
+            if (!insideAnother(skip, q)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // A touch of a box face: a CONTACT event unless the same face (axis, side,
 // plane) was touched within CONTACT_GAP_US. upgrade (the footprint): a crash
 // on a face whose last event was not one is reported even inside the gap, so
@@ -466,7 +498,7 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
     for (int pass = 0; pass < BOX_PASSES; pass++) {
         int bestBox = -1, bestAxis = 0, bestSide = 0;
         double bestDepth = INFINITY;
-        int bestRank = 3;
+        int bestRank = 4;
         bool anyNear = false;
         for (int i = 0; i < boxCount; i++) {
             const scBox_t *b = &boxes[i];
@@ -492,7 +524,7 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             double pastInner[3] = { 0, 0, 0 };
             int faceAxis = 0, faceSide = 0;
             double faceDepth = INFINITY;
-            bool faceTop = false, faceInner = true;
+            int faceRank = 4;
             for (int ax = 0; ax < 3 && !outside; ax++) {
                 for (int side = -1; side <= 1; side += 2) {
                     if (ax == 1 && side < 0 && onFloor) {
@@ -526,7 +558,7 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
                     const double above[3] = { cp[0], plane + PAST_WU, cp[2] };
                     const bool top = ax == 1 && side > 0 && start[1] >= b->max[1] - ON_FACE_WU
                                      && !insideAnother(i, above) && !covered(i, cp, ax, side, plane);
-                    bool inner = false;
+                    bool inner = false, crossedIn = false;
                     if (began) {
                         if (covered(i, cp, ax, side, plane)) {
                             continue;
@@ -537,15 +569,16 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
                             continue;           // farther than the point came in this tick
                         }
                         inner = covered(i, cp, ax, side, plane);
+                        crossedIn = inner && crossedInside(i, start, tickPos, ax, side, plane);
                     }
-                    // Top first, then surfaces before inner faces, then depth.
-                    if ((top && !faceTop)
-                        || (top == faceTop && ((!inner && faceInner) || (inner == faceInner && depth < faceDepth)))) {
+                    // Top first, then surfaces, then inner faces, those it
+                    // crossed inside the solid last; then depth.
+                    const int rank = top ? 0 : !inner ? 1 : crossedIn ? 3 : 2;
+                    if (rank < faceRank || (rank == faceRank && depth < faceDepth)) {
                         faceAxis = ax;
                         faceSide = side;
                         faceDepth = depth;
-                        faceTop = top;
-                        faceInner = inner;
+                        faceRank = rank;
                     }
                 }
             }
@@ -585,17 +618,18 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
                 continue;
             }
             // Across boxes: an exposed top first, then a surface of a box the
-            // tick did not begin inside, then the rest, then depth.
-            const int faceRank = faceTop ? 0 : (!faceInner && !began) ? 1 : 2;
-            if (faceSide != 0 && (faceRank < bestRank || (faceRank == bestRank && faceDepth < bestDepth))) {
+            // tick did not begin inside, then the rest (inner faces crossed
+            // inside the solid last), then depth.
+            const int boxRank = faceRank == 0 ? 0 : began ? 2 : faceRank;
+            if (faceSide != 0 && (boxRank < bestRank || (boxRank == bestRank && faceDepth < bestDepth))) {
                 bestBox = i;
                 bestAxis = faceAxis;
                 bestSide = faceSide;
                 bestDepth = faceDepth;
-                bestRank = faceRank;
+                bestRank = boxRank;
             }
         }
-        if (pass == 0 && !forceBegan && anyNear && (bestBox < 0 || (bestRank == 2 && bestAxis == 1))
+        if (pass == 0 && !forceBegan && anyNear && (bestBox < 0 || (bestRank >= 2 && bestAxis == 1))
             && deepInSolid(start)) {
             forceBegan = true;
             pass--;

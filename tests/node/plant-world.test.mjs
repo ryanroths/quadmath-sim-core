@@ -1614,6 +1614,72 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   }
 }
 
+// 36. The concave corner with a split post (29), entered deeper than the rim
+// climbs past the split: rim 3 more than 5 um into the corner (world.c's
+// near-box window, PAST_WU) and less far past the split than into it. Only
+// the upper post piece is then near, and all three of its faces the rim
+// came through this tick are inner faces: the post's two toward the room
+// (the walls continue past them) and its bottom (the lower piece does). The
+// bottom was the shallowest and held the rim at the split, an invisible
+// ledge with a contact on the upper piece; the rim crossed the split inside
+// the solid, so world.c ranks that face after the others (crossedInside).
+// Aimed hits as in 29, rim 3 into the corner square or skewed: the same
+// footprint path and contacts as the post in one piece. Control: the post
+// above the split 1 mm proud of the walls is a real ledge and holds the rim.
+{
+  const walls = [{ min: [-1, 1, 0], max: [2, 1.1, 3] }, { min: [2, -1, 0], max: [2.1, 1, 3] }];
+  const lower = { min: [2, 1, 0], max: [2.1, 1.1, 1.5] };
+  const posts = {
+    split: [lower, { min: [2, 1, 1.5], max: [2.1, 1.1, 3] }],
+    whole: [{ min: [2, 1, 0], max: [2.1, 1.1, 3] }],
+    ledge: [lower, { min: [1.999, 0.999, 1.5], max: [2.1, 1.1, 3] }],
+  };
+  const corner = async (post, [gx, gy, below]) => {
+    const boxes = [...walls, ...post].map((b, id) => ({ ...b, id }));
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport({ pos: [0, 0, 1] });
+    c.motorOverride(-1, c.plantDerived.dutyHover);
+    c.step(300);
+    c.teleport({ pos: [2 - gx - REACH, 1 - gy - REACH, 1.5 - below + REST], vel: [0.05, 0.05, 0.5] });
+    c.events();
+    const path = [];
+    const ev = [];
+    let cross = null;
+    for (let k = 0; k < 50; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [k, e.box, Number(e.impactMs.toFixed(6)), e.crashed]));
+      const p = c.footprint[3];
+      const [p1, p2] = [path[k - 1]?.[3], path[k - 2]?.[3]];
+      // The tick rim 3 crosses the split: where the two ticks before put it
+      // without the walls (at their speed), and whether it ends on the edge.
+      if (!cross && p2 && p1[2] < 1.5 && p[2] >= 1.5 - 1e-9) {
+        cross = { into: Math.min(2 * p1[0] - p2[0] - 2, 2 * p1[1] - p2[1] - 1), past: 2 * p1[2] - p2[2] - 1.5, edge: Math.abs(p[0] - 2) < 1e-9 && Math.abs(p[1] - 1) < 1e-9 };
+      }
+      path.push(c.footprint);
+    }
+    return { path, ev, cross, z: c.footprint[3][2], inside: footInside(c, boxes) };
+  };
+  const hits = [[225e-6, 225e-6, 2.473e-3], [200e-6, 200e-6, 2.463e-3], [240e-6, 240e-6, 2.48e-3], [200e-6, 230e-6, 2.47e-3], [230e-6, 200e-6, 2.48e-3]];
+  let worst = 0;
+  for (const [k, hit] of hits.entries()) {
+    const split = await corner(posts.split, hit);
+    const whole = await corner(posts.whole, hit);
+    const apart = Math.max(...split.path.map((fp, t) => Math.max(...fp.map((p, i) => maxAbs(p.map((v, a) => v - whole.path[t][i][a]))))));
+    worst = Math.max(worst, apart);
+    const c = split.cross;
+    console.log(`  rim 3 ${(c.into * 1e6).toFixed(1)} um into the corner, ${(c.past * 1e6).toFixed(1)} um past the split, on the edge ${c.edge}: z after 50 ms ${split.z.toFixed(6)} (post in one piece ${whole.z.toFixed(6)}), footprints ${apart.toExponential(2)} m apart, contacts ${JSON.stringify(split.ev.map((e) => e[1]))} (one piece ${JSON.stringify(whole.ev.map((e) => e[1]))})`);
+    // Not vacuous: deeper into the corner than the window, less far past the split.
+    assert.ok(c.edge && whole.cross.edge && c.into > 5e-6 && c.past > 0 && c.past < c.into, `hit ${JSON.stringify(hit)} is in the corner past the window and less far past the split`);
+    assert.ok(apart < 1e-9 && JSON.stringify(split.ev) === JSON.stringify(whole.ev), `hit ${JSON.stringify(hit)}: as the post in one piece`);
+    assert.ok(!split.inside && split.z > 1.5005, 'climbed past the split, no rim inside');
+    if (!k) {
+      const ledge = await corner(posts.ledge, hit);
+      assert.ok(ledge.z < 1.5, 'the real ledge holds the rim');
+    }
+  }
+  console.log(`concave corner, rim 3 deeper into the corner than past the post's split, ${hits.length} hits: footprints at most ${worst.toExponential(2)} m from the post in one piece`);
+}
+
 for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
 const failing = open.filter((x) => !investigation[x.key]);
 assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
