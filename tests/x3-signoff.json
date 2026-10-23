@@ -1,4 +1,11 @@
 {
-  "note": "X3 misses the owner has read and accepted, keyed by the gate-plant.mjs row name. Only the owner adds entries (PROGRESS.md: a band is never widened; a miss needs the owner's sign-off).",
-  "signedOff": {}
+  "note": "X3 misses the owner has read and accepted, keyed by the gate-plant.mjs row name. Only the owner adds entries (PROGRESS.md: a band is never widened; a miss needs the owner's sign-off). An entry written on the owner's instruction says so in 'entered'.",
+  "signedOff": {
+    "coast after roll (deg)": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-23",
+      "reason": "I-term hold after release is Betaflight behaviour on this diff, not plant. Revisit against a real log.",
+      "entered": "by Claude on the owner's instruction of 2026-10-23 (M4 decision 5)"
+    }
+  }
 }

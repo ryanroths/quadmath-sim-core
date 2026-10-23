@@ -169,7 +169,7 @@ static void derive(void)
     derived[PD_OMEGA_HOVER] = wHover;
     const double vHover = wHover / kv + r * kqProp * wHover * wHover / ktMotor;
     derived[PD_DUTY_HOVER] = vHover / vRef;
-    derived[PD_DUTY_CURRENT_REF] = vHover / ((blk[PB_OCV + 6] - blk[PB_I_REF] * blk[PB_CELL_IR]) * cells);
+    derived[PD_DUTY_CURRENT_REF] = blk[PB_I_REF_DUTY];
 }
 
 static void publishSensors(void)
@@ -275,7 +275,8 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_LOAD_FRACTION] < 1 && block[PB_KQ_RATIO] > 0
                                         && block[PB_CAPACITY_MAH] > 0 && block[PB_I_REF] >= 0 && block[PB_CELL_IR] >= 0
                                         && block[PB_DUCT_RADIUS] > 0 && block[PB_HULL_BELOW] > 0
-                                        && block[PB_HULL_ABOVE] > 0)) {
+                                        && block[PB_HULL_ABOVE] > 0 && block[PB_I_REF_DUTY] > 0
+                                        && block[PB_I_REF_DUTY] <= 1)) {
             return SC_ERR_BAD_ARG;
         }
     }

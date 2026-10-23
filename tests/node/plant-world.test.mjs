@@ -32,6 +32,15 @@ async function flight(world, plant = air65) {
   return core;
 }
 
+// Fixed motor duties in the presses below were last checked against a hover
+// duty (plantDerived.dutyHover, no sag) of 0.27595, at loadFraction 0.81.
+// D() keeps each press the same multiple of the airframe's hover duty when
+// the motor constants move (loadFraction 0.632 from 2026-10-23), so a press
+// above hover stays above it and one below stays below.
+const DUTY_CHECKED_AT = 0.27595;
+const HOVER_DUTY = (await flight({ floorZ: -100 })).plantDerived.dutyHover;
+const D = (duty) => (duty * HOVER_DUTY) / DUTY_CHECKED_AT;
+
 // 1. Resting disarmed on a box top: no yaw spin-up (sim.html makes every tick
 // there a duct hit with a yaw kick; the soft path and scrub now apply).
 {
@@ -205,7 +214,8 @@ for (const vel of [[18, 0, -8], [30, 10, -15], [0, 25, -20]]) {
 }
 
 // 10. At hover on a full pack the current stand-in draws the bench current:
-// its reference duty is the hover duty with the pack sagging at that current.
+// iRef at iRefDuty, the logged hover's current and duty (owner decision
+// 2026-10-23), and the plant hovers at about that duty.
 {
   const sim = await feel.simCoreSim(SimCore, module, { diff, airframe: air65 });
   const h = feel.hoverTrim(sim);
@@ -277,13 +287,13 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   core.configure({ diff });
   assert.throws(() => core.configure({ diff, plant: { ...structuredClone(air65), describe() {} } }));
   assert.equal(core.plant, null, 'still the rest plant after a clone failure');
-  for (const [field, value] of [['iRef', 42], ['cellIR', 0.6], ['cellIR', 0.9]]) {
+  for (const [field, value] of [['iRef', 42], ['cellIR', 0.6], ['cellIR', 0.9], ['iRefDuty', 0], ['iRefDuty', 1.2]]) {
     const bad = structuredClone(air65);
     bad.values[field].value = value;
     assert.throws(() => core.configure({ diff, plant: bad }), /plant block refused/, `${field} ${value}: the pack cannot hold hover at the bench current`);
     assert.equal(core.plant, null);
   }
-  console.log('uncloneable plant and three unreachable current references: refused, previous config kept');
+  console.log('uncloneable plant, three unreachable current references and two reference duties out of range: refused, previous config kept');
 }
 
 // 16. A unit quaternion an ulp past 1 is accepted.
@@ -467,17 +477,19 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
 // Sliding down a wall of two stacked blocks stays on its face, as on a
 // one-piece wall, and the garage's crate stack does not swallow a fall past it.
 {
-  // Tilted 0.8 rad into the wall (+x) at the old 0.35 duty, the two leading
-  // duct rims start where the old CG point did: 1 mm from the face, 60 mm
-  // above the seam between the blocks at z 0.5. The wall's friction on the
-  // pressed rims holds the slide to 10 mm/s, so it runs 7 s (the old 2.5 s
-  // ended 22 mm above the seam) and the rims cross the seam at about 4.7 s.
+  // Tilted 0.8 rad into the wall (+x), the two leading duct rims start where
+  // the old CG point did: 1 mm from the face, 60 mm above the seam between
+  // the blocks at z 0.5. The wall's friction on the pressed rims holds the
+  // slide to about 10 mm/s, so it runs 7 s and the rims cross the seam at
+  // about 3.7 s. The press is D(0.34): at loadFraction 0.632 the old D(0.35)
+  // holds the quad on the face (it ends 46 mm above the seam), where at 0.81
+  // it slid past at 4.7 s.
   const tilt = 0.8;
   const lead = [REACH * Math.cos(tilt) - REST * Math.sin(tilt), -REACH * Math.sin(tilt) - REST * Math.cos(tilt)];
   const slide = async (boxes) => {
     const core = await flight({ floorZ: 0, boxes });
     core.teleport({ pos: [1.999 - lead[0], 0, 0.56 - lead[1]], vel: [0.5, 0, -0.3], quat: [Math.cos(tilt / 2), 0, Math.sin(tilt / 2), 0] });
-    core.motorOverride(-1, 0.35);
+    core.motorOverride(-1, D(0.34));
     const path = [];
     let maxX = -Infinity;
     let inside = 0;
@@ -553,7 +565,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   const below = REACH * Math.sin(a) + REST * Math.cos(a);
   core.teleport({ pos: [1.995 - ahead, 0, below], quat: [Math.cos(a / 2), 0, Math.sin(a / 2), 0], vel: [0.5, 0, 0] });
   core.events();
-  core.motorOverride(-1, 0.33);
+  core.motorOverride(-1, D(0.33));
   const c = [];
   let deepest = -Infinity;    // farthest x of any point below the top
   let hitAtFoot = false;      // a rim at the foot of the side when the hit came
@@ -649,7 +661,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     const pair = [{ min: [1, -1, 0], max: [2, 1, 0.5], id: 1 }, { min: [2, -1, 0], max: [2.2, 1, 2], id: 2 }];
     const core = await flight({ floorZ: 0, boxes: order ? pair.reverse() : pair });
     core.teleport({ pos: [1.99 - 1.1 * REACH, 0, 0.5 + 1.5 * REST], quat: [Math.cos(0.26), 0, Math.sin(0.26), 0] });
-    core.motorOverride(-1, 0.3);
+    core.motorOverride(-1, D(0.3));
     core.step(3000);
     const s = core.state;
     console.log(`pressed into the wall from the table (box order ${order ? 'wall first' : 'table first'}): x ${s.pos[0].toFixed(4)} z ${s.pos[2].toFixed(4)}, rims to x ${footMax(core, 0).toFixed(4)}, lowest point z ${footMin(core, 2).toFixed(4)} after 3 s`);
@@ -660,7 +672,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     .map((b) => ({ min: b.um.slice(0, 3).map((v) => v * 1e-6), max: b.um.slice(3).map((v) => v * 1e-6) }));
   const tv = await flight({ floorZ: 0, boxes: living });
   tv.teleport({ pos: [3.17 - 1.1 * REACH, 0.2, 0.405714 + 1.5 * REST], quat: [Math.cos(0.26), 0, Math.sin(0.26), 0] });
-  tv.motorOverride(-1, 0.3);
+  tv.motorOverride(-1, D(0.3));
   tv.step(6000);
   console.log(`slid along the TV stand into the TV: x ${tv.state.pos[0].toFixed(4)} z ${tv.state.pos[2].toFixed(4)}, rims to x ${footMax(tv, 0).toFixed(4)} after 6 s`);
   assert.ok(!footInside(tv, living), 'stopped at the TV, not under it or in it');
@@ -723,7 +735,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   const gc = await flight({ floorZ: 0, boxes: garage });
   gc.teleport({ pos: gPos, quat: gq });
   gc.events();
-  gc.motorOverride(-1, 0.3);
+  gc.motorOverride(-1, D(0.3));
   let gx = -Infinity;
   let gy = -Infinity;
   let gPressed = 0;
@@ -754,7 +766,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   let out = 0;
   let reached = 0;
   let cornerMs = 0;
-  for (const duty of [0.28, 0.34]) {
+  for (const duty of [D(0.28), D(0.34)]) {
     for (let az = 0; az < 360; az += 30) {
       const q = tilt(az * Math.PI / 180, 0.3);
       const pos = placing(0, [-2.35, -1.78, 0.4], q);
@@ -801,7 +813,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     let inside = 0;
     const ids = new Set();
     for (let k = 0; k < 7000; k++) {
-      c.motorOverride(-1, k < 3000 ? 0.45 : 0.45 - 0.12 * ((k - 3000) / 4000));
+      c.motorOverride(-1, k < 3000 ? D(0.45) : D(0.45 - 0.12 * ((k - 3000) / 4000)));
       c.step(1);
       const x = footMax(c, 0);
       const z = footMax(c, 2);
@@ -829,7 +841,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   const cl = await flight({ floorZ: 0, boxes: garage });
   cl.teleport({ pos: cPos, vel: [2.552, -5.415, 0.503], quat: cq });
   cl.events();
-  cl.motorOverride(-1, 0.4);
+  cl.motorOverride(-1, D(0.4));
   let cHit = null;
   let cIn = 0;
   for (let k = 0; k < 2000; k++) {
@@ -853,7 +865,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   const tj = await flight({ floorZ: 0, boxes: tjBoxes });
   tj.teleport({ pos: tPos, quat: tq });
   tj.events();
-  tj.motorOverride(-1, 0.3);
+  tj.motorOverride(-1, D(0.3));
   let tLow = Infinity;
   let tFar = -Infinity;
   let tIn = 0;
@@ -921,7 +933,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
       const c = await flight({ floorZ: 0, boxes: office });
       c.teleport({ pos, vel: [-v, 0, 0], quat: lq });
       c.events();
-      c.motorOverride(-1, 0.34);
+      c.motorOverride(-1, D(0.34));
       let bad = false;
       let hit = null;
       for (let k = 0; k < 2000; k++) {
@@ -1024,8 +1036,8 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   };
   const runs = [];
   for (const tilt of [1e-5, 1e-4, 1e-3]) {
-    for (const duty of [0, 0.15, 0.25]) for (const vz of [-0.2, -2.4]) runs.push(await fly(table, tilt, duty, 0.502, [0, 0, vz], 2000));
-    for (const duty of [0.5, 0.62]) runs.push(await fly(deck, tilt, duty, 0.898, [0, 0, 1.6], 3000));
+    for (const duty of [0, D(0.15), D(0.25)]) for (const vz of [-0.2, -2.4]) runs.push(await fly(table, tilt, duty, 0.502, [0, 0, vz], 2000));
+    for (const duty of [D(0.5), D(0.62)]) runs.push(await fly(deck, tilt, duty, 0.898, [0, 0, 1.6], 3000));
   }
   runs.push(await fly(deck, 0, 0.45, 0.898, [1e-6, 0, 0.6], 1000));
   runs.push(await fly(table, 0, 0, 0.55, [1e-6, 0, -2], 1000));
@@ -1126,7 +1138,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   assert.ok(clear(start(lapPos, level), lap), 'the pose starts clear of the wall');
   overlap.teleport({ pos: lapPos, vel: [5, 0, 0] });
   overlap.events();
-  overlap.motorOverride(-1, 0.32);
+  overlap.motorOverride(-1, D(0.32));
   let maxX = -Infinity;
   let atSeam = Infinity;
   const le = [];
@@ -1515,7 +1527,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   };
   const apart = (a, b) => Math.max(...a.trace.map((row, i) => Math.max(...row.map((v, k) => Math.abs(v - b.trace[i][k])))));
   for (const [name, box, pos, vel, duty] of [
-    ['dropping and drifting along a post', { min: [X, Y - 0.02, 0], max: [X + 0.1, Y + 0.02, 3], id: 8 }, [X, Y, 1.2], [0, 0.03, 0.5], 0.2],
+    ['dropping and drifting along a post', { min: [X, Y - 0.02, 0], max: [X + 0.1, Y + 0.02, 3], id: 8 }, [X, Y, 1.2], [0, 0.03, 0.5], D(0.2)],
     ['on a wall, the rims resting on the floor', { min: [X, Y - 0.5, 0.02], max: [X + 0.3, Y + 0.5, 1], id: 9 }, [X, Y, REST], [0, 0, 0], 0],
   ]) {
     const on = await run([box], pos, vel, duty);

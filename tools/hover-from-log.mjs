@@ -9,6 +9,9 @@
 //        [--pack "weBLEEDfpv 340 mAh 1S BT2.0"] [--cells 1] [--current-scale 1.24]
 //        [--out file.json]
 //
+// <log.BBL> is a path, or a name in SIM_CORE_LOGS (default D:/IGOW6/sim-core,
+// tools/logs.mjs): logs stay out of git, what they give is committed.
+//
 // The decoder is not part of sim-core. The tool imports quadmath's vendored
 // blackbox-log parser (vendor/blackbox-log.module.js, MIT, W Etheredge; the
 // licence is vendor/blackbox-log.LICENSE beside it) by path from a quadmath
@@ -50,6 +53,7 @@
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import { readFileSync, writeFileSync } from 'node:fs';
+import { logPath as findLog } from './logs.mjs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -295,7 +299,7 @@ export async function hoverFromLog(logPath, quadmathDir, air, opts = {}, print =
 
 async function main() {
   const a = args(process.argv.slice(2));
-  const logPath = a._[0];
+  const logPath = a._[0] && findLog(a._[0]);
   const qm = a.quadmath ?? process.env.QUADMATH_DIR;
   if (!logPath || !qm) {
     console.error('usage: node tools/hover-from-log.mjs <log.BBL> --quadmath <quadmath clone> [options] (or set QUADMATH_DIR); see the header of this file');

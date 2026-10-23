@@ -16,9 +16,9 @@
 //   F6  axis signs for roll, pitch and yaw, in acro and angle
 //   F9  3D: full reverse gives reverse thrust, the deadband holds Betaflight 3D idle; crash
 //       flip reverses through spin-direction commands only when 3D is off;
-//       turtle: upside down on the floor, crash flip at full roll until
-//       upright, then centred: upright within 300 ms, still upright and at
-//       rest at 500 ms, no divergence
+//       turtle: upside down on the floor, crash flip at full roll, centred
+//       at up-z > -0.5 (a pulse, as pilots fly it): upright and at rest at
+//       500 ms, no divergence; held until upright is reported, not gated
 //   X2  F3: achieved full-stick rate within +-1.0% of Betaflight's setpoint
 //   X3  feel bands against WebFPV's whoop65 flying the same diff and inputs;
 //       hover stick against the owner's Air65 bench hover instead
@@ -173,7 +173,7 @@ function parityModel(quadCfg, { battery }) {
       ocv: v([3.30, 3.50, 3.60, 3.75, 3.87, 4.05, 4.20]),
       sagDrop: v(pack.sagDrop), hoverSeconds: v(battery ? pack.hoverS : 0), sagScale: v(1),
       bounceScale: v(1), crashScale: v(1), spinScale: v(1),
-      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0),
+      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), iRefDuty: v(0),
     },
   };
 }
@@ -408,47 +408,55 @@ console.log('\n== F9 3D and crash flip');
     console.log(`   crash flip, 3D ${mode3d ? 'on' : 'off'}: armed ${flags.armed}, crashFlip ${flags.crashFlip}, spin-direction state ${q.motorDir.join(' ')}, DShot ${q.motorDshot.join(' ')}, thrust ${q.thrustN.map((t) => f(t)).join(' ')} -> ${check(ok && flags.armed && flags.crashFlip, `F9 crash flip 3D ${mode3d ? 'on' : 'off'}`)}`);
   }
 
-  // Turtle as flown: upside down on the floor, crash flip on, armed, full roll
-  // until the quad is upright, then the stick centred, as a pilot does.
-  // Betaflight's crash flip is open loop, so only the plant can stop the roll.
-  // Pass: armed in crash flip, upright within 300 ms, still upright and at
-  // rest (|omega| < 2 rad/s) at 500 ms, no fault.
+  // Turtle as flown: upside down on the floor, crash flip on, armed, full roll,
+  // then the stick centred. Betaflight's crash flip is open loop, so only the
+  // plant can stop the roll. The gate releases at up-z > -0.5, a pulse as
+  // pilots fly it: held until upright, a real whoop rolls on over (owner
+  // decision 2026-10-23; PROGRESS.md logs it as a reshape). Pass: armed in
+  // crash flip, upright (up-z > 0.9) and at rest (|omega| < 2 rad/s) at
+  // 500 ms, no fault. Held until up-z > 0.9 is reported, not gated.
   {
     const upZ = (q) => 1 - 2 * (q[1] * q[1] + q[2] * q[2]);
-    const c = await SimCore.load(module, { trace: false });
-    c.configure({ diff, plant: air65 });
-    c.teleport({ pos: [0, 0, 0.01], quat: [0, 1, 0, 0] });
-    c.input(ch({ throttle: 0 }, [1000, 1000, 1000, 2000]));
-    c.step(300);
-    c.input(ch({ throttle: 0 }, [2000, 1000, 1000, 2000]));
-    c.step(50);
-    const armed = c.fc.armed && c.fc.crashFlip;
-    const up0 = upZ(c.state.quat);
-    c.input(ch({ throttle: 0, roll: 1 }, [2000, 1000, 1000, 2000]));
-    let peak = 0;
-    let faultAt = null;
-    let uprightAt = null;
-    let fellBack = false;
-    for (let k = 0; k < 500; k++) {
-      c.flight.sc_step(1);
-      if (c.fault) {
-        faultAt = k + 1;
-        break;
+    const turtle = async (releaseAt) => {
+      const c = await SimCore.load(module, { trace: false });
+      c.configure({ diff, plant: air65 });
+      c.teleport({ pos: [0, 0, 0.01], quat: [0, 1, 0, 0] });
+      c.input(ch({ throttle: 0 }, [1000, 1000, 1000, 2000]));
+      c.step(300);
+      c.input(ch({ throttle: 0 }, [2000, 1000, 1000, 2000]));
+      c.step(50);
+      const armed = c.fc.armed && c.fc.crashFlip;
+      const up0 = upZ(c.state.quat);
+      c.input(ch({ throttle: 0, roll: 1 }, [2000, 1000, 1000, 2000]));
+      let peak = 0;
+      let faultAt = null;
+      let releasedAt = null;
+      let releaseRate = null;
+      for (let k = 0; k < 500; k++) {
+        c.flight.sc_step(1);
+        if (c.fault) {
+          faultAt = k + 1;
+          break;
+        }
+        const st = c.state;
+        peak = Math.max(peak, ...st.omega.map(Math.abs));
+        if (releasedAt === null && upZ(st.quat) > releaseAt) {
+          releasedAt = k + 1;
+          releaseRate = Math.hypot(...st.omega);
+          c.input(ch({ throttle: 0 }, [2000, 1000, 1000, 2000]));
+        }
       }
-      const st = c.state;
-      peak = Math.max(peak, ...st.omega.map(Math.abs));
-      const up = upZ(st.quat);
-      if (uprightAt === null && up > 0.9) {
-        uprightAt = k + 1;
-        c.input(ch({ throttle: 0 }, [2000, 1000, 1000, 2000]));
-      } else if (uprightAt !== null && up <= 0.9) {
-        fellBack = true;
-      }
-    }
-    const end = c.state;
-    const spin = Math.hypot(...end.omega);
-    const ok = armed && up0 < -0.9 && faultAt === null && uprightAt !== null && uprightAt <= 300 && !fellBack && spin < 2;
-    console.log(`   turtle from the floor (start up-z ${f(up0, 2)}, armed in crash flip ${armed}): full roll until upright, then centred: upright at ${uprightAt} ms, ${fellBack ? 'rolled on past upright' : 'stayed upright'}, peak body rate ${f(peak, 1)} rad/s, ${faultAt === null ? `at 500 ms up-z ${f(upZ(end.quat), 2)}, |omega| ${f(spin, 2)} rad/s` : `fault ${c.fault} at ${faultAt} ms`} -> ${check(ok, 'F9 turtle from the floor')}`);
+      const end = c.state;
+      const up = upZ(end.quat);
+      const spin = Math.hypot(...end.omega);
+      const ok = armed && up0 < -0.9 && faultAt === null && releasedAt !== null && up > 0.9 && spin < 2;
+      const text = `start up-z ${f(up0, 2)}, armed in crash flip ${armed}; full roll, centred at up-z > ${releaseAt} (${releasedAt} ms, turning ${f(releaseRate, 1)} rad/s), peak body rate ${f(peak, 1)} rad/s, ${faultAt === null ? `at 500 ms up-z ${f(up, 2)}, |omega| ${f(spin, 2)} rad/s` : `fault ${c.fault} at ${faultAt} ms`}`;
+      return { ok, text };
+    };
+    const pulse = await turtle(-0.5);
+    console.log(`   turtle from the floor, pulsed: ${pulse.text} -> ${check(pulse.ok, 'F9 turtle from the floor')}`);
+    const held = await turtle(0.9);
+    console.log(`   turtle from the floor, held until upright (reported, not gated): ${held.text} -> ${held.ok ? 'upright' : 'not upright at 500 ms'}`);
   }
 }
 
@@ -522,7 +530,7 @@ console.log('\n== X3 feel bands: sim-core Air65 vs WebFPV whoop65, same diff (65
   add('divergence', 'none', diverged ? 1 : 0, 0, (ov) => ov === 0);
   for (const row of rows) {
     const signed = signoff.signedOff && signoff.signedOff[row.key];
-    const verdict = row.pass ? 'pass' : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date})` : 'MISS';
+    const verdict = row.pass ? 'pass' : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date}${signed.reason ? `: ${signed.reason}` : ''})` : 'MISS';
     console.log(`   ${row.key.padEnd(30)} sim-core ${f(row.ov, 3).padStart(9)}  ${(row.refName || 'WebFPV').padEnd(6)} ${f(row.rv, 3).padStart(9)}  band ${row.band.padEnd(18)} ${verdict}`);
     if (!row.pass && !signed) failures.push(`X3 ${row.key}`);
   }

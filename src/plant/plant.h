@@ -62,7 +62,7 @@ enum {
     PB_CELLS = 23,
     PB_CAPACITY_MAH = 24,
     PB_CELL_IR = 25,            // ohm per cell
-    PB_I_REF = 26,              // A, pack current at hover duty (current stand-in)
+    PB_I_REF = 26,              // A, pack current at PB_I_REF_DUTY (current stand-in)
     PB_OCV = 27,                // 7 values: V per cell at SoC 0, .05, .15, .40, .70, .90, 1
     // Parity battery (quadmath sim-whoop.js stepBattery)
     PB_SAG_DROP = 34,           // V at full load
@@ -77,7 +77,9 @@ enum {
     PB_DUCT_RADIUS = 40,        // m, duct outer radius
     PB_HULL_BELOW = 41,         // m, duct bottom below the CG (the rest height)
     PB_HULL_ABOVE = 42,         // m, canopy top above the CG
-    PB_LEN = 43,
+    // Pack, continued
+    PB_I_REF_DUTY = 43,         // motor duty at which the pack draws PB_I_REF (current stand-in)
+    PB_LEN = 44,
 };
 
 // Derived constants, computed from the block when it is set (readout only).
@@ -95,8 +97,8 @@ enum {
     PD_IYY = 10,
     PD_IZZ = 11,
     PD_ARM = 12,                // m, motor offset per axis
-    PD_DUTY_CURRENT_REF = 13,   // hover duty on a full pack sagging at PB_I_REF: the
-                                // duty at which the current stand-in draws PB_I_REF
+    PD_DUTY_CURRENT_REF = 13,   // PB_I_REF_DUTY: the duty at which the current
+                                // stand-in draws PB_I_REF
     PD_LEN = 14,
 };
 
