@@ -9,7 +9,8 @@
 // config-count, diff-passthrough, blackbox-webfpv and gate-plant read WebFPV's
 // module and diffs from a WebFPV clone (tests/lib/webfpv.mjs). node-vs-chrome
 // needs Chrome. gate-plant fails on an X3 band miss the owner has not signed
-// off in tests/x3-signoff.json.
+// off or put under investigation in tests/x3-signoff.json; plant-world fails
+// on an open check unless it is under investigation there.
 // A test that runs past its time limit is stopped and counts as failed.
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.

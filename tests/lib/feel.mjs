@@ -8,7 +8,8 @@
 //       +pitch nose up, +yaw nose right, throttle 0..1), applied every 4 ms
 //       (250 Hz) and rounded to whole microseconds of channel, so both sims
 //       see the same rcData.
-//     onStep(tMs, s) after every 1 ms tick, s = { z, vz, pos (m, up), quat
+//     onStep(tMs, s) after every simulated millisecond (1000 / tickUs ticks;
+//       one at 1 kHz), s = { z, vz, pos (m, up), quat
 //       [w x y z], rate [roll, pitch, yaw] deg/s in the stick's sense,
 //       setpoint [r p y] Betaflight deg/s, vbat }
 //
@@ -74,15 +75,18 @@ export async function simCoreSim(SimCore, module, { diff, airframe, floorZ = -10
     config: report,
     fly(stick, durMs, onStep) {
       core.reinit({ freshPack: true });
+      // One step a millisecond whatever the loop rate (one tick at 1 kHz).
+      const ticksPerMs = 1000 / core.tickUs;
+      if (!Number.isInteger(ticksPerMs)) throw new Error(`feel needs whole ticks a millisecond; a ${core.tickUs} us tick gives ${ticksPerMs}`);
       core.input(channels({ t: 0 }));
-      core.step(50);
+      core.step(50 * ticksPerMs);
       while (core.simTimeUs % (FRAME_MS * 1000) !== 0) core.step(1);
       if (!core.fc.armed) throw new Error('sim-core did not arm');
       core.teleport({ pos: [0, 0, 0] });
       const t0 = core.simTimeUs;
       for (let tMs = 0; tMs < durMs; tMs += 1) {
         if (tMs % FRAME_MS === 0) core.input(channels(stick(tMs)), t0 + tMs * 1000);
-        core.flight.sc_step(1);
+        core.flight.sc_step(ticksPerMs);
         if (core.fault) return { diverged: { tMs: tMs + 1, fault: core.fault } };
         const st = core.state;
         const big = Math.max(...st.omega.map(Math.abs));
@@ -261,21 +265,24 @@ export function punch(sim, thr) {
   return { climb1s: z1 - z0 };
 }
 
-// Full roll for 540 ms, then centred: coast after release and drift over the
-// next 4.5 s (from release + 500 ms).
+// Full roll for 540 ms, then centred: coast after release, the attitude angle
+// turned from release to release + 500 ms (owner decision 2026-10-24; it was
+// the angle until the roll rate first reached zero, which a monotone decay
+// never does; taken from the attitudes, so it does not depend on the loop
+// rate), and drift over the next 4.5 s (from release + 500 ms).
 export function rollThenHold(sim, thr) {
   const ROLL = 540;
   const HOLD = 5000;
-  let ang = 0;
-  let angRel = 0;
+  let qRel = null;
   let qA = null;
   let qB = null;
   let coast = null;
   const r = sim.fly((t) => ({ t: thr, r: t >= SETTLE && t < SETTLE + ROLL ? 1 : 0 }), SETTLE + ROLL + HOLD, (tMs, s) => {
-    if (tMs > SETTLE) ang += s.rate[0] / 1000;
-    if (tMs === SETTLE + ROLL) angRel = ang;
-    if (tMs > SETTLE + ROLL && coast === null && s.rate[0] <= 0) coast = ang - angRel;
-    if (tMs === SETTLE + ROLL + 500) qA = s.quat.slice();
+    if (tMs === SETTLE + ROLL) qRel = s.quat.slice();
+    if (tMs === SETTLE + ROLL + 500) {
+      qA = s.quat.slice();
+      coast = qangleDeg(qRel, qA);
+    }
     if (tMs === SETTLE + ROLL + HOLD) qB = s.quat.slice();
   });
   if (r.diverged) return { diverged: r.diverged };

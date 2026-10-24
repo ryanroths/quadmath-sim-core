@@ -35,7 +35,8 @@
 //       on the config that log flew, within +-0.02 of the measured 0.371.
 //       The rest against WebFPV's whoop65, both on quadmath's class diff and
 //       the same inputs (WebFPV cannot fly the Air65's full config). A miss
-//       fails unless the owner signed it off in tests/x3-signoff.json
+//       fails unless the owner signed it off or put it under investigation
+//       in tests/x3-signoff.json
 //       (PROGRESS.md: "a band is never widened")
 //
 //   node tests/gate-plant.mjs
@@ -680,14 +681,18 @@ console.log('\n== X3 feel bands: (log) rows: sim-core on the Air65 config replay
   const diverged = Object.values(o).some((m) => m && m.diverged);
   add('divergence', 'none', diverged ? 1 : 0, 0, (ov) => ov === 0);
   for (const row of rows) {
-    // A sign-off covers a measured miss, never a row that measured nothing.
+    // A sign-off or an investigation covers a measured miss, never a row
+    // that measured nothing.
     const measured = row.ov != null && Number.isFinite(row.ov);
     const signed = measured && signoff.signedOff && signoff.signedOff[row.key];
+    const probe = measured && signoff.underInvestigation && signoff.underInvestigation[row.key];
     const verdict = row.notRun ? 'not run here: needs QUADMATH_DIR and the freestyle log in SIM_CORE_LOGS'
       : !measured ? 'NOT MEASURED (a sign-off covers a measured miss only)'
-      : row.pass ? 'pass' : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date}${signed.reason ? `: ${signed.reason}` : ''})` : 'MISS';
+      : row.pass ? 'pass'
+      : probe ? `MISS, ${probe.reason} (${probe.by})`
+      : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date}${signed.reason ? `: ${signed.reason}` : ''})` : 'MISS';
     console.log(`   ${row.key.padEnd(30)} sim-core ${f(row.ov, 3).padStart(9)}  ${(row.refName || 'WebFPV').padEnd(6)} ${f(row.rv, 3).padStart(9)}  band ${row.band.padEnd(18)} ${verdict}`);
-    if (!row.pass && !signed && !row.notRun) failures.push(`X3 ${row.key}`);
+    if (!row.pass && !signed && !probe && !row.notRun) failures.push(`X3 ${row.key}`);
   }
   console.log(`   hover stick, Air65 bench row: on the Air65 config; channel ${f(b.quantum, 3)}, rcCommand ${f(b.rc, 3)}, vz residual ${f(b.vzResidual, 3)} m/s; measured rcCommand ${f(bench.measured.hover_stick, 3)} (${bench.source})`);
   console.log(`   not banded: yaw overshoot sim-core ${f(o.yaw.overshootPct, 2)} % vs WebFPV ${f(r.yaw.overshootPct, 2)} %; yaw bounce ${f(o.yaw.bouncePct, 2)} % vs ${f(r.yaw.bouncePct, 2)} %; hover residual vz ${f(o.hover.vzResidual, 3)} vs ${f(r.hover.vzResidual, 3)} m/s; hover stick on the class diff alone: sim-core channel ${f(o.hover.quantum, 3)} (rcCommand ${f(o.hover.rc, 3)}), WebFPV whoop65 channel ${f(r.hover.quantum, 3)} (the band's reference until 2026-10-23)`);

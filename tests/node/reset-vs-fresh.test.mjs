@@ -112,12 +112,13 @@ for (const sc of scenarios) {
     assert.deepEqual({ soc: uArm.soc, vbatFiltered: uArm.vbatFiltered }, carried, 'the rest plant arms on the carried pack');
   }
   assert.notEqual(bFull.atArm.soc, uArm.soc, 'a full pack arms on a different pack');
-  // Betaflight's reading of a pack voltage is quantised: the ADC count is
-  // rounded (src/glue/hal_sensors.c adcGetChannel), the display filter's
-  // output is truncated to a whole count, and the count is converted to
-  // centivolts rounded to the nearest (sensors/voltage.c:163-185). So it
-  // reads within half a count above to a count and a half below, plus half a
-  // centivolt either way.
+  // A derived bound, not a tuned one (owner, 2026-10-24): Betaflight's
+  // reading of a pack voltage is quantised to its 10 mV steps and its ADC
+  // counts. The ADC count is rounded (src/glue/hal_sensors.c adcGetChannel),
+  // the display filter's output is truncated to a whole count, and the count
+  // is converted to centivolts rounded to the nearest
+  // (sensors/voltage.c:163-185). So it reads within half a count above to a
+  // count and a half below, plus half a centivolt either way.
   const vb = used.get(['vbat_scale', 'vbat_divider', 'vbat_multiplier']);
   const countV = (Number(vb.vbat_scale) * 3300) / 10 / (0xfff * Number(vb.vbat_divider) * Number(vb.vbat_multiplier)) / 100;
   const off = uArm.bfVbat - uArm.vbatFiltered;

@@ -48,8 +48,10 @@ const HOVER_DUTY = (() => {
 const D = (duty) => (duty * HOVER_DUTY) / DUTY_CHECKED_AT;
 
 // Checks open for the owner: recorded where they fail, so every later section
-// still runs, and failed together at the end.
+// still runs, and failed together at the end unless the owner has put them
+// under investigation (tests/x3-signoff.json, 'plant-world <check>').
 const open = [];
+const investigation = JSON.parse(await readFile(new URL('tests/x3-signoff.json', root), 'utf8')).underInvestigation ?? {};
 
 // 1. Resting disarmed on a box top: no yaw spin-up (sim.html makes every tick
 // there a duct hit with a yaw kick; the soft path and scrub now apply).
@@ -1516,14 +1518,16 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   const dz = Math.max(...hf.z.map((v, k) => Math.abs(v - hb.z[k])));
   const ceiling = air65.values.propDiameter.value;
   // The quad does not settle in 3 s: it bobs through ground effect (0 to
-  // 32 mm before round 4; 0 to 49 mm on the round-4 constants, touching the
-  // floor), so this final-tick check depends on the phase the last tick lands
-  // on. It fails on round 4 (38.55 mm); open for the owner (PROGRESS.md
-  // 2026-10-23), not reshaped.
-  const inBand = hf.z.filter((v) => v - REST > 0.001 && v - REST < ceiling).length;
-  console.log(`throttle ${(hoverThr - 0.005).toFixed(4)} (free-air hover ${hoverThr.toFixed(4)}) for 3 s: ends ${(hf.clr * 1000).toFixed(2)} mm over the floor, ${(hb.clr * 1000).toFixed(2)} mm over the box top (clearance ${(Math.min(...hf.z) - REST) * 1000 < 0 ? 0 : ((Math.min(...hf.z) - REST) * 1000).toFixed(2)} to ${((Math.max(...hf.z) - REST) * 1000).toFixed(2)} mm, ${inBand} of ${hf.z.length} ticks between 1 mm and a prop diameter), heights apart at most ${dz.toExponential(2)} m`);
+  // 32 mm before round 4, 0 to 49 mm after, touching the floor). Its
+  // clearance over the last 500 ms is held to the band by its envelope, the
+  // lowest and the highest both inside (owner decision 2026-10-24).
+  const clrs = hf.z.map((v) => v - REST);
+  const last = clrs.slice(-500);
+  const lo = Math.min(...last);
+  const hi = Math.max(...last);
+  console.log(`throttle ${(hoverThr - 0.005).toFixed(4)} (free-air hover ${hoverThr.toFixed(4)}) for 3 s: over the last 500 ms ${(lo * 1000).toFixed(2)} to ${(hi * 1000).toFixed(2)} mm over the floor (over the 3 s ${(Math.max(0, Math.min(...clrs)) * 1000).toFixed(2)} to ${(Math.max(...clrs) * 1000).toFixed(2)} mm; ends ${(hf.clr * 1000).toFixed(2)} mm, ${(hb.clr * 1000).toFixed(2)} mm over the box top), heights apart at most ${dz.toExponential(2)} m`);
   assert.ok(dz < 1e-9, 'the same hover over the box top');
-  if (!(hf.clr > 0.001 && hf.clr < ceiling)) open.push(`#33 off the floor, in ground effect: ends ${(hf.clr * 1000).toFixed(2)} mm, band 1 mm to ${(ceiling * 1000).toFixed(0)} mm`);
+  if (!(lo > 0.001 && hi < ceiling)) open.push({ key: 'plant-world #33 ground effect envelope', what: `#33 off the floor, in ground effect over the last 500 ms: ${(lo * 1000).toFixed(2)} to ${(hi * 1000).toFixed(2)} mm, band 1 mm to ${(ceiling * 1000).toFixed(0)} mm` });
 }
 
 // 34. A footprint point lying on a face with no speed into it touches the
@@ -1568,5 +1572,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   }
 }
 
-assert.deepEqual(open, [], `open checks failed: ${open.join('; ')}`);
+for (const o of open.filter((x) => investigation[x.key])) console.log(`open: ${o.what}; ${investigation[o.key].reason} (${investigation[o.key].by})`);
+const failing = open.filter((x) => !investigation[x.key]);
+assert.deepEqual(failing, [], `open checks failed: ${failing.map((x) => x.what).join('; ')}`);
 console.log('plant-world: box tops, edges, seams, stacks, corners, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current: PASS');

@@ -4277,3 +4277,186 @@ PASS    14.2 s  D2 Node vs headless Chrome, console clean
 4. The four X3 misses, with the three tables above.
 5. P7: whether "the punch mid-bins" meant the two points (now reported).
 6. PR #3: the slot wedge and round 3's other findings.
+
+---
+
+## 2026-10-24 | Phase 1 M4 | round 5: decisions on D4, #33 and coast; 4a and 4b run again with coast
+
+The owner, after the round-4 entry:
+
+> 1. Accept the range. Log it as a derived bound (Betaflight's 10 mV
+>    quantisation), not a tuned one.
+> 2. #33: min/max envelope over the last 500 ms, both inside the band.
+> 3. Coast: angle at release + 500 ms. Sign-off does not cover 13.87 deg.
+>    Move the row into the X3 investigation group.
+> 4. Not decided, you did not run 4a and 4b. Do them now: a. Yaw: trace
+>    where J d-omega/dt reads omega. If it is the commanded rpm derivative,
+>    move it to the lagged actual rpm. Re-run yaw rows, report before/after.
+>    b. Run sim-vs-log three times, full table each: (i) aeroB and aeroC at
+>    zero, (ii) at half, (iii) loop at 4 kHz with the build param, damping
+>    as-is. Include coast in each table. Report, do not pick values. I decide
+>    from the tables.
+> After 4b: open PR #2 for merge with every red row either green or signed
+> "under investigation, PROGRESS <date>". Tell me when CI is green. Then
+> rebase PR #3 onto main.
+
+(4a and 4b were in the round-4 entry, cc7e728; they are run again here, the
+yaw rows before and after, and coast in every table.)
+
+### 1. D4's vbat range: accepted, a derived bound
+
+The range Betaflight can read for a pack voltage, −0.0183 V to +0.0094 V at
+`vbat_scale` 110, is derived from its quantisation (its 10 mV steps and its
+ADC counts: the sim's count rounded, the display filter's output truncated
+to a whole count, the count rounded to centivolts; `src/glue/hal_sensors.c`
+adcGetChannel, `sensors/voltage.c:163-185`). It is not tuned; the test's
+comment says so and computes it from the config's `vbat_scale`,
+`vbat_divider` and `vbat_multiplier`. Accepted by the owner, 2026-10-24.
+
+### 2. plant-world #33: the envelope of the last 500 ms
+
+Both the lowest and the highest clearance over the last 500 ms of the 3 s
+hover must lie strictly between 1 mm and a prop diameter (31 mm). It reads
+27.35 to 39.79 mm (over the 3 s, 0 to 48.8 mm), so it is red; the box-top
+datum check (the same hover over a box top, within 1e-9 m) holds. Under
+investigation (below).
+
+### 3. Coast: the angle at release + 500 ms
+
+`tests/lib/feel.mjs` rollThenHold: the attitude angle turned from release to
+release + 500 ms (the quaternion angle, so it does not depend on the loop
+rate; at 1 kHz it equals the integrated roll rate to 1e-4 deg). The X3 row:
+sim-core 13.858 deg, WebFPV whoop65 8.732 deg (under the old "until the roll
+rate reaches zero" rule WebFPV read 9.597; its rate crosses zero and is
+−0.42 deg/s at release + 500 ms), +58.7 % against a ±20 % band. The
+sign-off is withdrawn and the row is under investigation with the four
+rows against the log.
+
+### 4a. Yaw: J dω/dt, traced
+
+`src/plant/plant.c`:
+- `:788` `duty[i] = dutyOf(i)`: Betaflight's DShot output this tick.
+- `:425` the rotor ODE, back-EMF implicit, prop drag explicit:
+  `w = (w + dt (a duty V − kqProp w|w| / J)) / (1 + dt a / Kv)`: the rotor's
+  actual speed, lagged by its inertia and winding.
+- `:427` `motorAccel[i] = (w − before) / dt`: the change of that actual
+  speed over the tick.
+- `:831-832` the frame's yaw torque, `−spin (kqProp w|w| + J motorAccel)`,
+  on the same actual w.
+
+So J dω/dt reads the lagged actual rotor speed, not a commanded rpm
+derivative; the condition for moving it is not met and nothing moved. The
+yaw rows, before (round 4, 58100db) and after (this round):
+
+| Row | Before | After | Reference |
+|---|---|---|---|
+| yaw rise to 90 % (log) | 12.0 ms | 12.0 ms | log 19.3 ms |
+| yaw lag at 50 % (log) | 0.0 ms | 0.0 ms | log 3.7 ms |
+| yaw overshoot (log, not banded) | 1.7 % | 1.7 % | log 1.3 % |
+| yaw settle 5 % | 25 ms | 25 ms | WebFPV 104 ms |
+| yaw steady error | 0.058 % | 0.058 % | WebFPV 0.757 % |
+| yaw overshoot, class diff (not banded) | 22.41 % | 22.41 % | WebFPV 12.60 % |
+| yaw bounce, class diff (not banded) | 28.47 % | 28.47 % | WebFPV 9.90 % |
+| X2 yaw rate tracking | 0.000 % | 0.000 % | ±1.0 % |
+
+As in round 4, two things bear on a yaw step with no lag and were not
+changed: Betaflight's output reaches the plant on the tick it is computed
+(no ESC or DShot delay), and the averaged motor's torque follows duty with no
+winding inductance.
+
+### 4b. The three runs, coast in each
+
+The freestyle (log 1) by `tools/sim-vs-log.mjs` (acro, open air, the
+round-4 plant); coast as the gate measures it (X3, class diff, the hover
+trim, release + 500 ms) with each run's airframe and build, against WebFPV
+whoop65's 8.732 deg. No contact and no mode mismatch in any run. For run
+(iii) `feel.fly` now steps a millisecond at any loop rate whose tick divides
+1 ms (one tick at 1 kHz, bit-identical there; it refuses other rates).
+
+
+**Baseline (1 kHz, `aeroB`/`aeroC` as in the airframe)** (aeroB 4.734e-5, aeroC 3.472e-6; 1000 Hz, 123713 ticks, contact 0, modes off 0)
+
+| Axis | Log: rise / lag / overshoot / settle (windows) | Sim: rise / lag / overshoot / settle (windows) | Gyro rms log / sim, sim − log (deg/s) |
+|---|---|---|---|
+| roll | 16.2 ms / 3.8 ms / 13.2 % / 452.0 ms (19) | 20.0 ms / 4.2 ms / 2.3 % / 24.0 ms (22) | 174.7 / 167.2, 44.0 |
+| pitch | 17.8 ms / 5.2 ms / 3.9 % / 115.7 ms (20) | 20.0 ms / 3.9 ms / 0.3 % / 24.0 ms (24) | 160.9 / 156.6, 30.6 |
+| yaw | 19.3 ms / 3.7 ms / 1.3 % / 23.3 ms (77) | 12.0 ms / 0.0 ms / 1.7 % / 16.0 ms (77) | 130.3 / 113.0, 64.0 |
+| coast after roll (X3, class diff) | WebFPV whoop65 8.732 deg | 13.858 deg (58.7 %, band +-20 %) | |
+
+**(i) `aeroB` = `aeroC` = 0** (aeroB 0.000e+0, aeroC 0.000e+0; 1000 Hz, 123713 ticks, contact 0, modes off 0)
+
+| Axis | Log: rise / lag / overshoot / settle (windows) | Sim: rise / lag / overshoot / settle (windows) | Gyro rms log / sim, sim − log (deg/s) |
+|---|---|---|---|
+| roll | 16.2 ms / 3.8 ms / 13.2 % / 452.0 ms (19) | 19.0 ms / 3.9 ms / 4.0 % / 22.0 ms (22) | 174.7 / 168.4, 43.4 |
+| pitch | 17.8 ms / 5.2 ms / 3.9 % / 115.7 ms (20) | 20.0 ms / 3.6 ms / 1.4 % / 23.0 ms (24) | 160.9 / 157.5, 30.0 |
+| yaw | 19.3 ms / 3.7 ms / 1.3 % / 23.3 ms (77) | 12.0 ms / 0.0 ms / 1.7 % / 15.0 ms (77) | 130.3 / 113.2, 64.0 |
+| coast after roll (X3, class diff) | WebFPV whoop65 8.732 deg | 11.080 deg (26.9 %, band +-20 %) | |
+
+**(ii) `aeroB` and `aeroC` at half** (aeroB 2.367e-5, aeroC 1.736e-6; 1000 Hz, 123713 ticks, contact 0, modes off 0)
+
+| Axis | Log: rise / lag / overshoot / settle (windows) | Sim: rise / lag / overshoot / settle (windows) | Gyro rms log / sim, sim − log (deg/s) |
+|---|---|---|---|
+| roll | 16.2 ms / 3.8 ms / 13.2 % / 452.0 ms (19) | 20.0 ms / 4.0 ms / 3.1 % / 23.0 ms (22) | 174.7 / 167.8, 43.7 |
+| pitch | 17.8 ms / 5.2 ms / 3.9 % / 115.7 ms (20) | 20.0 ms / 3.7 ms / 0.8 % / 23.0 ms (24) | 160.9 / 157.0, 30.2 |
+| yaw | 19.3 ms / 3.7 ms / 1.3 % / 23.3 ms (77) | 12.0 ms / 0.0 ms / 1.7 % / 16.0 ms (77) | 130.3 / 113.1, 64.0 |
+| coast after roll (X3, class diff) | WebFPV whoop65 8.732 deg | 12.471 deg (42.8 %, band +-20 %) | |
+
+**(iii) 4 kHz loop, damping as is** (aeroB 4.734e-5, aeroC 3.472e-6; 4000 Hz, 494850 ticks, contact 0, modes off 0)
+
+| Axis | Log: rise / lag / overshoot / settle (windows) | Sim: rise / lag / overshoot / settle (windows) | Gyro rms log / sim, sim − log (deg/s) |
+|---|---|---|---|
+| roll | 16.2 ms / 3.8 ms / 13.2 % / 452.0 ms (19) | 20.8 ms / 4.8 ms / 1.4 % / 23.5 ms (22) | 174.7 / 166.2, 43.9 |
+| pitch | 17.8 ms / 5.2 ms / 3.9 % / 115.7 ms (20) | 19.3 ms / 5.2 ms / 2.1 % / 21.8 ms (24) | 160.9 / 156.4, 30.4 |
+| yaw | 19.3 ms / 3.7 ms / 1.3 % / 23.3 ms (77) | 11.8 ms / 0.0 ms / 1.5 % / 15.8 ms (77) | 130.3 / 112.3, 64.1 |
+| coast after roll (X3, class diff) | WebFPV whoop65 8.732 deg | 14.041 deg (60.8 %, band +-20 %) | |
+
+**Toward roll / pitch overshoot 13.2 / 3.9 % and coast 8.7 deg:** (i) moves
+both overshoots the most (roll 2.3 → 4.0 %, pitch 0.3 → 1.4 %) and coast the
+most (13.86 → 11.08 deg); (ii) moves all three about half as far (3.1 %,
+0.8 %, 12.47 deg); (iii) moves pitch overshoot (2.1 %) and pitch lag (5.2 ms,
+the log's) toward the log and roll overshoot (1.4 %) and coast (14.04 deg)
+away. Yaw does not move in any run. No values were picked.
+
+### Under investigation, and PR #2
+
+`tests/x3-signoff.json` gains `underInvestigation`: the four X3 rows against
+the freestyle log (roll and pitch overshoot, yaw rise and lag), coast, and
+plant-world #33, each "under investigation, PROGRESS 2026-10-24", by the
+owner, entered by Claude on the owner's instruction (PR #2: every red row
+either green or signed). An entry keeps its row from failing the gate or
+plant-world while it stays listed; it never covers a row that measured
+nothing. Chirp gain stays signed off. With that, every red row is green or
+under investigation: the gate passes with and without the logs, plant-world
+passes with #33 printed as under investigation.
+
+### PR #3
+
+`phase1/m4-world-contact` is merged with the plant's round 4 (e180a5f):
+plant-world keeps the world's sections 35-56 and takes the plant's open
+checks; dist rebuilt; all of the world's sections pass on the round-4 plant;
+the slot-wedge test fails as before (307 CONTACT events). Round 5 follows the
+same way. Rebasing PR #3 onto `main` waits for PR #2 to be merged into
+`main`; until then `main` has none of the plant work it is built on.
+
+### The review of this round
+
+Three lenses, a skeptic per finding; 3 confirmed and fixed: coast at 4 kHz
+under-read by about 0.28 deg when it summed one rate sample a millisecond
+(now from the attitudes), `feel.fly` at a loop rate whose tick does not
+divide 1 ms (now refused), and the investigation entries' authority (now the
+PR #2 instruction).
+
+### What went wrong
+
+- I edited `feel.mjs` while run (iii) was running; it crashed and was run
+  again.
+- My first coast at 4 kHz summed one rate sample a millisecond and
+  under-read by 0.28 deg, enough to turn the 1 kHz to 4 kHz change round
+  (13.76 against the correct 14.04).
+
+### Next (waiting for the owner)
+
+1. The X3 investigation, from the tables above.
+2. PR #2: merge when the owner is satisfied (CI below).
+3. PR #3: rebase onto `main` once PR #2 is merged; the slot wedge and round
+   3's other findings.
