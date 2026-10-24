@@ -5047,3 +5047,73 @@ the logs (CI) the log rows do not run and the gate passes.
 2. Whether the pitch-rise row (above) goes under investigation.
 3. Whether the replay latency (2.2 to 2.7 ms) is taken out of the
    sim-from-log-setpoint numbers.
+
+---
+
+## 2026-10-24 | Phase 1 M4 | round 8: the owner's decisions on round 7; then stop
+
+The owner:
+
+> 1. Pitch rise (log): under investigation. Do not touch the model for it yet.
+> 2. Settle rows: unband. Report only until a log has >= 10 clean windows per
+>    axis. Overshoot stays banded.
+> 3. Replay latency: do not subtract. Read the log's RX link rate from the
+>    header (rx_rate or the ELRS packet rate), set the sim's RX update to
+>    match. Re-run baseline. Report.
+> 4. Re-read the round-6 actuator grid on the corrected metric, baseline and
+>    2 ms/1 ms only. Report.
+> 5. Inertia: no change. Leave boxHeightRatio at 0.35, flag ixx/iyy/izz as
+>    awaiting pendulum measurement.
+> 6. Merge order: PR #4 after 3 and 4 land and CI is green. PR #3 after #4.
+> Then stop. No more sweeps. Next step is Phase 2 unless 3 or 4 changes the
+> picture.
+
+1. **Pitch rise (log)** is under investigation in `tests/x3-signoff.json`
+   ("under investigation, PROGRESS 2026-10-24"). The model is untouched.
+2. **The three settle rows** (roll, pitch, yaw against WebFPV) are reported,
+   not banded, "until a log has >= 10 clean windows per axis"; they no
+   longer fail the gate. Overshoot stays banded. The log rows never banded
+   settle.
+3. **RX link rate.** The header has no `rx_rate` and no ELRS packet rate.
+   - What it has is `serialrx_provider` 9 (CRSF) and
+     `rc_smoothing_rx_smoothed`: the rate Betaflight's RC smoothing measured
+     (`fc/rc.c:425-433`, written at `blackbox/blackbox.c:1578`). It reads
+     124 Hz in the freestyle log and 249 Hz in the punch and hover logs.
+   - The frames say otherwise. Roll, pitch and yaw rcCommand are raw and
+     change only on a new RX frame, and in all three logs they change every
+     4.0 ms (the commonest interval: 21,718 of 27,258 changes in the
+     freestyle). The link ran at 250 Hz; the freestyle header's 124 Hz is a
+     smoothed figure taken early in the flight.
+   - `tools/sim-vs-log.mjs` now reads both, takes the frames' rate where they
+     disagree, sets the sim's RX to the nearest rate sim-core allows (250,
+     500, 1000 Hz), and prints all three. Both logs give 250 Hz, which is
+     what the sim already ran.
+   - The baseline re-run is identical to round 7: replay latency 2.2 / 2.4 /
+     2.7 ms. That latency is the phase of the sim's 4 ms RX grid against the
+     log's frames, not a rate mismatch, and it is not subtracted.
+4. **The round-6 actuator grid on the corrected metric** (rise / lag /
+   overshoot / settle, windows):
+
+   | Axis | Log | Baseline, from log setpoint | Baseline, sim loop | 2 ms / 1 ms, from log setpoint | 2 ms / 1 ms, sim loop |
+   |---|---|---|---|---|---|
+   | roll | 16.2 / 3.8 / 13.2 % / 452 (19) | 19.3 / 5.3 / 8.7 % / 150.7 (20) | 18.3 / 3.9 / 8.5 % / 23.3 (20) | 20.8 / 6.6 / 2.3 % / 22.3 (20) | 19.3 / 5.1 / 2.9 % / 21.3 (20) |
+   | pitch | 17.8 / 5.2 / 3.9 % / 115.7 (20) | 23.3 / 6.6 / 0.2 % / 59.9 (20) | 20.8 / 4.4 / −0.1 % / 25.4 (20) | 19.8 / 6.3 / 7.9 % / 154.7 (20) | 17.2 / 4.6 / 6.3 % / 148.1 (20) |
+   | yaw | 19.3 / 3.7 / 1.3 % / 23.3 (77) | 13.7 / 0.4 / 1.4 % / 17.2 (77) | 12.2 / 0.0 / 1.4 % / 16.2 (77) | 13.7 / 0.9 / 1.4 % / 16.7 (77) | 11.7 / 0.0 / 1.4 % / 43.1 (77) |
+
+   - Gyro rms, sim − log: baseline 44.0 / 30.6 / 64.0 deg/s, 2 ms / 1 ms
+     52.7 / 79.3 / 108.9.
+   - Coast (class diff, unchanged by the step metric): 13.86 and 19.34 deg
+     against WebFPV's 8.73.
+   - At 2 ms / 1 ms roll overshoot falls further from the log (8.7 → 2.3 %),
+     pitch overshoot rises past it (0.2 → 7.9 %, log 3.9), yaw lag moves
+     0.4 → 0.9 ms (log 3.7), and every axis's gyro error grows.
+5. **Inertia** unchanged: `boxHeightRatio` 0.35. Its note in
+   `airframes/air65.json` says ixx, iyy and izz (plant.c derive(), a solid
+   box) are awaiting a pendulum measurement.
+6. **Merge order.** PR #4 is merged once this lands and its CI is green;
+   PR #3 waits for #4.
+
+**Does 3 or 4 change the picture?** No. 3 changes nothing: the sim already
+ran the link's rate. 4 shows the actuator delay moving roll overshoot away
+from the log and worsening the gyro match on every axis, as round 6 did on
+the old metric. Per the owner, the next step is Phase 2.

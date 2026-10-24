@@ -103,10 +103,41 @@ function channelValue(rs, want) {
   return tries.find(ok) ?? null;
 }
 
+// The log's RX link rate (owner decision 2026-10-24: the sim's RX updates
+// at the rate the quad's link ran). Betaflight's header gives the rate its
+// RC smoothing measured (rc_smoothing_rx_smoothed, fc/rc.c:425-433, written
+// at blackbox/blackbox.c:1578), taken early in the flight; the frames show
+// the link itself: roll, pitch and yaw rcCommand are raw and change only on
+// a new RX frame, so the commonest interval between their changes is the
+// frame period. The measured rate wins where the two disagree, and the sim
+// runs the nearest rate it allows (sim-core: 250, 500, 1000 Hz).
+const RX_RATES = [250, 500, 1000];
+function rxRateOf(log) {
+  const headerHz = Number(log.rawHeader?.rc_smoothing_rx_smoothed) || null;
+  const counts = new Map();
+  let last = null;
+  for (let i = 1; i < log.rows.length; i++) {
+    const r = log.rows[i];
+    const p = log.rows[i - 1];
+    if (r.rc[0] === p.rc[0] && r.rc[1] === p.rc[1] && r.rc[2] === p.rc[2]) continue;
+    if (last !== null) {
+      const bin = Math.round((r.t - last) * 2000) / 2;   // 0.5 ms bins
+      counts.set(bin, (counts.get(bin) ?? 0) + 1);
+    }
+    last = r.t;
+  }
+  let modeMs = null;
+  for (const [ms, n] of counts) if (ms > 0 && (modeMs === null || n > counts.get(modeMs))) modeMs = ms;
+  const measuredHz = modeMs ? +(1000 / modeMs).toFixed(1) : null;
+  const want = measuredHz ?? headerHz ?? 250;
+  const simHz = RX_RATES.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a));
+  return { headerHz, measuredHz, simHz };
+}
+
 // Channel values 1000..2000 per axis to the rcCommand Betaflight makes of
 // them, on a probe instance; returned as rcCommand -> channel.
-async function inversion(module, diff, airframe) {
-  const probe = await SimCore.load(module, { trace: false });
+async function inversion(module, diff, airframe, rxHz) {
+  const probe = await SimCore.load(module, { trace: false, rxHz });
   probe.configure({ diff, plant: airframe, world: { floorZ: -100 } });
   const maps = [new Map(), new Map(), new Map(), new Map()];
   for (let axis = 0; axis < 4; axis++) {
@@ -212,7 +243,9 @@ export async function simVsLog(file, quadmathDir, { diff, airframe, module, log:
       prev = s.flightModeFlags;
     }
   }
-  const core = await SimCore.load(module, { trace: false });
+  const rx = rxRateOf(log);
+  print(`rx: the log's link ${rx.measuredHz ?? '?'} Hz from its frames (header ${rx.headerHz ?? '?'} Hz); the sim's RX at ${rx.simHz} Hz`);
+  const core = await SimCore.load(module, { trace: false, rxHz: rx.simHz });
   const report = core.configure({ diff, plant: airframe, world: { floorZ: 0 } });
   for (const l of report.lines.filter((x) => x.status === 'rejected' || x.status === 'error')) {
     print(`warning: config line ${l.n} ${l.status}: ${l.text} (${l.msg})`);
@@ -247,7 +280,7 @@ export async function simVsLog(file, quadmathDir, { diff, airframe, module, log:
   };
   const auxValues = auxFor(maskStart);
 
-  const invert = await inversion(module, diff, airframe);
+  const invert = await inversion(module, diff, airframe, rx.simHz);
   // Armed at rest on the floor, throttle low, as the log begins.
   core.input([1500, 1500, 1500, 1000, ...auxValues]);
   core.step(100);
@@ -432,6 +465,7 @@ export async function simVsLog(file, quadmathDir, { diff, airframe, module, log:
     // The log's mode switches (rcModeActivationMask, bit n = box id n) at the
     // start and each change after it, s from the stretch's start; the sim's
     // ticks whose ANGLE/HORIZON differ from them.
+    rx,
     log_mode_mask: maskStart,
     log_mode_changes: changes,
     mode_mismatch_ticks: modeMismatchTicks,

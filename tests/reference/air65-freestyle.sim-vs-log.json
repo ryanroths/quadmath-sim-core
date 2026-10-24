@@ -34,6 +34,11 @@
     ],
     "contact_ticks": 0
   },
+  "rx": {
+    "headerHz": 124,
+    "measuredHz": 250,
+    "simHz": 250
+  },
   "log_mode_mask": 1,
   "log_mode_changes": [
     {
