@@ -15,6 +15,7 @@
 #include "drivers/motor.h"
 #include "drivers/time.h"
 #include "drivers/pwm_output.h"
+#include "pg/motor.h"
 
 #include "sc.h"
 
@@ -84,8 +85,11 @@ static bool scMotorDecodeTelemetry(void)
     if (!useDshotTelemetry) {
         return true;
     }
+    // The ESC reports electrical rpm; Betaflight divides by its own
+    // motor_poles / 2 (drivers/dshot.c), so encode with the same count.
+    const double polePairs = motorConfig()->motorPoleCount / 2.0;
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
-        dshotTelemetryState.motorState[i].rawValue = erpmToTelemetryValue(sc_sensors.erpm[i]);
+        dshotTelemetryState.motorState[i].rawValue = erpmToTelemetryValue(sc_sensors.rpm[i] * polePairs);
         dshotTelemetryState.motorState[i].telemetryTypes = DSHOT_NORMAL_TELEMETRY_MASK;
     }
     dshotTelemetryState.readCount++;

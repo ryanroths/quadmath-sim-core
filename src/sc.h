@@ -40,6 +40,10 @@ extern uint64_t sc_time_us;
 
 extern int sc_fault_state;
 extern bool sc_reboot_flag;
+// Set by a tick that fired a trigger: sc_tick_run returns after that tick, so
+// the host acts on it (a portal's pose) at the same tick boundary whatever its
+// frame time (PROGRESS.md frame-time leak (i)).
+extern bool sc_tick_stop;
 
 // Raises a fault (first one wins) and queues its event. The tick stops.
 void sc_set_fault(int code);
@@ -47,6 +51,10 @@ void sc_set_fault(int code);
 // Event queue (src/glue/abi.c), drained by sim-core.js. One event is
 // SC_EVENT_DOUBLES doubles: t_us, kind, then up to 6 kind-specific values.
 #define SC_EVENT_DOUBLES 8
+#define SC_EVENT_CONTACT 1          // values: box id (-1 floor), impact m/s, crashed
+#define SC_EVENT_FLOOR_TOUCH 2      // values: -1
+#define SC_EVENT_FLOOR_LEAVE 3      // values: -1
+#define SC_EVENT_TRIGGER 4          // values: trigger id
 #define SC_EVENT_FAULT 9            // values: fault code
 void sc_event_push(int kind, const double *values, int n);
 
@@ -78,7 +86,7 @@ extern bool sc_motors_enabled;
 typedef struct {
     double gyro_dps[3];         // body rates, deg/s, Betaflight axis order (roll, pitch, yaw)
     double acc_g[3];            // specific force, g, Betaflight body axes
-    double erpm[SC_MOTOR_COUNT];// electrical rpm per motor
+    double rpm[SC_MOTOR_COUNT]; // mechanical rpm per motor (hal_motor.c makes it eRPM)
     double vbat_v;              // loaded pack voltage at the board
     double current_a;           // pack current
 } sc_sensors_t;

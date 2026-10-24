@@ -6,8 +6,10 @@
 //
 // The builds need emsdk 3.1.61 (WSL on Windows) and compare against the
 // committed dist/sim-core.wasm.sha256, so run the full list on a committed tree.
-// config-count, diff-passthrough and blackbox-webfpv read WebFPV's module and
-// diffs from a WebFPV clone (tests/lib/webfpv.mjs). node-vs-chrome needs Chrome.
+// config-count, diff-passthrough, blackbox-webfpv and gate-plant read WebFPV's
+// module and diffs from a WebFPV clone (tests/lib/webfpv.mjs). node-vs-chrome
+// needs Chrome. gate-plant fails on an X3 band miss the owner has not signed
+// off in tests/x3-signoff.json.
 // A test that runs past its time limit is stopped and counts as failed.
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
@@ -29,6 +31,9 @@ const TESTS = [
   ['D3 frame independence 30/60/144/240 Hz', 'tests/node/frame-independence.test.mjs'],
   ['D4 reset vs fresh load', 'tests/node/reset-vs-fresh.test.mjs'],
   ['X1 black box vs WebFPV (F1 F2 F4)', 'tests/node/blackbox-webfpv.test.mjs'],
+  ['M4 plant and world API: contact, triggers, pose, pack, argument checks', 'tests/node/plant-world.test.mjs'],
+  ['M4 bench hover from a blackbox log (tools/hover-from-log.mjs, synthetic frames)', 'tests/node/hover-from-log.test.mjs'],
+  ['M4 plant: P1-P8, F6, F9, X2/F3, X3 feel bands (log, bench, WebFPV)', 'tests/gate-plant.mjs'],
   ['D2 Node vs headless Chrome, console clean', 'tests/browser/node-vs-chrome.test.mjs'],
 ];
 

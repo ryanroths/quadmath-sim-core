@@ -9,8 +9,8 @@
 //   2. dshot_bidir ON turns Betaflight's RPM filter on; OFF leaves it off.
 //   3. A P change moves the PID output for the same stick step.
 //
-// "Max roll rate" here is Betaflight's setpoint at full stick. The M3 rest
-// plant does not rotate; the achieved rate (F3) needs the M4 plant.
+// "Max roll rate" here is Betaflight's setpoint at full stick. The achieved
+// rate on the Air65 plant (F3) is checked in tests/gate-plant.mjs.
 //
 //   node tests/node/diff-passthrough.test.mjs
 //

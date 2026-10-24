@@ -4,7 +4,7 @@
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import { SimCore } from '../../src/js/sim-core.js';
-import { CLASS_DIFFS, jitteredFrames, matrix, runScenario } from '../lib/scenarios.mjs';
+import { jitteredFrames, loadPresets, matrix, runScenario } from '../lib/scenarios.mjs';
 
 // harness.html creates window.__harness before this module loads.
 const state = Object.assign(window.__harness, { started: true, userAgent: navigator.userAgent, ms: 0 });
@@ -18,12 +18,11 @@ const show = (line) => {
 try {
   const started = performance.now();
   const module = await WebAssembly.compileStreaming(fetch('../../dist/sim-core.wasm'));
-  const presets = {};
-  for (const [name, path] of Object.entries(CLASS_DIFFS)) {
+  const presets = await loadPresets(async (path) => {
     const res = await fetch(`../../${path}`);
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
-    presets[name] = await res.text();
-  }
+    return res.text();
+  });
   for (const sc of matrix()) {
     const r = await runScenario(SimCore, module, presets[sc.preset], sc);
     state.results.push(r);

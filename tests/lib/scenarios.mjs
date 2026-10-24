@@ -9,11 +9,28 @@ export const CLASS_DIFFS = Object.freeze({
   '75mm': 'configs/75mm-meteor75pro-ryfly-hamo-45mm.diff',
 });
 
+// The plant each class flies on. 65mm is the Air65 (M4). 75mm has no airframe
+// file yet and stays on the rest plant.
+export const CLASS_AIRFRAMES = Object.freeze({
+  '65mm': 'airframes/air65.json',
+});
+
+// { diff, airframe } per class preset; readText(path) reads a repo file
+// (readFile in Node, fetch in the browser harness).
+export async function loadPresets(readText) {
+  const out = {};
+  for (const [name, path] of Object.entries(CLASS_DIFFS)) {
+    const af = CLASS_AIRFRAMES[name];
+    out[name] = { diff: await readText(path), airframe: af ? JSON.parse(await readText(af)) : undefined };
+  }
+  return out;
+}
+
 // Every class preset, acro and angle, RPM filter on and off, 3D off and on
-// (the D2 coverage in the Phase 1 plan). On the M3 rest plant the gyro and
-// eRPM are zero, so an rpm-on trace differs from its rpm-off twin only in
-// Betaflight's RPM-filter-enabled flag; the filter path itself gets real
-// input with the M4 plant.
+// (the D2 coverage in the Phase 1 plan). On the Air65 plant the gyro and
+// motor rpm are live, so the RPM filter path gets real input; on the rest
+// plant (75mm) an rpm-on trace differs from its rpm-off twin only in
+// Betaflight's RPM-filter-enabled flag.
 export function matrix() {
   const out = [];
   for (const preset of Object.keys(CLASS_DIFFS)) {
@@ -135,9 +152,10 @@ export function drive(core, feed, endUs, { frames, clock = frameClock() } = {}) 
 }
 
 // Configure, boot to arm-ready, run the scenario script, and summarise.
-export async function runScenario(SimCore, module, presetText, scenario, { frames, durationMs = 3000 } = {}) {
+// preset: { diff, airframe } from loadPresets.
+export async function runScenario(SimCore, module, preset, scenario, { frames, durationMs = 3000 } = {}) {
   const core = await SimCore.load(module);
-  const report = core.configure(diffFor(scenario, presetText));
+  const report = core.configure({ diff: diffFor(scenario, preset.diff), plant: preset.airframe });
   if (report.errors) throw new Error(`${scenario.name}: ${report.errors} config errors`);
   const t0 = core.simTimeUs;
   const feed = feeder(script(t0, durationMs, scenario));

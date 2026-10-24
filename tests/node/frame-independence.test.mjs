@@ -13,11 +13,12 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { SimCore } from '../../src/js/sim-core.js';
-import { CLASS_DIFFS, jitteredFrames, matrix, runScenario } from '../lib/scenarios.mjs';
+import { jitteredFrames, loadPresets, matrix, runScenario } from '../lib/scenarios.mjs';
 
 const root = new URL('../../', import.meta.url);
 const module = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', root)));
 const DURATION_MS = 3000;
+const presets = await loadPresets((path) => readFile(new URL(path, root), 'utf8'));
 
 const cadences = [
   { name: 'exact ticks', frames: undefined },
@@ -29,12 +30,12 @@ const cadences = [
 
 // Two scenarios with the most going on in the controller: angle mode (the
 // attitude task and level PID), and 3D (reverse throttle range). Both arm,
-// sweep every stick and disarm.
+// sweep every stick and disarm, on the Air65 plant.
 const picks = matrix().filter((s) => s.preset === '65mm' && ((s.angle && s.rpm && !s.mode3d) || (!s.angle && s.mode3d && !s.rpm)));
 assert.equal(picks.length, 2);
 
 for (const sc of picks) {
-  const preset = await readFile(new URL(CLASS_DIFFS[sc.preset], root), 'utf8');
+  const preset = presets[sc.preset];
   const hashes = new Set();
   for (const c of cadences) {
     const r = await runScenario(SimCore, module, preset, sc, { frames: c.frames, durationMs: DURATION_MS });

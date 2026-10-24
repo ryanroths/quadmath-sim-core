@@ -245,10 +245,13 @@ static void tickOnce(void)
     sc_trace_tick();
 }
 
+bool sc_tick_stop;
+
 int sc_tick_run(int ticks)
 {
     int ran = 0;
-    while (ran < ticks && sc_fault_state == SC_FAULT_NONE && !sc_reboot_flag) {
+    sc_tick_stop = false;
+    while (ran < ticks && sc_fault_state == SC_FAULT_NONE && !sc_reboot_flag && !sc_tick_stop) {
         tickOnce();
         ran++;
     }

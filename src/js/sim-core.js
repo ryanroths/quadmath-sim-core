@@ -12,8 +12,8 @@
 // and lerpState() interpolates for render. No rate, PID or filter math lives
 // here; Betaflight owns all of it.
 //
-// The API follows the Phase 1 plan's ABI section (PROGRESS.md). What needs
-// the M4 plant (plant and world parameters, teleport) says so when called.
+// The API follows the Phase 1 plan's ABI section (PROGRESS.md). The plant is
+// an airframe file (airframes/*.json); without one, the M3 rest plant.
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 
@@ -37,9 +37,10 @@ const FC = Object.freeze({
   vbat: [4, 1], amps: [5, 1], mahDrawn: [6, 1], cells: [7, 1],
   setpoint: [8, 3], gyroFiltered: [11, 3], pidSum: [14, 3], rcCommand: [17, 4], motor: [21, 4],
   debug: [25, 8], debugMode: [33, 1], motorsEnabled: [34, 1], rcData: [35, 8], rxSignal: [43, 1],
-  attitude: [44, 3], airmode: [47, 1], crashFlip: [48, 1], mode3d: [49, 1], rpmFilter: [50, 1],
+  attitude: [44, 3], airmode: [47, 1], crashFlip: [48, 1], mode3d: [49, 1], rpmFilter: [50, 1], acc: [51, 3],
+  pidSetpoint: [54, 3],
 });
-const FC_LEN = 51;
+const FC_LEN = 57;
 const FC_BOOLEANS = new Set(['armed', 'motorsEnabled', 'rxSignal', 'airmode', 'crashFlip', 'mode3d', 'rpmFilter']);
 
 // Betaflight flightModeFlags bits (fc/runtime_config.h).
@@ -48,7 +49,7 @@ const HORIZON_MODE = 1 << 1;
 const FAILSAFE_MODE = 1 << 10;
 
 const EVENT_DOUBLES = 8;
-const EVENT_KIND = Object.freeze({ 9: 'fault' });
+const EVENT_KIND = Object.freeze({ 1: 'contact', 2: 'floorTouch', 3: 'floorLeave', 4: 'trigger', 9: 'fault' });
 
 const BOOT_CAP_US = 35_000_000;      // 35 s of ticks to arm-ready, else a fault (plan, reinit policy)
 const BOOT_CHUNK_TICKS = 100;
@@ -81,8 +82,61 @@ function switchFlags(flags, neutralValid) {
 
 const PROBE_SETTLE_FRAMES = 50;
 
-function m4(what) {
-  return new Error(`${what} arrives with the M4 plant; the M3 rest plant has no parameters, world or pose`);
+// Plant block v1 (src/plant/plant.h): airframe value names in block order.
+// 'ocv' fills seven slots. The model selector comes first.
+export const PLANT_FIELDS = Object.freeze([
+  'model', 'mass', 'wheelbase', 'boxHeightRatio', 'propDiameter',
+  'kv', 'vRefCell', 'loadFraction', 'tmax', 'kqRatio', 'tau', 'tauDownMult', 'reverseScale',
+  'cdAFront', 'cdAPlan', 'skinB', 'aeroB', 'aeroC', 'discK', 'discEnd', 'groundK',
+  'gravity', 'airDensity',
+  'cells', 'capacityMah', 'cellIR', 'iHover', 'ocv',
+  'sagDrop', 'hoverSeconds', 'sagScale',
+  'bounceScale', 'crashScale', 'spinScale',
+  'ductOuterRadius', 'hullBelow', 'hullAbove',
+  'rpmHover', 'currentExponent', 'iQuiescent',
+]);
+const PLANT_LEN = 46;
+const PB_WHEELBASE = 2;
+const PB_DUCT_RADIUS = 40;
+const PB_HULL_BELOW = 41;
+const PB_HULL_ABOVE = 42;
+const PLANT_MODELS = Object.freeze({ rest: 0, physical: 1, parity: 2 });
+const PLANT_DERIVED = Object.freeze([
+  'kvRad', 'ktMotor', 'omegaFull', 'ktProp', 'kqProp', 'rWinding', 'jRotor', 'omegaHover', 'dutyHover',
+  'ixx', 'iyy', 'izz', 'arm', 'ampsFull',
+]);
+const PB_MASS = 1;
+const PB_GRAVITY = 21;
+
+// An airframe ({ model, values: { name: { value } } }, airframes/*.json) as
+// plant block v1. Every field must be present; nothing is filled in.
+export function plantBlock(airframe) {
+  const block = new Float64Array(PLANT_LEN);
+  let at = 0;
+  for (const name of PLANT_FIELDS) {
+    if (name === 'model') {
+      if (!(airframe.model in PLANT_MODELS)) throw new Error(`airframe model '${airframe.model}'`);
+      block[at++] = PLANT_MODELS[airframe.model];
+      continue;
+    }
+    const entry = airframe.values && airframe.values[name];
+    if (!entry) throw new Error(`airframe ${airframe.id || ''} has no '${name}'`);
+    const n = name === 'ocv' ? 7 : 1;
+    const values = n === 1 ? [entry.value] : entry.value;
+    if (!Array.isArray(values) || values.length !== n) throw new Error(`airframe '${name}' needs ${n === 1 ? 'one number' : `${n} numbers`}`);
+    for (const v of values) {
+      if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`airframe '${name}' is not a finite number`);
+      block[at++] = v;
+    }
+  }
+  if (at !== PLANT_LEN) throw new Error(`plant block has ${at} values, expected ${PLANT_LEN}`);
+  return block;
+}
+
+// Module-frame metres to the integer micrometres the ABI takes.
+function um(x) {
+  if (!Number.isFinite(x) || Math.abs(x) > 2000) throw new Error(`world coordinate ${x} m`);
+  return Math.round(x * 1e6);
 }
 
 function decode(block, layout, booleans = new Set()) {
@@ -128,6 +182,7 @@ export class SimCore {
 
   #accUs = 0;
   #prev = null;
+  #poseJump = false;
 
   constructor(module, { rxHz = 250, trace = true } = {}) {
     this.module = module;
@@ -138,6 +193,9 @@ export class SimCore {
     this.flight = null;
     this.flightLog = '';
     this.pausedUs = 0;       // frame time dropped by advance() as pauses
+    this.plant = null;       // plant block v1, null for the rest plant
+    this.airframe = null;
+    this.world = null;
   }
 
   #instantiate(eeprom) {
@@ -184,12 +242,58 @@ export class SimCore {
   // result: applied, rejected (with the reason), error (with Betaflight's
   // message), or comment. A class diff starts from factory defaults, so
   // nothing from an earlier configure() carries over.
+  //
+  // plant: an airframe (airframes/*.json); without one the quad is the M3
+  // rest plant. world: { floorZ, boxes: [{ min, max, kind, id }], triggers:
+  // [{ min, max, id }] } in module-frame metres, quantised to micrometres.
+  // battery: { soc, vbatFiltered } to start from instead of a full pack.
   configure(opts) {
     const { diff = '', plant, world, battery } = typeof opts === 'string' ? { diff: opts } : (opts || {});
-    if (plant !== undefined) throw m4('configure({ plant })');
-    if (world !== undefined) throw m4('configure({ world })');
-    if (battery !== undefined) throw m4('configure({ battery })');
-    return this.#commit(this.#applyAndSave(null, diff), { freshPack: true });
+    // Everything that can be refused in JS is built before any state changes.
+    const block = plant == null ? null : plantBlock(plant);
+    const airframe = plant == null ? null : structuredClone(plant);
+    const quantised = world == null ? null : SimCore.#quantiseWorld(world);
+    const prev = { plant: this.plant, airframe: this.airframe, world: this.world };
+    this.plant = block;
+    this.airframe = airframe;
+    this.world = quantised;
+    try {
+      return this.#commit(this.#applyAndSave(null, diff), battery ? { battery } : { freshPack: true });
+    } catch (err) {
+      Object.assign(this, prev);
+      throw err;
+    }
+  }
+
+  static #quantiseWorld({ floorZ = 0, boxes = [], triggers = [] }) {
+    const box = (b, i) => {
+      const v = [...vec3(b.min, `world box ${i} min`), ...vec3(b.max, `world box ${i} max`)].map(um);
+      if (v[0] > v[3] || v[1] > v[4] || v[2] > v[5]) throw new Error(`world box ${i}: min must not exceed max`);
+      return { um: Int32Array.from(v), kind: int32(b.kind ?? 0, `world box ${i} kind`), id: int32(b.id ?? i, `world box ${i} id`) };
+    };
+    return { floorUm: um(floorZ), boxes: boxes.map(box), triggers: triggers.map(box) };
+  }
+
+  // World, then plant (it rests the quad on that floor), on a fresh instance.
+  #sendPlant(e) {
+    const p = e.sc_scratch_ptr();
+    if (this.world) {
+      e.sc_world_clear();
+      e.sc_world_floor(this.world.floorUm);
+      for (const b of this.world.boxes) {
+        new Int32Array(e.memory.buffer, p, 6).set(b.um);
+        if (e.sc_world_box(p, b.kind, b.id) < 0) throw new Error(`world box ${b.id} refused`);
+      }
+      for (const t of this.world.triggers) {
+        new Int32Array(e.memory.buffer, p, 6).set(t.um);
+        if (e.sc_world_trigger(p, t.id) < 0) throw new Error(`world trigger ${t.id} refused`);
+      }
+    }
+    if (this.plant) {
+      if (e.sc_plant_len() !== PLANT_LEN) throw new Error(`plant block ${e.sc_plant_len()} doubles, sim-core.js has ${PLANT_LEN}`);
+      new Float64Array(e.memory.buffer, p, PLANT_LEN).set(this.plant);
+      if (e.sc_plant_set(p, PLANT_LEN) !== 0) throw new Error('plant block refused');
+    }
   }
 
   // Disarmed only. Applies CLI lines on top of the current config, saves, and
@@ -369,6 +473,7 @@ export class SimCore {
     const carry = battery || (!freshPack && this.flight ? this.battery : null);
     const e = this.#instantiate(this.eeprom);
     if (e.sc_set_rx_rate(this.rxHz) !== 0) throw new Error(`rx rate ${this.rxHz} Hz not allowed for this build`);
+    this.#sendPlant(e);
     if (carry) {
       const p = e.sc_scratch_ptr();
       new Float64Array(e.memory.buffer, p, 2).set([carry.soc, carry.vbatFiltered]);
@@ -449,6 +554,13 @@ export class SimCore {
   // Frame time in, whole ticks out. Physics never sees frameDtMs; only the
   // number of ticks it adds up to. More than 250 ticks in one call is a pause:
   // the excess is dropped, not caught up. Returns the ticks run.
+  //
+  // A tick that enters a trigger ends the call early, and the ticks not run
+  // stay in the accumulator (alpha counts them). The frame loop is:
+  //   core.advance(dt); handle(core.events());
+  //   while (core.alpha >= 1) { core.advance(0); handle(core.events()); }
+  // where handle() acts on triggers (a portal's teleport()). The response then
+  // lands on the tick after the trigger at any frame rate.
   advance(frameDtMs) {
     if (!Number.isFinite(frameDtMs) || frameDtMs < 0) throw new Error(`frame time ${frameDtMs} ms`);
     const tickUs = this.tickUs;
@@ -459,17 +571,37 @@ export class SimCore {
       this.pausedUs += (ticks - MAX_TICKS_PER_ADVANCE) * tickUs;
       ticks = MAX_TICKS_PER_ADVANCE;
     }
-    return this.step(ticks);
+    const ran = this.step(ticks);
+    this.#accUs += (ticks - ran) * tickUs;
+    return ran;
   }
 
-  // Exactly n ticks (scripts, tests, benches). advance() is the frame path.
+  // n ticks (scripts, tests, benches), or fewer when a tick enters a trigger:
+  // the run stops after that tick (see advance()). Returns the ticks run.
+  // advance() is the frame path.
   step(ticks) {
     if (!Number.isInteger(ticks) || ticks < 0) throw new Error(`step(${ticks})`);
     if (ticks === 0) return 0;
     const e = this.flight;
-    let ran = ticks > 1 ? e.sc_step(ticks - 1) : 0;
-    this.#prev = new Float64Array(e.memory.buffer, e.sc_state_ptr(), STATE_LEN).slice();
-    if (ran === ticks - 1) ran += e.sc_step(1);
+    let ran = 0;
+    let stopped = false;
+    if (ticks > 1) {
+      // The stop flag is read only after a run of our own: a stale one from
+      // the previous call must not hold back the next tick.
+      ran = e.sc_step(ticks - 1);
+      stopped = e.sc_tick_stopped() !== 0;
+    }
+    if (ran === ticks - 1 && !stopped) {
+      this.#prev = new Float64Array(e.memory.buffer, e.sc_state_ptr(), STATE_LEN).slice();
+      ran += e.sc_step(1);
+    } else {
+      this.#prev = null;
+    }
+    if (this.#poseJump) {
+      // A teleport: render the new pose, not a streak from the old one.
+      this.#prev = null;
+      this.#poseJump = false;
+    }
     if (e.sc_fault()) throw new Error(`sim-core fault ${e.sc_fault()}`);
     return ran;
   }
@@ -504,14 +636,15 @@ export class SimCore {
     return out;
   }
 
-  // Fraction of a tick advance() left in the accumulator, 0..1.
+  // The accumulator in ticks: the fraction of a tick advance() left over, 0..1,
+  // plus any whole ticks a trigger stop left to run (see advance()).
   get alpha() {
     return this.#accUs / this.tickUs;
   }
 
-  // Render interpolation between the previous tick and the latest, alpha in
-  // 0..1 (by default the accumulator's). Render only: nothing here feeds back
-  // into the physics.
+  // Render interpolation between the previous tick and the latest, alpha
+  // clamped to 0..1 (by default the accumulator's). Render only: nothing here
+  // feeds back into the physics.
   lerpState(alpha = this.alpha) {
     const cur = this.state;
     if (!this.#prev) return cur;
@@ -528,7 +661,7 @@ export class SimCore {
     return cur;
   }
 
-  // Drains the event queue: faults now; contacts and triggers with M4.
+  // Drains the event queue: contacts, floor touch and leave, triggers, faults.
   events() {
     const e = this.flight;
     const n = e.sc_events_len();
@@ -537,7 +670,10 @@ export class SimCore {
     for (let i = 0; i < n; i++) {
       const v = raw.subarray(i * EVENT_DOUBLES, (i + 1) * EVENT_DOUBLES);
       const kind = EVENT_KIND[v[1]] || `kind${v[1]}`;
-      out.push(kind === 'fault' ? { tUs: v[0], kind, code: v[2] } : { tUs: v[0], kind, values: Array.from(v.subarray(2)) });
+      if (kind === 'fault') out.push({ tUs: v[0], kind, code: v[2] });
+      else if (kind === 'contact') out.push({ tUs: v[0], kind, box: v[2], impactMs: v[3], crashed: v[4] === 1 });
+      else if (kind === 'trigger') out.push({ tUs: v[0], kind, id: v[2] });
+      else out.push({ tUs: v[0], kind });
     }
     const dropped = e.sc_events_dropped();
     if (dropped) out.push({ tUs: e.sc_time(), kind: 'dropped', count: dropped });
@@ -545,8 +681,70 @@ export class SimCore {
     return out;
   }
 
-  teleport() {
-    throw m4('teleport()');
+  // A pose event at the next tick boundary, quantised at the ABI: position (m)
+  // and velocity (m/s) in the module frame, quaternion w x y z body to world.
+  // The rest plant never moves and refuses one.
+  teleport({ pos, quat = [1, 0, 0, 0], vel = [0, 0, 0] }) {
+    this.#needsPlant('teleport()');
+    const at = vec3(pos, 'teleport pos').map(um);
+    if (!Array.isArray(quat) || quat.length !== 4) throw new Error('teleport quat needs 4 numbers (w x y z)');
+    // A unit quaternion composed in floating point can carry a component an
+    // ulp past 1; anything beyond a small tolerance is not a rotation.
+    const q = quat.map((v) => {
+      if (!Number.isFinite(v) || Math.abs(v) > 1 + 1e-6) throw new Error(`quaternion component ${v}`);
+      return Math.round(clamp(v, -1, 1) * 1e9);
+    });
+    const v = vec3(vel, 'teleport vel').map(um);
+    const e = this.flight;
+    const p = e.sc_scratch_ptr();
+    const ints = new Int32Array(e.memory.buffer, p, 10);
+    ints.set(at, 0);
+    ints.set(q, 3);
+    ints.set(v, 7);
+    if (e.sc_pose(p, p + 12, p + 28) !== 0) throw new Error('pose refused');
+    this.#poseJump = true;
+  }
+
+  #needsPlant(what) {
+    if (!this.plant || this.plant[0] === PLANT_MODELS.rest) throw new Error(`${what} needs a plant (an airframe file); the rest plant never moves`);
+  }
+
+  // Bench override for plant tests: motor 0..3 (or -1 for all) runs at duty
+  // -1..1 whatever Betaflight sends; null clears it. Not for flying.
+  motorOverride(motor, duty) {
+    this.#needsPlant('motorOverride()');
+    if (!Number.isInteger(motor) || motor < -1 || motor > 3) throw new Error(`motor ${motor}: 0..3, or -1 for all`);
+    if (duty !== null && !(Number.isFinite(duty) && duty >= -1 && duty <= 1)) throw new Error(`duty ${duty}: -1..1, or null to clear`);
+    if (this.flight.sc_motor_override(motor, duty === null ? 2 : duty) !== 0) throw new Error(`motor override ${motor} ${duty}`);
+  }
+
+  // The plant's derived motor and body constants (src/plant/plant.h), for
+  // reports; zero for the rest plant.
+  // The physical model's five contact points in the module frame (m): the four
+  // duct rims (motor order) and the canopy top, for hosts and tests. Null on
+  // the rest and parity models, which touch with the CG only.
+  get footprint() {
+    if (!this.plant || this.plant[0] !== PLANT_MODELS.physical) return null;
+    const b = this.plant;
+    const reach = (b[PB_WHEELBASE] * 0.5 + b[PB_DUCT_RADIUS]) * Math.SQRT1_2;
+    const body = [[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([x, y]) => [x * reach, y * reach, -b[PB_HULL_BELOW]]);
+    body.push([0, 0, b[PB_HULL_ABOVE]]);
+    const { pos, quat } = this.state;
+    return body.map((r) => rotate(quat, r).map((v, k) => v + pos[k]));
+  }
+
+  get plantDerived() {
+    const e = this.flight;
+    const d = new Float64Array(e.memory.buffer, e.sc_plant_derived_ptr(), e.sc_plant_derived_len());
+    return Object.fromEntries(PLANT_DERIVED.map((k, i) => [k, d[i]]));
+  }
+
+  // Ground clearance (m) at a module-frame point, as quadmath's hook computes it.
+  clearanceAt(pos) {
+    const e = this.flight;
+    const p = e.sc_scratch_ptr();
+    new Int32Array(e.memory.buffer, p, 3).set(vec3(pos, 'clearanceAt pos').map(um));
+    return e.sc_world_clearance(p);
   }
 
   // Betaflight's `get` on a config instance of the current config. One key
@@ -637,12 +835,33 @@ export class SimCore {
       flightMode: f.mode.angle ? 'angle' : f.mode.horizon ? 'horizon' : 'acro',
       groundClearance: s.groundClearance,
       physicsHz: this.loopHz,
-      get twr() { throw m4('compat.twr (needs the plant mass)'); },
-      get floatiness() { throw m4('compat.floatiness (a plant parameter)'); },
+      // Thrust over weight, with the mass and gravity the plant flies; null on the rest plant.
+      twr: this.plant && this.plant[0] !== PLANT_MODELS.rest ? thrust / (this.plant[PB_MASS] * this.plant[PB_GRAVITY]) : null,
+      // The physical model has no floatiness knob (quadmath's was a drag scale).
+      floatiness: null,
     };
   }
 }
 
 function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+// v' = q v q* for q = (w, x, y, z) body to world.
+function rotate(q, v) {
+  const [w, x, y, z] = q;
+  const tx = 2 * (y * v[2] - z * v[1]);
+  const ty = 2 * (z * v[0] - x * v[2]);
+  const tz = 2 * (x * v[1] - y * v[0]);
+  return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)];
+}
+
+function vec3(v, what) {
+  if (!Array.isArray(v) || v.length !== 3) throw new Error(`${what} needs 3 numbers`);
+  return v;
+}
+
+function int32(v, what) {
+  if (!Number.isInteger(v) || v < -2147483648 || v > 2147483647) throw new Error(`${what} ${v} is not a 32-bit integer`);
+  return v;
 }

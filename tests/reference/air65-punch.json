@@ -1,0 +1,269 @@
+{
+  "source": "BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_143354_BETAFPVG473.BBL",
+  "log_index": 0,
+  "mode": "full-duty plateau",
+  "rule": "50 ms bins with mean duty > 0.9; runs less than 100 ms apart are one punch; steady values leave out the first 100 ms (the rotors spinning up); onset accZ is the highest bin in the first 150 ms",
+  "flown": "0000-01-01T00:00:00.000+00:00, AIR65 RYFLY, BEFH BETAFPVG473, Betaflight 4.5.0 (c155f5830) STM32G47X",
+  "log": {
+    "frames": 114502,
+    "duration_s": 57.7,
+    "rate_hz": 1983,
+    "logs_in_file": 2,
+    "corrupt_frames_dropped": 261
+  },
+  "current_scale": 1,
+  "header": {
+    "motorOutput": [
+      48,
+      2047
+    ],
+    "motor_poles": 12,
+    "dshot_bidir": 1,
+    "vbat_scale": 110,
+    "currentSensor": [
+      -600,
+      750
+    ],
+    "thrust_linear": 20,
+    "vbat_sag_compensation": 70,
+    "throttle_boost": 5,
+    "rates_type": 3,
+    "thr_mid": 50,
+    "thr_expo": 0,
+    "dyn_idle_min_rpm": 55,
+    "dshot_idle_value": 400,
+    "motor_output_limit": 100,
+    "throttle_limit_type": 0,
+    "throttle_limit_percent": 100,
+    "vbatcellvoltage": [
+      330,
+      333,
+      440
+    ],
+    "blackbox_high_resolution": 0
+  },
+  "punches": [
+    {
+      "start_s": 6.2,
+      "end_s": 7.6,
+      "bins": 27,
+      "steady": {
+        "duty": 0.921,
+        "rpm": 64156,
+        "vbat": 3.547,
+        "amps": 15.43
+      },
+      "onset_accZ_g": 3.85,
+      "before": {
+        "duty": 0.335,
+        "vbat": 4.092,
+        "amps": 3
+      },
+      "cell_ir_ohm": 0.0438
+    },
+    {
+      "start_s": 22.15,
+      "end_s": 22.5,
+      "bins": 6,
+      "steady": {
+        "duty": 0.928,
+        "rpm": 64076,
+        "vbat": 3.506,
+        "amps": 15.55
+      },
+      "onset_accZ_g": 1.74,
+      "before": {
+        "duty": 0.723,
+        "vbat": 3.693,
+        "amps": 10.18
+      }
+    },
+    {
+      "start_s": 36.5,
+      "end_s": 38.4,
+      "bins": 36,
+      "steady": {
+        "duty": 0.929,
+        "rpm": 63524,
+        "vbat": 3.472,
+        "amps": 15.3
+      },
+      "onset_accZ_g": 3.73,
+      "before": {
+        "duty": 0.343,
+        "vbat": 3.931,
+        "amps": 3.07
+      },
+      "cell_ir_ohm": 0.0375
+    }
+  ],
+  "measured": {
+    "duty": 0.925,
+    "rpm": 63810,
+    "vbat_v": 3.504,
+    "amps_a": 15.37,
+    "onset_accZ_g": 3.85,
+    "omega_rad_s": 6682
+  },
+  "current_vs_rpm": [
+    {
+      "krpm": [
+        22,
+        24
+      ],
+      "bins": 4,
+      "rpm": 22951,
+      "amps": 2.08
+    },
+    {
+      "krpm": [
+        26,
+        28
+      ],
+      "bins": 13,
+      "rpm": 27078,
+      "amps": 3.02
+    },
+    {
+      "krpm": [
+        28,
+        30
+      ],
+      "bins": 52,
+      "rpm": 29205,
+      "amps": 2.64
+    },
+    {
+      "krpm": [
+        30,
+        32
+      ],
+      "bins": 264,
+      "rpm": 31296,
+      "amps": 2.8
+    },
+    {
+      "krpm": [
+        32,
+        34
+      ],
+      "bins": 274,
+      "rpm": 32771,
+      "amps": 3.06
+    },
+    {
+      "krpm": [
+        34,
+        36
+      ],
+      "bins": 168,
+      "rpm": 35010,
+      "amps": 3.53
+    },
+    {
+      "krpm": [
+        36,
+        38
+      ],
+      "bins": 75,
+      "rpm": 36994,
+      "amps": 4.08
+    },
+    {
+      "krpm": [
+        38,
+        40
+      ],
+      "bins": 49,
+      "rpm": 39139,
+      "amps": 4.47
+    },
+    {
+      "krpm": [
+        40,
+        42
+      ],
+      "bins": 46,
+      "rpm": 40682,
+      "amps": 4.82
+    },
+    {
+      "krpm": [
+        42,
+        44
+      ],
+      "bins": 8,
+      "rpm": 42938,
+      "amps": 5.76
+    },
+    {
+      "krpm": [
+        52,
+        54
+      ],
+      "bins": 5,
+      "rpm": 53157,
+      "amps": 9.07
+    },
+    {
+      "krpm": [
+        54,
+        56
+      ],
+      "bins": 14,
+      "rpm": 54935,
+      "amps": 10.09
+    },
+    {
+      "krpm": [
+        56,
+        58
+      ],
+      "bins": 4,
+      "rpm": 56846,
+      "amps": 12.98
+    },
+    {
+      "krpm": [
+        60,
+        62
+      ],
+      "bins": 5,
+      "rpm": 61592,
+      "amps": 15.06
+    },
+    {
+      "krpm": [
+        62,
+        64
+      ],
+      "bins": 34,
+      "rpm": 63225,
+      "amps": 15.29
+    },
+    {
+      "krpm": [
+        64,
+        66
+      ],
+      "bins": 35,
+      "rpm": 64309,
+      "amps": 15.4
+    }
+  ],
+  "derived": {
+    "load_fraction_full": 0.6562,
+    "load_fraction_note": "rpm / (KV 30000 x vbat x duty) on the steady plateau",
+    "thrust_law": {
+      "omega_hover_rad_s": 3389,
+      "predicted_onset_accZ_g": 3.887,
+      "measured_onset_accZ_g": 3.85,
+      "note": "thrust = kt w^2 with kt from the hover (m g / (4 w_hover^2)): at the plateau rpm, thrust / weight = (w / w_hover)^2, the specific force at onset before the quad gains speed"
+    },
+    "cell_ir_ohm": [
+      0.0438,
+      0.0375
+    ],
+    "cell_ir_note": "(vbat before - vbat steady) / (amps steady - amps before) per punch from hover, before = 300..100 ms before the punch, logged current"
+  }
+}
