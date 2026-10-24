@@ -62,7 +62,7 @@ enum {
     PB_CELLS = 23,
     PB_CAPACITY_MAH = 24,
     PB_CELL_IR = 25,            // ohm per cell
-    PB_I_HOVER = 26,            // A, pack current at hover (rotors at PB_RPM_HOVER)
+    PB_I_HOVER = 26,            // A, motor current at hover (rotors at PB_RPM_HOVER), less PB_I_QUIESCENT
     PB_OCV = 27,                // 7 values: V per cell at SoC 0, .05, .15, .40, .70, .90, 1
     // Parity battery (quadmath sim-whoop.js stepBattery)
     PB_SAG_DROP = 34,           // V at full load
@@ -77,13 +77,14 @@ enum {
     PB_DUCT_RADIUS = 40,        // m, duct outer radius
     PB_HULL_BELOW = 41,         // m, duct bottom below the CG (the rest height)
     PB_HULL_ABOVE = 42,         // m, canopy top above the CG
-    // Pack current: I = PB_I_HOVER x (rpm / PB_RPM_HOVER)^PB_CURRENT_EXP, summed
-    // over the rotors the ESCs drive (each draws a quarter of PB_I_HOVER at
-    // PB_RPM_HOVER; a rotor at duty 0 brakes on its shorted winding and draws
-    // nothing)
+    // Pack current: PB_I_QUIESCENT, always, plus PB_I_HOVER x (rpm /
+    // PB_RPM_HOVER)^PB_CURRENT_EXP summed over the rotors the ESCs drive (each
+    // draws a quarter of PB_I_HOVER at PB_RPM_HOVER; a rotor at duty 0 brakes
+    // on its shorted winding and draws nothing)
     PB_RPM_HOVER = 43,          // rpm at hover
-    PB_CURRENT_EXP = 44,        // exponent of the current against rpm
-    PB_LEN = 45,
+    PB_CURRENT_EXP = 44,        // exponent of the motor current against rpm
+    PB_I_QUIESCENT = 45,        // A, the pack current with every motor at duty 0
+    PB_LEN = 46,
 };
 
 // Derived constants, computed from the block when it is set (readout only).

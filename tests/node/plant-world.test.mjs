@@ -43,9 +43,13 @@ const DUTY_CHECKED_AT = 0.2949;
 const HOVER_DUTY = (() => {
   const v = air65.values;
   const full = v.ocv.value[6];
-  return (HOVER_DUTY_NO_SAG * v.vRefCell.value) / (full - v.iHover.value * v.cellIR.value);
+  return (HOVER_DUTY_NO_SAG * v.vRefCell.value) / (full - (v.iHover.value + v.iQuiescent.value) * v.cellIR.value);
 })();
 const D = (duty) => (duty * HOVER_DUTY) / DUTY_CHECKED_AT;
+
+// Checks open for the owner: recorded where they fail, so every later section
+// still runs, and failed together at the end.
+const open = [];
 
 // 1. Resting disarmed on a box top: no yaw spin-up (sim.html makes every tick
 // there a duct hit with a yaw kick; the soft path and scrub now apply).
@@ -212,23 +216,26 @@ for (const vel of [[18, 0, -8], [30, 10, -15], [0, 25, -20]]) {
   assert.notDeepEqual(core.lerpState().pos, core.state.pos, 'interpolation resumes on the next frame');
 }
 
-// 9. A flat pack (0 V) carries across a reinit.
+// 9. A flat pack (0 V) carries across a reinit: exactly the 2 % pack less
+// what the quiescent current drew while Betaflight booted.
 {
   const core = await flight(undefined);
   assert.doesNotThrow(() => core.reinit({ battery: { soc: 0.02, vbatFiltered: 0 } }));
-  assert.equal(core.battery.soc, 0.02);
+  const cap = air65.values.capacityMah.value;
+  assert.ok(core.state.mah > 0, 'the quiescent current drew while Betaflight booted');
+  assert.ok(Math.abs(core.battery.soc - (0.02 - core.state.mah / cap)) <= 1e-12, `flat pack carried (soc ${core.battery.soc}, ${core.state.mah} mAh drawn)`);
 }
 
 // 10. At hover on a full pack the current model draws the logged hover
-// current: iHover at rpmHover (owner decision 2026-10-23), with the rotors at
-// the plant's hover rpm.
+// current: iQuiescent plus iHover at rpmHover (owner decisions 2026-10-23),
+// with the rotors at the plant's hover rpm.
 {
   const sim = await feel.simCoreSim(SimCore, module, { diff, airframe: air65 });
   const h = feel.hoverTrim(sim);
   sim.fly(() => ({ t: h.throttle }), 3000);
   const s = sim.core.state;
   const d = sim.core.plantDerived;
-  const iRef = air65.values.iHover.value;
+  const iRef = air65.values.iHover.value + air65.values.iQuiescent.value;
   console.log(`hover stick ${h.quantum}: ${s.amps.toFixed(3)} A at ${s.vbatLoaded.toFixed(3)} V (bench ${iRef} A); rotors at ${Math.round(s.rpm.reduce((a, b) => a + b) / 4)} rpm (rpmHover ${air65.values.rpmHover.value}); no-sag hover duty ${d.dutyHover.toFixed(4)}, ${d.ampsFull.toFixed(1)} A at full throttle`);
   assert.equal(h.diverged, null);
   assert.ok(Math.abs(s.amps - iRef) / iRef < 0.03, 'hover current within 3% of the bench current');
@@ -293,7 +300,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   core.configure({ diff });
   assert.throws(() => core.configure({ diff, plant: { ...structuredClone(air65), describe() {} } }));
   assert.equal(core.plant, null, 'still the rest plant after a clone failure');
-  for (const [field, value] of [['iHover', 70], ['cellIR', 0.6], ['cellIR', 0.9], ['rpmHover', 0], ['currentExponent', 0]]) {
+  for (const [field, value] of [['iHover', 70], ['cellIR', 0.6], ['cellIR', 0.9], ['rpmHover', 0], ['currentExponent', 0], ['iQuiescent', -0.1]]) {
     const bad = structuredClone(air65);
     bad.values[field].value = value;
     assert.throws(() => core.configure({ diff, plant: bad }), /plant block refused/, `${field} ${value}: the pack cannot hold the hover current, or the current model is out of range`);
@@ -1508,9 +1515,15 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   const hb = await hover(top, surfaces[1][1]);
   const dz = Math.max(...hf.z.map((v, k) => Math.abs(v - hb.z[k])));
   const ceiling = air65.values.propDiameter.value;
-  console.log(`throttle ${(hoverThr - 0.005).toFixed(4)} (free-air hover ${hoverThr.toFixed(4)}) for 3 s: hovers ${(hf.clr * 1000).toFixed(2)} mm over the floor, ${(hb.clr * 1000).toFixed(2)} mm over the box top, heights apart at most ${dz.toExponential(2)} m`);
-  assert.ok(hf.clr > 0.001 && hf.clr < ceiling, 'off the floor, in ground effect');
+  // The quad does not settle in 3 s: it bobs through ground effect (0 to
+  // 32 mm before round 4; 0 to 49 mm on the round-4 constants, touching the
+  // floor), so this final-tick check depends on the phase the last tick lands
+  // on. It fails on round 4 (38.55 mm); open for the owner (PROGRESS.md
+  // 2026-10-23), not reshaped.
+  const inBand = hf.z.filter((v) => v - REST > 0.001 && v - REST < ceiling).length;
+  console.log(`throttle ${(hoverThr - 0.005).toFixed(4)} (free-air hover ${hoverThr.toFixed(4)}) for 3 s: ends ${(hf.clr * 1000).toFixed(2)} mm over the floor, ${(hb.clr * 1000).toFixed(2)} mm over the box top (clearance ${(Math.min(...hf.z) - REST) * 1000 < 0 ? 0 : ((Math.min(...hf.z) - REST) * 1000).toFixed(2)} to ${((Math.max(...hf.z) - REST) * 1000).toFixed(2)} mm, ${inBand} of ${hf.z.length} ticks between 1 mm and a prop diameter), heights apart at most ${dz.toExponential(2)} m`);
   assert.ok(dz < 1e-9, 'the same hover over the box top');
+  if (!(hf.clr > 0.001 && hf.clr < ceiling)) open.push(`#33 off the floor, in ground effect: ends ${(hf.clr * 1000).toFixed(2)} mm, band 1 mm to ${(ceiling * 1000).toFixed(0)} mm`);
 }
 
 // 34. A footprint point lying on a face with no speed into it touches the
@@ -1555,4 +1568,5 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   }
 }
 
+assert.deepEqual(open, [], `open checks failed: ${open.join('; ')}`);
 console.log('plant-world: box tops, edges, seams, stacks, corners, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current: PASS');

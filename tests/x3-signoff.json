@@ -4,13 +4,15 @@
     "coast after roll (deg)": {
       "by": "owner (RyFly)",
       "date": "2026-10-23",
-      "reason": "I-term hold after release is Betaflight behaviour on this diff, not plant. Revisit against a real log.",
+      "reason": "I-term hold after release is Betaflight behaviour on this diff, not plant. Revisit when sim-vs-log supports chirp and release.",
+      "reworded": "2026-10-23, owner: the sign-off stands; revisit when tools/sim-vs-log.mjs supports chirp and release",
       "entered": "by Claude on the owner's instruction of 2026-10-23 (M4 decision 5)"
     },
     "chirp gain": {
       "by": "owner (RyFly)",
       "date": "2026-10-23",
-      "reason": "Referenced to WebFPV whoop65, a tuned model and not this Air65 (both sims on quadmath's class diff, the only config WebFPV flies). Re-band against the owner's freestyle Air65 log with tools/sim-vs-log.mjs when it lands.",
+      "reason": "Referenced to WebFPV whoop65, a tuned model and not this Air65 (both sims on quadmath's class diff, the only config WebFPV flies). Revisit when sim-vs-log supports chirp and release.",
+      "reworded": "2026-10-23, owner: the sign-off stands; revisit when tools/sim-vs-log.mjs supports chirp and release",
       "entered": "by Claude on the owner's instruction of 2026-10-23 (M4 decision 6: sign off the WebFPV-referenced rows; re-band when the freestyle log lands)"
     }
   }

@@ -29,7 +29,7 @@
     ],
     "open_air_m": 1000,
     "height_m": [
-      -89.411,
+      -158.572,
       0
     ],
     "contact_ticks": 0
@@ -53,8 +53,8 @@
     {
       "name": "roll",
       "gyroRmsLog": 174.69,
-      "gyroRmsSim": 167.24,
-      "gyroErrRms": 43.91,
+      "gyroRmsSim": 167.21,
+      "gyroErrRms": 43.98,
       "setpointErrRms": 6.101,
       "stepLog": {
         "windows": 19,
@@ -69,19 +69,19 @@
       "stepSim": {
         "windows": 22,
         "riseMs": 20,
-        "overshootPct": 2.4,
+        "overshootPct": 2.3,
         "peakMs": 36,
         "settleMs": 24,
-        "steady": 1.007,
+        "steady": 1.008,
         "oscillations": 0,
-        "lag50Ms": 4
+        "lag50Ms": 4.2
       }
     },
     {
       "name": "pitch",
       "gyroRmsLog": 160.92,
-      "gyroRmsSim": 156.58,
-      "gyroErrRms": 30.5,
+      "gyroRmsSim": 156.56,
+      "gyroErrRms": 30.57,
       "setpointErrRms": 5.593,
       "stepLog": {
         "windows": 20,
@@ -96,19 +96,19 @@
       "stepSim": {
         "windows": 24,
         "riseMs": 20,
-        "overshootPct": 0.4,
+        "overshootPct": 0.3,
         "peakMs": 150,
-        "settleMs": 23,
-        "steady": 0.989,
+        "settleMs": 24,
+        "steady": 0.988,
         "oscillations": 0,
-        "lag50Ms": 3.7
+        "lag50Ms": 3.9
       }
     },
     {
       "name": "yaw",
       "gyroRmsLog": 130.26,
-      "gyroRmsSim": 112.95,
-      "gyroErrRms": 64.02,
+      "gyroRmsSim": 112.98,
+      "gyroErrRms": 64.01,
       "setpointErrRms": 2.404,
       "stepLog": {
         "windows": 77,

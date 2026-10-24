@@ -169,7 +169,7 @@ static void derive(void)
     derived[PD_OMEGA_HOVER] = wHover;
     const double vHover = wHover / kv + r * kqProp * wHover * wHover / ktMotor;
     derived[PD_DUTY_HOVER] = vHover / vRef;
-    derived[PD_AMPS_FULL] = blk[PB_I_HOVER] * pow(wFull * RPM_PER_RAD_S / blk[PB_RPM_HOVER], blk[PB_CURRENT_EXP]);
+    derived[PD_AMPS_FULL] = blk[PB_I_QUIESCENT] + blk[PB_I_HOVER] * pow(wFull * RPM_PER_RAD_S / blk[PB_RPM_HOVER], blk[PB_CURRENT_EXP]);
 }
 
 static void publishSensors(void)
@@ -276,7 +276,7 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_CAPACITY_MAH] > 0 && block[PB_I_HOVER] >= 0 && block[PB_CELL_IR] >= 0
                                         && block[PB_DUCT_RADIUS] > 0 && block[PB_HULL_BELOW] > 0
                                         && block[PB_HULL_ABOVE] > 0 && block[PB_RPM_HOVER] > 0
-                                        && block[PB_CURRENT_EXP] > 0)) {
+                                        && block[PB_CURRENT_EXP] > 0 && block[PB_I_QUIESCENT] >= 0)) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -287,11 +287,12 @@ int sc_plant_configure(const double *block, int count)
     model = m;
     memset(derived, 0, sizeof(derived));
     derive();
-    // The current stand-in's reference: a reachable duty (at most 1), on the
-    // lower root of u (V - I(u) R) = hover volts, which needs iRef x cellIR at
+    // A pack that can hold the hover current (quiescent plus motors): the
+    // reference's reachable duty, on the lower root of u (V - I(u) R) = hover
+    // volts, needs hover current x cellIR at
     // most half the full-pack voltage. Otherwise refuse and keep the old block.
     if (m == SC_MODEL_PHYSICAL
-        && !(2 * blk[PB_I_HOVER] * blk[PB_CELL_IR] <= blk[PB_OCV + 6])) {
+        && !(2 * (blk[PB_I_HOVER] + blk[PB_I_QUIESCENT]) * blk[PB_CELL_IR] <= blk[PB_OCV + 6])) {
         memcpy(blk, prevBlk, sizeof(blk));
         model = prevModel;
         memset(derived, 0, sizeof(derived));
@@ -391,16 +392,17 @@ static void dragForce(const double vWorld[3], const double q[4], double meanOut,
 static void stepPhysical(const double duty[SC_MOTOR_COUNT], double dt)
 {
     const double cells = blk[PB_CELLS];
-    // Pack current from the rotors' speed (owner decision 2026-10-23, from the
-    // hover and punch logs): each rotor draws a quarter of the hover current at
-    // the hover rpm, scaled by (rpm / rpm at hover)^exponent; last tick's rpm.
+    // Pack current (owner decisions 2026-10-23, from the hover and punch logs):
+    // the quiescent current (the electronics, motors or not), plus each rotor's
+    // quarter of the motor current at hover, scaled by (rpm / rpm at
+    // hover)^exponent; last tick's rpm.
     // A rotor at duty 0 draws nothing from the pack: the averaged motor below
     // sees duty x pack voltage, so at duty 0 its winding is shorted and brakes
     // the rotor, and its ESC draws duty x the winding current, none. Duty 0 is
     // DShot 0 (disarmed, motor stop, crash flip's idle pair) and DShot 48, the
     // armed floor under dynamic idle (flight/mixer_init.c:342-343); one step
     // up, the power law applies in full.
-    double amps = 0;
+    double amps = blk[PB_I_QUIESCENT];
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
         if (duty[i] == 0) continue;
         const double rpm = fabs(omegaMotor[i]) * RPM_PER_RAD_S;

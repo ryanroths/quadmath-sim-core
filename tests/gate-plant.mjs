@@ -21,10 +21,10 @@
 //       500 ms, no divergence; held until upright is reported, not gated
 //   P6  thrust law: kt from the bench hover predicts the punch log's onset
 //       accZ at its plateau rpm, within 10%
-//   P7  pack current model within 10% of the logged current x 1.24, at the
-//       owner's two points (40.1 krpm at 4.8 A, 52.9 krpm at 9.5 A logged)
-//       and on the freestyle log's 2 krpm bands of at least 8 bins, 38-60 krpm;
-//       P8, the plant at the punch, is reported, not gated
+//   P7  pack current model within 10% of the logged current x 1.24 on the
+//       freestyle log's 2 krpm bands of at least 8 bins, 38-60 krpm; the
+//       punch log's mid bins (the owner's two points and its own bands) are
+//       reported, not gated; P8, the plant at the punch, is reported too
 //   X2  F3: achieved full-stick rate within +-1.0% of Betaflight's setpoint
 //   X3  feel bands. Rise, lag and overshoot against the owner's freestyle log
 //       (tools/sim-vs-log.mjs: its sticks replayed on the Air65 config in the
@@ -210,27 +210,28 @@ console.log('\n== P6 thrust law: kt from the hover predicts the punch (thrust fr
 // config (tests/reference/air65-freestyle.sim-vs-log.json).
 const freestyleRef = JSON.parse(await readFile(new URL('tests/reference/air65-freestyle.sim-vs-log.json', root), 'utf8'));
 
-console.log('\n== P7 pack current model, within 10% (logged current x 1.24): the owner\'s two mid-rpm points, and the freestyle log in 2 krpm bands of at least 8 bins, 38-60 krpm');
+console.log('\n== P7 pack current model, within 10% (logged current x 1.24), on the freestyle log in 2 krpm bands of at least 8 bins, 38-60 krpm; the punch log\'s mid bins reported');
 {
-  // I = iHover x (rpm / rpmHover)^currentExponent (src/plant/plant.c
-  // stepPhysical). The owner's check (2026-10-23): the mid bins, 40.1 krpm at
-  // 4.8 A and 52.9 krpm at 9.5 A logged. The freestyle log's bands take every
+  // I = iQuiescent + iHover x the mean over the driven rotors of (rpm_i /
+  // rpmHover)^currentExponent (src/plant/plant.c stepPhysical). P7 checks the
+  // law at the log's four-rotor mean rpm, which is the plant's draw when the
+  // rotors run alike (hover, the punch plateau); when they differ the plant
+  // draws more (the law is convex). The owner's mid bins of the punch log,
+  // 40.1 krpm at 4.8 A and 52.9 krpm at 9.5 A logged, are reported with their
+  // error, not gated (owner decision 2026-10-23). The freestyle log's bands take every
   // 50 ms bin with the motors driven (duty > 0.1, no steadiness filter;
   // tools/hover-from-log.mjs currentBands). P7 was first gated on the punch
   // log's own bands with no bins rule and missed only on a 4-bin band at
   // 56.8 krpm (-11.0 %); the at-least-8-bins rule came with the move to the
   // freestyle log, and under it the punch log's bands pass too (printed
-  // below, not gated). The move is in PROGRESS.md (2026-10-23) for the owner
-  // to accept or reverse.
-  const { iHover, rpmHover, currentExponent } = air65.values;
-  const ampsAt = (rpm) => iHover.value * (rpm / rpmHover.value) ** currentExponent.value;
-  let ownerWorst = 0;
+  // below, not gated). The owner accepted the freestyle bands and the bins
+  // rule (2026-10-23); the punch bands stay reported rows.
+  const { iHover, rpmHover, currentExponent, iQuiescent } = air65.values;
+  const ampsAt = (rpm) => iQuiescent.value + iHover.value * (rpm / rpmHover.value) ** currentExponent.value;
   for (const [rpm, amps] of [[40100, 4.8], [52900, 9.5]]) {
     const logged = amps * CURRENT_CORRECTION;
-    ownerWorst = Math.max(ownerWorst, Math.abs(ampsAt(rpm) / logged - 1));
-    console.log(`   owner's point ${rpm} rpm: model ${f(ampsAt(rpm), 2)} A, log ${f(logged, 2)} A (${amps} logged), ${f((ampsAt(rpm) / logged - 1) * 100, 1)} %`);
+    console.log(`   punch log mid bin (the owner's), reported: ${rpm} rpm, model ${f(ampsAt(rpm), 2)} A, log ${f(logged, 2)} A (${amps} logged), ${f((ampsAt(rpm) / logged - 1) * 100, 1)} %`);
   }
-  console.log(`   owner's points, worst ${f(ownerWorst * 100, 1)} % -> ${check(ownerWorst <= 0.1, 'P7 current model at the owner\'s points')}`);
   const bands = freestyleRef.log_current_vs_rpm.filter((b) => b.rpm >= 38000 && b.rpm < 60000 && b.bins >= 8);
   let worst = 0;
   for (const b of bands) {
@@ -276,7 +277,7 @@ function parityModel(quadCfg, { battery }) {
       ocv: v([3.30, 3.50, 3.60, 3.75, 3.87, 4.05, 4.20]),
       sagDrop: v(pack.sagDrop), hoverSeconds: v(battery ? pack.hoverS : 0), sagScale: v(1),
       bounceScale: v(1), crashScale: v(1), spinScale: v(1),
-      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0),
+      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0), iQuiescent: v(0),
     },
   };
 }
@@ -679,8 +680,11 @@ console.log('\n== X3 feel bands: (log) rows: sim-core on the Air65 config replay
   const diverged = Object.values(o).some((m) => m && m.diverged);
   add('divergence', 'none', diverged ? 1 : 0, 0, (ov) => ov === 0);
   for (const row of rows) {
-    const signed = signoff.signedOff && signoff.signedOff[row.key];
+    // A sign-off covers a measured miss, never a row that measured nothing.
+    const measured = row.ov != null && Number.isFinite(row.ov);
+    const signed = measured && signoff.signedOff && signoff.signedOff[row.key];
     const verdict = row.notRun ? 'not run here: needs QUADMATH_DIR and the freestyle log in SIM_CORE_LOGS'
+      : !measured ? 'NOT MEASURED (a sign-off covers a measured miss only)'
       : row.pass ? 'pass' : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date}${signed.reason ? `: ${signed.reason}` : ''})` : 'MISS';
     console.log(`   ${row.key.padEnd(30)} sim-core ${f(row.ov, 3).padStart(9)}  ${(row.refName || 'WebFPV').padEnd(6)} ${f(row.rv, 3).padStart(9)}  band ${row.band.padEnd(18)} ${verdict}`);
     if (!row.pass && !signed && !row.notRun) failures.push(`X3 ${row.key}`);
