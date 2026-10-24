@@ -2,9 +2,9 @@
 // gives the same trace hash (SHA-256 over the state block and Betaflight's
 // readouts at the end of every tick since boot). Every scenario of the D2
 // matrix, so each one is known to repeat before Node and Chrome are compared.
-// On the M3 rest plant an rpm-on scenario differs from its rpm-off twin only
-// in Betaflight's RPM-filter-enabled flag (gyro and eRPM are zero), which is
-// what keeps those traces distinct; the filter path gets input with M4.
+// 65mm flies the Air65 plant, so its RPM filter gets live gyro and eRPM; on
+// the rest plant (75mm) an rpm-on scenario differs from its rpm-off twin only
+// in Betaflight's RPM-filter-enabled flag, which keeps those traces distinct.
 //
 //   node tests/node/determinism-repeat.test.mjs
 //
@@ -12,12 +12,11 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { SimCore } from '../../src/js/sim-core.js';
-import { CLASS_DIFFS, matrix, runScenario } from '../lib/scenarios.mjs';
+import { loadPresets, matrix, runScenario } from '../lib/scenarios.mjs';
 
 const root = new URL('../../', import.meta.url);
 const module = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', root)));
-const presets = {};
-for (const [name, path] of Object.entries(CLASS_DIFFS)) presets[name] = await readFile(new URL(path, root), 'utf8');
+const presets = await loadPresets((path) => readFile(new URL(path, root), 'utf8'));
 
 const seen = new Set();
 for (const sc of matrix()) {

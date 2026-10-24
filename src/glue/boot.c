@@ -43,6 +43,7 @@
 #include "sensors/initialisation.h"
 
 #include "sc.h"
+#include "plant/plant.h"
 
 void sc_boot_betaflight(void)
 {
@@ -105,6 +106,9 @@ void sc_boot_betaflight(void)
     motorPostInit();
     motorEnable();
     tasksInit();
+
+    // The plant follows Betaflight's 3D mode and motor direction.
+    sc_plant_follow_betaflight(featureIsEnabled(FEATURE_3D), mixerConfig()->yaw_motors_reversed);
 }
 
 // The tick drives one gyro sample, filter pass and PID pass per tick. These

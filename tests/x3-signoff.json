@@ -1,0 +1,50 @@
+{
+  "note": "Rows the owner has read: 'signedOff', a miss the owner accepts; 'underInvestigation', a red row the owner has put under investigation, which does not fail its test while it stays listed. Keyed by the gate-plant.mjs X3 row name, or 'plant-world <check>' for a plant-world open check. Only the owner adds entries (PROGRESS.md: a band is never widened; a miss needs the owner's sign-off); one written on the owner's instruction says so in 'entered'. Neither covers a row that measured nothing.",
+  "signedOff": {
+    "chirp gain": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-23",
+      "reason": "Referenced to WebFPV whoop65, a tuned model and not this Air65 (both sims on quadmath's class diff, the only config WebFPV flies). Revisit when sim-vs-log supports chirp and release.",
+      "reworded": "2026-10-23, owner: the sign-off stands; revisit when tools/sim-vs-log.mjs supports chirp and release",
+      "entered": "by Claude on the owner's instruction of 2026-10-23 (M4 decision 6: sign off the WebFPV-referenced rows; re-band when the freestyle log lands)"
+    }
+  },
+  "underInvestigation": {
+    "roll overshoot % (log)": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-24",
+      "reason": "under investigation, PROGRESS 2026-10-24",
+      "entered": "by Claude on the owner's instruction of 2026-10-24 (PR #2: every red row either green or signed 'under investigation, PROGRESS <date>'; X3 against the freestyle log, under investigation)"
+    },
+    "pitch overshoot % (log)": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-24",
+      "reason": "under investigation, PROGRESS 2026-10-24",
+      "entered": "by Claude on the owner's instruction of 2026-10-24 (PR #2: every red row either green or signed 'under investigation, PROGRESS <date>'; X3 against the freestyle log, under investigation)"
+    },
+    "yaw rise to 90% ms (log)": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-24",
+      "reason": "under investigation, PROGRESS 2026-10-24",
+      "entered": "by Claude on the owner's instruction of 2026-10-24 (PR #2: every red row either green or signed 'under investigation, PROGRESS <date>'; X3 against the freestyle log, under investigation)"
+    },
+    "yaw lag at 50% ms (log)": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-24",
+      "reason": "under investigation, PROGRESS 2026-10-24",
+      "entered": "by Claude on the owner's instruction of 2026-10-24 (PR #2: every red row either green or signed 'under investigation, PROGRESS <date>'; X3 against the freestyle log, under investigation)"
+    },
+    "coast after roll (deg)": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-24",
+      "reason": "under investigation, PROGRESS 2026-10-24",
+      "entered": "by Claude on the owner's instruction of 2026-10-24 (PR #2: every red row either green or signed 'under investigation, PROGRESS <date>'; coast moved into the X3 investigation group; the sign-off does not cover 13.87 deg)"
+    },
+    "plant-world #33 ground effect envelope": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-24",
+      "reason": "under investigation, PROGRESS 2026-10-24",
+      "entered": "by Claude on the owner's instruction of 2026-10-24 (PR #2: every red row either green or signed 'under investigation, PROGRESS <date>'; #33 is red on the owner's envelope check, the last 500 ms at 27.35 to 39.79 mm against 1 to 31 mm)"
+    }
+  }
+}

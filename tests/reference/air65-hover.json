@@ -1,0 +1,44 @@
+{
+  "source": "BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_090813_BETAFPVG473.BBL",
+  "flown": "2026-10-23 09:08 America/Phoenix, RyFly, Air65 (BETAFPVG473, BF 4.5.0), indoor hover, eye level",
+  "log": { "frames": 131304, "duration_s": 66.1, "rate_hz": 1987, "logs_in_file": 1 },
+  "window_s": [3, 59],
+  "window_note": "steady hover: accZ 1 g throughout, gyro rms < 10 deg/s, setpoint rms < 10 deg/s; 0-2 s is takeoff, 60 s is a throttle blip, 65 s is landing",
+  "header": {
+    "motorOutput": [48, 2047], "motor_poles": 12, "dshot_bidir": 1,
+    "vbat_scale": 110, "currentSensor": [-600, 750],
+    "thrust_linear": 20, "vbat_sag_compensation": 70, "throttle_boost": 5,
+    "rates_type": 3, "thr_mid": 50, "thr_expo": 0
+  },
+  "measured": {
+    "hover_throttle_rc": 1371,
+    "hover_stick": 0.371,
+    "hover_motor_duty": 0.336,
+    "hover_motor_duty_note": "(mean motor[] - 48) / (2047 - 48), all four motors, with thrust_linear 20 and vbat_sag_compensation 70 active in Betaflight between stick and duty",
+    "hover_erpm_logged_mean": 1942,
+    "hover_rpm": 32359,
+    "hover_rpm_note": "logged eRPM field assumed in units of 100 eRPM, RPM = value * 100 / (poles/2). VERIFY against vendor/betaflight src/main/blackbox/blackbox.c and dshot.c erpmToRpm before using",
+    "hover_omega_rad_s": 3389,
+    "vbat_mean_v": 3.968,
+    "amps_mean_a": 3.04,
+    "power_mean_w": 12.06,
+    "first_10s": { "vbat": 4.065, "amps": 2.94, "duty": 0.327, "rpm": 32327 },
+    "last_10s":  { "vbat": 3.883, "amps": 3.11, "duty": 0.343, "rpm": 32298 },
+    "idle_prearm_bin0": { "vbat": 4.24, "amps": 0.62 },
+    "vbat_rest_before": null,
+    "vbat_rest_after": 4.08,
+    "cells": 1,
+    "pack": "weBLEEDfpv 340 mAh 1S BT2.0",
+    "auw_g": 25.79,
+    "auw_note": "all-up weight measured props-on, 2026-10-23 (owner)"
+  },
+  "derived": {
+    "static_load_fraction_hover": 0.809,
+    "static_load_fraction_note": "hover_rpm / (KV 30000 * vbat_mean * hover_motor_duty); plant assumed 0.95",
+    "kt_prop_from_hover_N_per_rad2": 5.429e-9,
+    "kt_note": "m g / (4 omega^2) at m = 0.02542 kg; plant had 3.043e-9, so plant needs 43.2 krpm to hover where the quad needs 32.4 krpm. Recompute with the real AUW once pack is confirmed",
+    "cell_ir_rough_mohm": 60,
+    "cell_ir_note": "(4.24 - 4.11) / (2.79 - 0.62) from idle bin to first hover bin, SoC drift inside; pin properly with vbat_rest_after",
+    "current_sensor_note": "currentSensor offset -600 scale 750 is the stock BetaFPV header; the Air65 bench corrected current with a full-discharge anchor, apply the same factor here"
+  }
+}
