@@ -50,22 +50,33 @@
  *     has no bottom face and, for a footprint point, reaches down to the
  *     floor plane, so a point on the floor under one lifted more than
  *     PAST_WU is still at it (it slid under the side, 16 mm in 3 s, when
- *     only the bottom face went). This and the next two rules are the
- *     footprint's: quadmath's CG point (the parity model's sc_world_contact)
- *     resolves boxes as it did, bit for bit (plant-world 39; P2 has no boxes
- *     and P5 is the clearance query, so the gate cannot see it)
+ *     only the bottom face went), and is deep in it however near the floor
+ *     (a rim lying on the floor, carried into the side by another point's
+ *     push, was within ON_FACE_WU of the bottom plane, so not deep in the
+ *     box, and no deeper than its travel, so out of reach: wedged in a gap
+ *     it went 8.8 mm in). These rules and the next two are the footprint's:
+ *     quadmath's CG point (the parity model's sc_world_contact) resolves
+ *     boxes as it did, bit for bit (plant-world 39; P2 has no boxes and P5
+ *     is the clearance query, so the gate cannot see it)
  *   - an inner face the point crossed this tick where the solid already was
- *     (where its path met the plane, other boxes all round it) ranks after
- *     the other inner faces: the point came in elsewhere, so that face is no
- *     way out. A rim deeper into a concave corner than past a split post's
- *     seam saw only the upper piece, all its faces inner, and the seam, the
- *     shallowest, held it at the split: an invisible ledge
+ *     (where its path met the plane, other boxes all round it), or off the
+ *     face in the open (no box just inside the plane there), ranks after the
+ *     other inner faces: the point came in elsewhere, so that face is no way
+ *     out. A rim deeper into a concave corner than past a split post's seam
+ *     saw only the upper piece, all its faces inner, and the seam, the
+ *     shallowest, held it at the split: an invisible ledge (crossing the
+ *     split before either wall, 29 of 30 seeded hits; within PAST_WU of the
+ *     wall plane one still can be)
  *   - an inner face is one the point came in through only if it travelled
- *     that deep into it this tick: the ON_FACE_WU allowance is for a point
- *     on a surface, not for a seam beside it. A rim pressed into a split
- *     wall as it rose into the ceiling beside the seam, 20 to 90 um from it
- *     and not moving across it, was pushed onto the seam, a touch whose
- *     friction cut its speed into the ceiling from 2.45 to 2.01 m/s
+ *     that deep into it this tick, and not if it met the face's plane in the
+ *     open: the ON_FACE_WU allowance is for a point on a surface, not for a
+ *     seam beside it. A rim pressed into a split wall as it rose into the
+ *     ceiling beside the seam, 20 to 90 um from it and not moving across it,
+ *     was pushed onto the seam, a touch whose friction cut its speed into
+ *     the ceiling from 2.45 to 2.01 m/s; one that crossed the seam plane
+ *     short of the wall, 45 um deep after 50 um of travel across it, was
+ *     shoved onto the seam the same way (2.45 m/s into the ceiling, not a
+ *     crash, against 2.99 m/s and a crash with the wall in one piece)
  *   - the footprint's hull (plant.c): a box edge or corner that ends a tick
  *     inside the convex hull of the five points (a square pyramid, the rims
  *     round the base, the canopy at the apex), with no point inside the box,
@@ -84,13 +95,37 @@
  *     in less deep is pushed back only as far as it went deeper this tick
  *     (pushed out whole, a carried 19 mm overlap threw the quad into the
  *     next post, and that one threw it back: 20 to 40 mm one-tick pushes),
- *     and one a footprint point began the tick inside is left to that point
- *     (held at its depth, a thin wall through the quad kept a rim 9.9 mm
- *     inside it). Pressed up under a shelf shallower than the quad against a
+ *     and one a footprint point is inside at the start or end of the tick
+ *     is left to that point only if the point's way out (its face of least
+ *     penetration, no bottom face on a box standing on the floor) is along
+ *     the hull's separating axis, so that resolving the point answers the
+ *     overlap (held at its depth, a thin wall through the quad kept a rim
+ *     9.9 mm inside it; left whole to the point, rims pinched 0 to 0.27 mm
+ *     into a 68.6 mm post's sides let it 27 mm into the hull, and a rim
+ *     pinched 0.2 to 0.7 mm into a slab's underside let its edge 38.6 mm
+ *     in). Pressed up under a shelf shallower than the quad against a
  *     wall, the shelf's front edge passed between the leading rim and the
  *     rest and the quad swung over it onto the shelf (12 mm of edge inside
  *     the hull); set down level with its CG 10 mm behind a table edge, it
- *     tipped over the edge with the edge 9 mm into its body
+ *     tipped over the edge with the edge 9 mm into its body.
+ *     Up to plant.c's HULL_BOXES (4) solids a tick are held, the deepest;
+ *     with more, the one left out is the shallowest whose push face (axis
+ *     and side) a deeper kept one has too, or failing that the shallowest,
+ *     so a box top's corners never crowd a post's side out. With the
+ *     deepest two kept, a post hit sliding in while landing on beams
+ *     between the rims got no push, response or event that tick (held
+ *     1.5 mm in the hull for two ticks, its crash lost), and a quad hung on
+ *     the edges of three solids in a notch dropped a different one every
+ *     tick and rocked for good with its motors off.
+ *     Cost: each box top held between the rims is up to four contacts
+ *     (holdPoints, SC_HULL_HOLD), each one more row in plant.c's 32 sweeps:
+ *     at rest on two beams between the rims a tick is about 2.1 times the
+ *     floor-rest tick (32 against 15 us on the reference machine). A tick
+ *     with a hull contact also walks the solids in sc_world_hull and in
+ *     drivesIn (per axis tried) and every box in plant.c's second resolution
+ *     of the points: at rest on a table edge about 30 ns a box in the map,
+ *     against 10 on the floor. The solids are in order of min x, so both
+ *     walks stop at the first one past the hull (output the same)
  *   - the hull meets solids, not box pieces: boxes that meet or overlap
  *     along one axis with the same extent on the other two (a wall, table or
  *     shelf in pieces) are the one box they form. Piece by piece a seam was a
@@ -110,19 +145,24 @@
  *     lifting and the hull pushing down every tick) posed beside one
  *   - the hull's push takes no footprint point into the solid: it is along
  *     the box face axis most along the separating axis, or failing that the
- *     next one at least half along it, whose push, swept, takes no point
+ *     next most along it, any at least a quarter along it (a push at most
+ *     four times what it went deeper), whose push, swept, takes no point
  *     under the floor or into a solid it was not in; with none there is no
- *     push, and the contact's response alone holds the quad, only stopping
- *     it moving into the box (holding the speed it was leaving at, as a
- *     point's response does, fought the rims on the far side of a thin wall
- *     posed through the quad and wound it up to the spin cap). plant.c then
- *     resolves the five points again from where the points' push left
- *     them. Mostly vertical on the pyramid's sloped sides, the push drove
- *     a quad flying into a slot lower than the hull down into the table
- *     under it (rims through a 3 mm plate in one tick) or the floor, and
- *     wedged between boxes closer together than the footprint it pushed a
- *     rim back into the box the points had just left, every tick (5 to
- *     21 mm deep)
+ *     push, and the contact's response holds the quad, only stopping it
+ *     moving into the box (holding the speed it was leaving at, as a point's
+ *     response does, fought the rims on the far side of a thin wall posed
+ *     through the quad and wound it up to the spin cap), with what it went
+ *     deeper (gain) as speed out in plant.c's sweeps. plant.c tops up a
+ *     push another contact's left short, then resolves the five points again
+ *     from where the points' push left them. Mostly vertical on the
+ *     pyramid's sloped sides, the push drove a quad flying into a slot lower
+ *     than the hull down into the table under it (rims through a 3 mm plate
+ *     in one tick) or the floor, and wedged between boxes closer together
+ *     than the footprint it pushed a rim back into the box the points had
+ *     just left, every tick (5 to 21 mm deep). With no push allowed and only
+ *     the motion stopped, the overlap each tick gained stayed: wedged on a
+ *     bench plank's end beside a leg (a 42.8 mm slot) the plank went 26 mm
+ *     into the hull, between two rims, no point ever in a box
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
  *
@@ -475,10 +515,13 @@ static bool covered(int skip, const double cp[3], int ax, int side, double plane
 }
 
 // Whether the point crossed box skip's inner face at plane (axis ax, outward
-// side) this tick inside the solid: where its path from start to end crossed
-// the plane, four points PAST_WU outside the face, offset diagonally along it,
-// are all inside other boxes. It came in somewhere else (a split post's seam
-// crossed in a concave corner), so the face is not its way back out.
+// side) this tick where that face is no way in: where its path from start to
+// end crossed the plane, four points PAST_WU outside the face, offset
+// diagonally along it, are all inside other boxes (it crossed inside the
+// solid: a split post's seam crossed in a concave corner), or the four PAST_WU
+// inside the plane are inside no box, this one included (it crossed off the
+// face, in the open, before it reached the solid). Either way it came in
+// somewhere else, so the face is not its way back out.
 static bool crossedInside(int skip, const double start[3], const double end[3], int ax, int side, double plane)
 {
     if (side > 0 ? !(start[ax] >= plane && end[ax] < plane) : !(start[ax] <= plane && end[ax] > plane)) {
@@ -486,15 +529,41 @@ static bool crossedInside(int skip, const double start[3], const double end[3], 
     }
     const double f = (plane - start[ax]) / (end[ax] - start[ax]);
     const int t0 = (ax + 1) % 3, t1 = (ax + 2) % 3;
+    bool inside = true, open = true;
     for (int s0 = -1; s0 <= 1; s0 += 2) {
         for (int s1 = -1; s1 <= 1; s1 += 2) {
             double q[3];
             q[ax] = plane + side * PAST_WU;
             q[t0] = start[t0] + f * (end[t0] - start[t0]) + s0 * PAST_WU;
             q[t1] = start[t1] + f * (end[t1] - start[t1]) + s1 * PAST_WU;
-            if (!insideAnother(skip, q)) {
-                return false;
-            }
+            inside = inside && insideAnother(skip, q);
+            q[ax] = plane - side * PAST_WU;
+            open = open && !insideAnother(-1, q);
+        }
+    }
+    return inside || open;
+}
+
+// Whether the point met the plane of an inner face (axis ax, outward side)
+// this tick in the open: just inside the plane where its path from start to
+// end met it (the ends clamped, for a start up to FACE_EPS inside the plane)
+// is inside no box. It came into the solid elsewhere, so it did not come in
+// through that face: a rim crossing a split wall's seam plane short of the
+// wall, under the ceiling, was shoved onto the seam.
+static bool crossedInOpen(const double start[3], const double end[3], int ax, int side, double plane)
+{
+    if (end[ax] == start[ax]) {
+        return false;
+    }
+    const double f = fmin(1, fmax(0, (plane - start[ax]) / (end[ax] - start[ax])));
+    double q[3];
+    for (int a = 0; a < 3; a++) {
+        q[a] = start[a] + f * (end[a] - start[a]);
+    }
+    q[ax] = plane - side * PAST_WU;
+    for (int j = 0; j < boxCount; j++) {
+        if (contains(&boxes[j], q)) {
+            return false;
         }
     }
     return true;
@@ -582,12 +651,16 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             anyNear = true;
             const bool onFloor = grounded(b, floorY);
             // Began the tick deep inside (a pose): leave through a surface.
+            // For a footprint point a box standing on the floor has no
+            // bottom surface to be near: a rim on the floor, carried into
+            // the box's side by another point's push, is deep in it.
             bool began = true;
             if (forceBegan) {
                 began = nearBox(b, start, floorY, !pad);
             } else {
                 for (int a = 0; a < 3 && began; a++) {
-                    began = start[a] > b->min[a] + ON_FACE_WU && start[a] < b->max[a] - ON_FACE_WU;
+                    began = (start[a] > b->min[a] + ON_FACE_WU || (a == 1 && !pad && onFloor))
+                            && start[a] < b->max[a] - ON_FACE_WU;
                 }
             }
             bool outside = false;
@@ -643,7 +716,8 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
                         inner = covered(i, cp, ax, side, plane);
                         // Footprint points only (header); quadmath's CG point
                         // (pad, the parity model) keeps the rules it had.
-                        if (!pad && inner && depth > fmax(0, travel) + FACE_EPS) {
+                        if (!pad && inner
+                            && (depth > fmax(0, travel) + FACE_EPS || crossedInOpen(start, tickPos, ax, side, plane))) {
                             continue;           // a seam it did not come through: no slack
                         }
                         crossedIn = !pad && inner && crossedInside(i, start, tickPos, ax, side, plane);
@@ -1235,6 +1309,9 @@ static bool drivesIn(const scHull_t *h, int ax, double d)
     }
     for (int o = 0; o < solidCount; o++) {
         const scBox_t *b = &solids[solidOrder[o]];
+        if (h->hi[0] + (ax == 0 ? fmax(d, 0) : 0) <= b->min[0] + FACE_EPS) {
+            break;                      // in order of min x: this and the rest start past the swept hull
+        }
         bool clear = false;             // the hull's bounds, swept, clear of it
         for (int a = 0; a < 3 && !clear; a++) {
             const double lo = h->lo[a] + (a == ax ? fmin(d, 0) : 0), hi = h->hi[a] + (a == ax ? fmax(d, 0) : 0);
@@ -1257,17 +1334,43 @@ static bool drivesIn(const scHull_t *h, int ax, double d)
     return false;
 }
 
-// Whether a footprint point (a corner of hull h) is strictly inside box b.
-static bool pointIn(const scBox_t *b, const scHull_t *h)
+// Whether a footprint point (a corner of hull h) is strictly inside box b
+// with its way out (the face of least penetration; a box standing on the
+// floor has no bottom face) along the hull's separating axis n, either way:
+// that point's resolution answers the overlap, so the solid is left to it.
+// A point that leaves across n (rims straddling a post, pinched at its
+// sides) does not, and the hull holds the solid off.
+static bool pointIn(const scBox_t *b, const scHull_t *h, const double n[3])
 {
+    const bool standing = grounded(b, floorZ * WS);
     for (int k = 0; k < SC_HULL_POINTS; k++) {
         const double *v = h->v[k];
         if (v[0] > b->min[0] + FACE_EPS && v[0] < b->max[0] - FACE_EPS && v[1] > b->min[1] + FACE_EPS
             && v[1] < b->max[1] - FACE_EPS && v[2] > b->min[2] + FACE_EPS && v[2] < b->max[2] - FACE_EPS) {
-            return true;
+            int ax = -1;
+            double least = INFINITY;
+            for (int a = 0; a < 3; a++) {
+                if (!(a == 1 && standing) && v[a] - b->min[a] < least) {
+                    least = v[a] - b->min[a];
+                    ax = a;
+                }
+                if (b->max[a] - v[a] < least) {
+                    least = b->max[a] - v[a];
+                    ax = a;
+                }
+            }
+            if (fabs(n[ax]) >= 0.5) {
+                return true;
+            }
         }
     }
     return false;
+}
+
+// The x-th deepest of the max contacts in out and c, with c going in at at.
+static const sc_hull_contact_t *nthContact(const sc_hull_contact_t *out, int at, const sc_hull_contact_t *c, int x)
+{
+    return x < at ? &out[x] : x == at ? c : &out[x - 1];
 }
 
 int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HULL_POINTS][3],
@@ -1286,6 +1389,9 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
     for (int o = 0; o < solidCount; o++) {
         const int i = solidOrder[o];
         const scBox_t *b = &solids[i];
+        if (h.hi[0] <= b->min[0] + FACE_EPS) {
+            break;                      // in order of min x: this and the rest start past the hull
+        }
         bool apart = false;
         for (int k = 0; k < 3 && !apart; k++) {
             apart = h.hi[k] <= b->min[k] + FACE_EPS || h.lo[k] >= b->max[k] - FACE_EPS;
@@ -1293,13 +1399,14 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         if (apart) {
             continue;
         }
-        // A solid a footprint point is inside: the point resolves it.
-        if (pointIn(b, &h)) {
-            continue;
-        }
         double n[3];
         const double depth = hullDepth(b, &h, n);
         if (!(depth > 0)) {
+            continue;
+        }
+        // A solid a footprint point is inside, leaving along n: the point
+        // resolves it.
+        if (pointIn(b, &h, n)) {
             continue;
         }
         // A solid the hull began the tick in at least as deep (a pose, or a
@@ -1307,15 +1414,16 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         // it began in less deep is pushed back only as far as it went deeper
         // this tick: all of a carried overlap at once (19 mm) threw the quad
         // into the next post, and that one threw it back. A solid a point
-        // began the tick inside is left to that point (a thin wall through
-        // the quad, held at its depth by the hull, kept a rim inside it).
+        // began the tick inside, leaving along n, is left to that point (a
+        // thin wall through the quad, held at its depth by the hull, kept a
+        // rim inside it).
         if (!start0) {
             hullAt(start, &h0);
             start0 = true;
         }
         double n0[3];
         const double depth0 = hullDepth(b, &h0, n0);
-        if ((depth0 > 0 && depth <= depth0 + FACE_EPS) || pointIn(b, &h0)) {
+        if ((depth0 > 0 && depth <= depth0 + FACE_EPS) || pointIn(b, &h0, n)) {
             continue;
         }
         const double deeper = depth0 > 0 ? depth - depth0 : depth;
@@ -1324,38 +1432,25 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
         if (!points) {
             continue;
         }
-        // The deepest max; among equals, in order of position (the order of
-        // the solids here), not the map's order. Compared as stored, so equal
-        // depths are equal.
-        int at = count;
-        while (at > 0 && out[at - 1].depth < depth / WS) {
-            at--;
-        }
-        if (at >= max) {
-            continue;
-        }
-        for (int k = count < max ? count : max - 1; k > at; k--) {
-            out[k] = out[k - 1];
-        }
-        if (count < max) {
-            count++;
-        }
-        sc_hull_contact_t *hc = &out[at];
+        sc_hull_contact_t c;
         for (int j = 0; j < points; j++) {
-            world2mod(held[j], hc->point[j]);
+            world2mod(held[j], c.point[j]);
         }
-        hc->points = points;
-        hc->normal[0] = -n[2];
-        hc->normal[1] = -n[0];
-        hc->normal[2] = n[1];
-        hc->depth = depth / WS;
-        // Pushed out along a box face's axis, as a point is, as far as clears
-        // the overlap along n (what it went deeper this tick): the face most
-        // along n, or failing that the next at least half along it, whose
-        // push takes no footprint point under the floor or into a solid it
-        // was not in. With none, no push: the contact's response holds it
-        // (only stopping the hull moving into the box, sc_world_hull_hit).
-        // Keyed by that face (or the one most along n), on the piece there.
+        c.points = points;
+        c.normal[0] = -n[2];
+        c.normal[1] = -n[0];
+        c.normal[2] = n[1];
+        c.depth = depth / WS;
+        c.gain = deeper / WS;
+        // Pushed back along a box face's axis, as a point is, by what it went
+        // deeper this tick along n: the face most along n, or failing that the
+        // next most along it, any at least a quarter along it (a push at most
+        // four times what it went deeper; half along it, the plank of 46 went
+        // on into the hull beside the leg), whose push takes no footprint point under the floor or into a
+        // solid it was not in. With none, no push: the contact's response
+        // holds it (only stopping the hull moving into the box,
+        // sc_world_hull_hit). Keyed by that face (or the one most along n),
+        // on the piece there.
         int order[3] = { 0, 1, 2 };     // axes by |n|, ties in axis order
         for (int j = 1; j < 3; j++) {
             for (int k = j; k > 0 && fabs(n[order[k]]) > fabs(n[order[k - 1]]); k--) {
@@ -1365,17 +1460,60 @@ int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HUL
             }
         }
         double push[3] = { 0, 0, 0 };
-        hc->ax = order[0];
-        for (int j = 0; j < 3 && fabs(n[order[j]]) >= 0.5; j++) {
+        c.ax = order[0];
+        for (int j = 0; j < 3 && fabs(n[order[j]]) >= 0.25; j++) {
             if (!drivesIn(&h, order[j], deeper / n[order[j]])) {
-                hc->ax = order[j];
-                push[hc->ax] = deeper / n[hc->ax];
+                c.ax = order[j];
+                push[c.ax] = deeper / n[c.ax];
                 break;
             }
         }
-        hc->side = n[hc->ax] > 0 ? 1 : -1;
-        hc->box = pieceAt(i, hc->ax, hc->side, held[0]);
-        world2mod(push, hc->push);
+        c.side = n[c.ax] > 0 ? 1 : -1;
+        c.box = pieceAt(i, c.ax, c.side, held[0]);
+        world2mod(push, c.push);
+        // The deepest max; among equals, in order of position (the order of
+        // the solids here), not the map's order. Compared as stored, so equal
+        // depths are equal. Full, the one left out is the shallowest whose
+        // face a deeper one has too, or failing that the shallowest: a box
+        // top's corners never crowd a post's side out.
+        int at = count;
+        while (at > 0 && out[at - 1].depth < c.depth) {
+            at--;
+        }
+        if (count < max) {
+            for (int k = count; k > at; k--) {
+                out[k] = out[k - 1];
+            }
+            out[at] = c;
+            count++;
+            continue;
+        }
+        int drop = max;
+        bool shared = false;
+        for (int x = max; x > 0 && !shared; x--) {
+            const sc_hull_contact_t *cx = nthContact(out, at, &c, x);
+            for (int y = 0; y < x && !shared; y++) {
+                const sc_hull_contact_t *cy = nthContact(out, at, &c, y);
+                shared = cy->ax == cx->ax && cy->side == cx->side;
+            }
+            if (shared) {
+                drop = x;
+            }
+        }
+        if (drop == at) {
+            continue;
+        }
+        if (drop < at) {
+            for (int k = drop; k < at - 1; k++) {
+                out[k] = out[k + 1];
+            }
+            out[at - 1] = c;
+        } else {
+            for (int k = drop - 1; k > at; k--) {
+                out[k] = out[k - 1];
+            }
+            out[at] = c;
+        }
     }
     return count;
 }
@@ -1430,6 +1568,37 @@ bool sc_world_inside(const double pos[3])
     double cp[3];
     mod2world(pos, cp);
     return insideAnother(-1, cp);
+}
+
+bool sc_world_point_in(const double pos[3])
+{
+    double w[3];
+    mod2world(pos, w);
+    const double floorY = floorZ * WS;
+    if (w[1] < floorY - FACE_EPS) {
+        return true;
+    }
+    for (int j = 0; j < boxCount; j++) {
+        const scBox_t *b = &boxes[j];
+        if (w[0] > b->min[0] + FACE_EPS && w[0] < b->max[0] - FACE_EPS && w[2] > b->min[2] + FACE_EPS
+            && w[2] < b->max[2] - FACE_EPS && w[1] < b->max[1] - FACE_EPS
+            && (w[1] > b->min[1] + FACE_EPS || (grounded(b, floorY) && w[1] >= floorY - FACE_EPS))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool sc_world_in_solid(const double pos[3])
+{
+    double w[3];
+    mod2world(pos, w);
+    for (int j = 0; j < boxCount; j++) {
+        if (contains(&boxes[j], w)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void sc_world_after_points(const double com[3], bool floorHit)
