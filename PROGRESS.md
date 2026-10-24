@@ -3975,3 +3975,25 @@ PASS    14.1 s  D2 Node vs headless Chrome, console clean
 7. **Chirp gain and coast:** their sign-offs promise a revisit against a real
    log that `sim-vs-log` cannot yet make.
 8. **T/W 6.4** stays unmeasured.
+
+---
+
+## 2026-10-23 | Phase 1 M4 | world contact moved out of PR #2 (owner decision)
+
+The owner: "World-contact: do NOT block PR #2 on it. Push the plant work and
+retitle PR #2 now, CI runs. World-contact stays on phase1/m4-world-contact
+as PR #3, merges when its review is clean."
+
+The local merge of the world-contact branch (5e64103, in the entry above) is
+taken back out of `phase1/m4-plant` before it was ever pushed: the branch is
+438db77 (the last commit before the merge) with the three later plant
+commits cherry-picked onto it (97ed822, 14b28e7, 2f0f017 for a87deb1,
+0b636d5, 69825e2). The merged history is kept locally as
+`backup/m4-plant-merged`. Without the world-contact code,
+`dist/sim-core.wasm` is 193,047 B, sha256
+`37438a7d1b52d1d075de942f0fe64582165a8fada14eb012f8d2dcb170b4dc18`; the
+committed replays (`tests/reference/air65-*.sim-vs-log.json`) come out
+byte-identical on it; plant-world (sections 1-34), hover-from-log, D4 and
+the ABI test pass; the gate gives the same four X3 misses with the logs and
+passes without them. Everything the entry above says about the world-contact
+fixes, their review and their sections 35-56 now belongs to PR #3.
