@@ -78,7 +78,8 @@ enum {
     PB_HULL_BELOW = 41,         // m, duct bottom below the CG (the rest height)
     PB_HULL_ABOVE = 42,         // m, canopy top above the CG
     // Pack current: I = PB_I_HOVER x (rpm / PB_RPM_HOVER)^PB_CURRENT_EXP, summed
-    // over the rotors (each draws a quarter of PB_I_HOVER at PB_RPM_HOVER)
+    // over the rotors the ESCs drive (each draws a quarter of PB_I_HOVER at
+    // PB_RPM_HOVER; a rotor at duty 0 coasts and draws nothing)
     PB_RPM_HOVER = 43,          // rpm at hover
     PB_CURRENT_EXP = 44,        // exponent of the current against rpm
     PB_LEN = 45,

@@ -394,8 +394,13 @@ static void stepPhysical(const double duty[SC_MOTOR_COUNT], double dt)
     // Pack current from the rotors' speed (owner decision 2026-10-23, from the
     // hover and punch logs): each rotor draws a quarter of the hover current at
     // the hover rpm, scaled by (rpm / rpm at hover)^exponent; last tick's rpm.
+    // A rotor its ESC does not drive (duty 0: disarmed, motor stop, crash flip's
+    // idle pair) draws nothing from the pack while it coasts down: the averaged
+    // motor below sees duty x pack voltage, and its ESC draws duty x the winding
+    // current from the pack.
     double amps = 0;
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+        if (duty[i] == 0) continue;
         const double rpm = fabs(omegaMotor[i]) * RPM_PER_RAD_S;
         amps += 0.25 * blk[PB_I_HOVER] * pow(rpm / blk[PB_RPM_HOVER], blk[PB_CURRENT_EXP]);
     }
