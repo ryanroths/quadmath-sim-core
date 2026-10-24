@@ -302,7 +302,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   core.configure({ diff });
   assert.throws(() => core.configure({ diff, plant: { ...structuredClone(air65), describe() {} } }));
   assert.equal(core.plant, null, 'still the rest plant after a clone failure');
-  for (const [field, value] of [['iHover', 70], ['cellIR', 0.6], ['cellIR', 0.9], ['rpmHover', 0], ['currentExponent', 0], ['iQuiescent', -0.1]]) {
+  for (const [field, value] of [['iHover', 70], ['cellIR', 0.6], ['cellIR', 0.9], ['rpmHover', 0], ['currentExponent', 0], ['iQuiescent', -0.1], ['motorDelay', -0.001], ['motorDelay', 0.0645], ['motorDelay', 1e300], ['electricalTau', -0.001]]) {
     const bad = structuredClone(air65);
     bad.values[field].value = value;
     assert.throws(() => core.configure({ diff, plant: bad }), /plant block refused/, `${field} ${value}: the pack cannot hold the hover current, or the current model is out of range`);

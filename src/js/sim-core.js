@@ -93,9 +93,9 @@ export const PLANT_FIELDS = Object.freeze([
   'sagDrop', 'hoverSeconds', 'sagScale',
   'bounceScale', 'crashScale', 'spinScale',
   'ductOuterRadius', 'hullBelow', 'hullAbove',
-  'rpmHover', 'currentExponent', 'iQuiescent',
+  'rpmHover', 'currentExponent', 'iQuiescent', 'motorDelay', 'electricalTau',
 ]);
-const PLANT_LEN = 46;
+const PLANT_LEN = 48;
 const PB_WHEELBASE = 2;
 const PB_DUCT_RADIUS = 40;
 const PB_HULL_BELOW = 41;

@@ -52,8 +52,17 @@ function flyB(core, sc) {
 }
 
 const scenarios = matrix().filter((s) => !s.mode3d && s.rpm);
-for (const sc of scenarios) {
-  const preset = presets[sc.preset];
+// The actuator stage holds state (the motor delay line and the electrical
+// lag; owner decision 2026-10-24): with it on, flight A stops 500 ms early,
+// armed with the rotors spinning, so the reinit has a full delay line and a
+// lag in motion to drop, as a fresh load starts without them.
+const withActuator = (af) => ({ ...af, values: { ...af.values, motorDelay: { ...af.values.motorDelay, value: 0.003 }, electricalTau: { ...af.values.electricalTau, value: 0.001 } } });
+const cases = [
+  ...scenarios.map((sc) => ({ sc, airframe: presets[sc.preset].airframe, name: sc.name, actuator: false })),
+  ...scenarios.filter((sc) => presets[sc.preset].airframe).map((sc) => ({ sc, airframe: withActuator(presets[sc.preset].airframe), name: `${sc.name} actuator`, actuator: true })),
+];
+for (const { sc, airframe, name, actuator } of cases) {
+  const preset = { ...presets[sc.preset], airframe };
   const diff = diffFor(sc, preset.diff);
 
   // Flight A from a part-drained pack, then a reinit on the same SimCore.
@@ -63,9 +72,10 @@ for (const sc of scenarios) {
   const a0 = used.simTimeUs;
   // Flight A runs on the frame path and ends partway through a tick, so the
   // reinit has host-side state (the frame accumulator) to drop as well.
-  drive(used, feeder(script(a0, DURATION_MS, sc)), a0 + DURATION_MS * 1000, { frames: jitteredFrames(144, 0xd4) });
+  drive(used, feeder(script(a0, DURATION_MS, sc)), a0 + (actuator ? DURATION_MS - 500 : DURATION_MS) * 1000, { frames: jitteredFrames(144, 0xd4) });
   used.advance(0.4);
   assert.ok(used.alpha > 0, 'flight A ends partway through a tick');
+  if (actuator) assert.ok(used.fc.armed && Math.min(...used.state.rpm) > 1000, 'flight A ends armed with the rotors spinning');
   const carried = used.battery;
   used.reinit();
   assert.equal(used.alpha, 0, 'reinit drops the frame accumulator');
@@ -126,10 +136,10 @@ for (const sc of scenarios) {
   assert.equal(bUsed.length, bFresh.length);
   const mismatches = bUsed.filter((h, i) => h !== bFresh[i]).length;
   const fullDiffers = bFull.filter((h, i) => h !== bUsed[i]).length;
-  console.log(`${sc.name.padEnd(18)} pack ${carried.soc} / ${carried.vbatFiltered} V, at arm ${uArm.soc} / ${uArm.vbatFiltered} V (Betaflight ${uArm.bfVbat} V) | flight B ${bUsed.length} ticks, climbed ${bUsed.climb.toFixed(2)} m: reinit vs fresh mismatching ${mismatches}; vs a full pack (Betaflight ${fullBoot.bfVbat} V) ${fullDiffers} differ | trace ${used.traceHash().slice(0, 16)} vs ${fresh.traceHash().slice(0, 16)}`);
-  assert.equal(mismatches, 0, `${sc.name}: reinit equals a fresh load, tick by tick`);
-  assert.equal(used.traceHash(), fresh.traceHash(), `${sc.name}: same trace from boot`);
+  console.log(`${name.padEnd(27)} pack ${carried.soc} / ${carried.vbatFiltered} V, at arm ${uArm.soc} / ${uArm.vbatFiltered} V (Betaflight ${uArm.bfVbat} V) | flight B ${bUsed.length} ticks, climbed ${bUsed.climb.toFixed(2)} m: reinit vs fresh mismatching ${mismatches}; vs a full pack (Betaflight ${fullBoot.bfVbat} V) ${fullDiffers} differ | trace ${used.traceHash().slice(0, 16)} vs ${fresh.traceHash().slice(0, 16)}`);
+  assert.equal(mismatches, 0, `${name}: reinit equals a fresh load, tick by tick`);
+  assert.equal(used.traceHash(), fresh.traceHash(), `${name}: same trace from boot`);
   assert.equal(fullDiffers, bUsed.length, 'a full pack gives a different flight B on every tick');
   assert.notEqual(full.traceHash(), used.traceHash());
 }
-console.log(`reset-vs-fresh: ${scenarios.length} scenarios, 0 mismatching ticks, carried pack visible to Betaflight: PASS`);
+console.log(`reset-vs-fresh: ${cases.length} cases (${cases.filter((c) => c.actuator).length} with the actuator stage on), 0 mismatching ticks, carried pack visible to Betaflight: PASS`);

@@ -51,7 +51,7 @@ const PB_NAME = {
   airDensity: 'AIR_DENSITY', cells: 'CELLS', capacityMah: 'CAPACITY_MAH', cellIR: 'CELL_IR', iHover: 'I_HOVER', ocv: 'OCV',
   sagDrop: 'SAG_DROP', hoverSeconds: 'HOVER_SECONDS', sagScale: 'SAG_SCALE', bounceScale: 'BOUNCE_SCALE',
   crashScale: 'CRASH_SCALE', spinScale: 'SPIN_SCALE', ductOuterRadius: 'DUCT_RADIUS', hullBelow: 'HULL_BELOW',
-  hullAbove: 'HULL_ABOVE', rpmHover: 'RPM_HOVER', currentExponent: 'CURRENT_EXP', iQuiescent: 'I_QUIESCENT',
+  hullAbove: 'HULL_ABOVE', rpmHover: 'RPM_HOVER', currentExponent: 'CURRENT_EXP', iQuiescent: 'I_QUIESCENT', motorDelay: 'MOTOR_DELAY', electricalTau: 'ELEC_TAU',
 };
 assert.deepEqual([...PLANT_FIELDS].sort(), Object.keys(PB_NAME).sort(), 'every airframe field has a PB_ name');
 assert.equal(Object.keys(PB).length, PLANT_FIELDS.length + 1, 'plant.h has a PB_ entry per field, plus PB_LEN');

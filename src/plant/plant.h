@@ -84,7 +84,14 @@ enum {
     PB_RPM_HOVER = 43,          // rpm at hover
     PB_CURRENT_EXP = 44,        // exponent of the motor current against rpm
     PB_I_QUIESCENT = 45,        // A, the pack current with every motor at duty 0
-    PB_LEN = 46,
+    // The actuator between Betaflight's motor outputs and the rotor model
+    // (physical model): the duty arrives PB_MOTOR_DELAY late (whole ticks:
+    // the DShot frame and the ESC's update), then follows a first-order lag
+    // of PB_ELEC_TAU (the winding's L/R) before the rotor's mechanical lag.
+    // 0 is off for either, and leaves the plant as it was bit for bit.
+    PB_MOTOR_DELAY = 46,        // s, at most SC_DELAY_TICKS_MAX ticks
+    PB_ELEC_TAU = 47,           // s
+    PB_LEN = 48,
 };
 
 // Derived constants, computed from the block when it is set (readout only).

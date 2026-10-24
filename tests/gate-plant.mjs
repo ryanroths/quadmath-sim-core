@@ -278,7 +278,7 @@ function parityModel(quadCfg, { battery }) {
       ocv: v([3.30, 3.50, 3.60, 3.75, 3.87, 4.05, 4.20]),
       sagDrop: v(pack.sagDrop), hoverSeconds: v(battery ? pack.hoverS : 0), sagScale: v(1),
       bounceScale: v(1), crashScale: v(1), spinScale: v(1),
-      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0), iQuiescent: v(0),
+      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0), iQuiescent: v(0), motorDelay: v(0), electricalTau: v(0),
     },
   };
 }

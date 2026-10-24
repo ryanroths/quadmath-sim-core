@@ -4460,3 +4460,399 @@ PR #2 instruction).
 2. PR #2: merge when the owner is satisfied (CI below).
 3. PR #3: rebase onto `main` once PR #2 is merged; the slot wedge and round
    3's other findings.
+
+---
+
+## 2026-10-24 | Phase 1 M4 | round 6: an actuator delay stage, swept
+
+The owner, after the 4b tables:
+
+> X3 root cause: no actuator delay. Not damping, not loop rate — the 4b
+> tables show neither moves overshoot and gyro rms is flat across all runs.
+> 1. Add a motor command delay stage in plant.c between Betaflight's motor[]
+>    and the rotor model: FIFO of N ticks (DShot300 frame + ESC update ≈ 2-3
+>    ms at 1 kHz) then a first-order electrical lag (winding L/R) before the
+>    mechanical lag. Both runtime parameters, default 0 so verify stays
+>    bit-identical until set.
+> 2. Sweep delay 0,1,2,3,4 ms × electrical tau 0,0.5,1,2 ms. For each:
+>    sim-vs-log full table, roll/pitch/yaw rise/lag/overshoot/settle, coast,
+>    gyro rms. Target: yaw lag 3.7 ms, roll overshoot 13 %, settle ringing
+>    ≥ 100 ms. Report the grid, do not pick.
+> 3. Damping stays at baseline (aero full). Loop stays 1 kHz.
+> 4. D4/determinism: the FIFO is state, reinit must clear it. Add to the
+>    reset-vs-fresh check.
+> Do not touch PR #3.
+
+On a new branch, `phase1/m4-actuator-delay`, off `main` (0456b16). PR #3 is
+untouched. Not pushed to a PR: the stage is off by default, and the grid
+below is for the owner.
+
+### The stage
+
+- Plant block 48 (`PB_MOTOR_DELAY` 46, s; `PB_ELEC_TAU` 47, s); airframe
+  `motorDelay` and `electricalTau`, both 0 in `airframes/air65.json` (low
+  confidence, sourced to this decision).
+- `src/plant/plant.c` actuate(), in the physical model, between Betaflight's
+  motor outputs (and the bench override) and the rotor ODE:
+  - a ring of the last `delayTicks` commanded duties per motor, `delayTicks`
+    = lround(delay × loop rate), 0 to 64 ticks (checked in double before
+    rounding); zero for the first `delayTicks` ticks after a reset;
+  - then `dutyElec += (in − dutyElec) dt / (tau + dt)`, backward Euler as the
+    parity spool;
+  - the rotor ODE takes the lagged duty; the pack current's duty-0 gate takes
+    the ESC's duty (after the delay, before the lag), since the ESC switching
+    nothing draws nothing whatever the winding's lag;
+  - either stage at 0 passes its input through untouched.
+- `restState` clears the ring and the lag (boot, configure). `reinit()`
+  builds a fresh WASM instance, so a reinit starts from a cleared stage by
+  construction.
+- **Bit-identical at 0/0**: the gate's output equals `main`'s line for line
+  (but for the two new airframe rows), the four existing D4 trace hashes are
+  `main`'s, and D1, D3, X1 and plant-world print the same as on `main` (the
+  review ran them against 0456b16).
+- **D4**: two more cases, the 65 mm acro and angle scenarios with the stage
+  on (3 ms, 1 ms) and flight A stopped 500 ms early, armed with the rotors
+  spinning, so the reinit drops a full delay line and a lag in motion: 0
+  mismatching ticks, the same trace from boot. (The review's note: this
+  proves a reinit equals a fresh load with the stage on; it cannot see a
+  missing clear in `restState`, which today only ever runs on an empty ring.)
+- plant-world #15 refuses `motorDelay` −0.001, 0.0645 (64.5 ticks), 1e300
+  and `electricalTau` −0.001.
+- Reviewed adversarially (2 lenses, a skeptic per finding): 2 confirmed,
+  both fixed before the sweep was run again: the current gate first read the
+  lagged duty (never exactly 0 after a cut, so a spinning-down rotor kept
+  drawing), and the 64-tick bound was checked after `lround`, which wraps
+  for huge values.
+
+### The sweep
+
+The freestyle (log 1) by `tools/sim-vs-log.mjs` (acro, open air, the merged
+plant, aero damping as is, 1 kHz) for each delay × tau; coast as the gate
+measures it (X3, class diff, release + 500 ms), against WebFPV's 8.732 deg.
+No contact and no mode mismatch in any run. "–" or "none": no step to
+measure.
+
+**Two cells are not a flight**: at 4 ms with tau 1 ms or 2 ms, Betaflight
+disarms 0.99 s into the replay (arming disable flag 0x20,
+`ARMING_DISABLED_RUNAWAY_TAKEOFF`, `fc/runtime_config.h:48`: its runaway
+take-off prevention fires on the take-off); the rest of the replay is an
+unpowered fall (sim gyro rms 7 to 25 deg/s against the log's 130 to 175).
+At 3 to 4 ms the loop is near its edge: small changes (the review's fix
+moved only the tau > 0 cells) flip cells between ringing and settling, so
+read those rows as unstable rather than as values.
+
+#### Grids (rows: motor delay; columns: electrical tau)
+
+**Yaw lag at 50 % (ms)** (target: log 3.7 ms)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 0.0 | 0.0 | 0.0 | 0.0 |
+| 1 ms | 0.0 | 0.0 | 0.0 | 0.0 |
+| 2 ms | 0.0 | 0.0 | 0.0 | 0.0 |
+| 3 ms | 0.7 | 0.0 | 0.0 | 0.2 |
+| 4 ms | 0.1 | 0.3 | – | – |
+
+**Roll overshoot (%)** (target: log 13.2 %)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 2.3 | 2.3 | 2.4 | 2.5 |
+| 1 ms | 2.4 | 2.5 | 2.5 | 2.6 |
+| 2 ms | 2.1 | 1.7 | 1.5 | -0.4 |
+| 3 ms | 0.6 | 1.7 | -3.3 | -3.6 |
+| 4 ms | -3.2 | -4.2 | – | – |
+
+**Roll settle within 5 % (ms)** (target: ringing >= 100 ms; log 452 ms)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 24 | 24 | 24 | 23 |
+| 1 ms | 24 | 23 | 23 | 23 |
+| 2 ms | 24 | 23 | 23 | 24 |
+| 3 ms | 22 | 26 | 26 | 26 |
+| 4 ms | 27 | 29 | – | – |
+
+**Pitch overshoot (%)** (target: log 3.9 %)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 0.3 | 0.4 | 0.4 | 0.4 |
+| 1 ms | 0.4 | 0.4 | 0.4 | 0.4 |
+| 2 ms | -0.5 | 3.6 | 7.9 | -3.8 |
+| 3 ms | -4.4 | -1.7 | -3.7 | -6.6 |
+| 4 ms | -5.3 | -7.8 | – | – |
+
+**Pitch settle within 5 % (ms)** (target: ringing >= 100 ms; log 115.7 ms)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 24 | 23 | 23 | 23 |
+| 1 ms | 23 | 23 | 23 | 23 |
+| 2 ms | 25 | 25 | 151 | 29 |
+| 3 ms | 450 | 64 | 64 | 34 |
+| 4 ms | 34 | 34 | – | – |
+
+**Yaw rise to 90 % (ms)** (target: log 19.3 ms)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 12.0 | 12.0 | 12.0 | 12.0 |
+| 1 ms | 12.0 | 12.0 | 11.0 | 11.0 |
+| 2 ms | 12.0 | 11.0 | 12.0 | 12.0 |
+| 3 ms | 12.0 | 13.0 | 13.0 | 13.0 |
+| 4 ms | 13.0 | 13.0 | – | – |
+
+**Roll rise to 90 % / lag at 50 % (ms)** (log 16.2 / 3.8)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 20.0 / 4.2 | 20.0 / 4.2 | 20.0 / 4.2 | 20.0 / 4.3 |
+| 1 ms | 20.0 / 4.2 | 20.0 / 4.2 | 20.0 / 4.3 | 19.0 / 4.2 |
+| 2 ms | 20.0 / 4.5 | 20.0 / 4.2 | 20.0 / 4.6 | 22.0 / 6.0 |
+| 3 ms | 20.0 / 5.6 | 23.0 / 6.3 | 26.0 / 8.2 | 27.0 / 9.0 |
+| 4 ms | 27.0 / 8.8 | 30.0 / 9.8 | none | none |
+
+**Pitch rise to 90 % / lag at 50 % (ms)** (log 17.8 / 5.2)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 20.0 / 3.9 | 20.0 / 3.9 | 20.0 / 3.9 | 20.0 / 3.9 |
+| 1 ms | 20.0 / 3.9 | 20.0 / 3.9 | 20.0 / 3.9 | 20.0 / 4.2 |
+| 2 ms | 22.0 / 4.0 | 21.0 / 5.7 | 18.0 / 4.7 | 29.0 / 9.0 |
+| 3 ms | 71.0 / 9.6 | 29.0 / 8.9 | 35.0 / 10.5 | 71.0 / 11.2 |
+| 4 ms | 36.0 / 11.3 | 83.0 / 12.3 | none | none |
+
+**Coast after roll, release + 500 ms (deg)** (target: WebFPV whoop65 8.732 deg, band +-20 %)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 13.86 | 14.12 | 14.32 | 14.80 |
+| 1 ms | 14.28 | 14.57 | 15.04 | 16.63 |
+| 2 ms | 16.52 | 21.17 | 19.34 | 15.83 |
+| 3 ms | 24.47 | 15.52 | 26.57 | 27.38 |
+| 4 ms | 29.17 | 26.86 | 27.27 | 27.24 |
+
+**Roll gyro rms, sim − log (deg/s)** (target: as small as possible; baseline 44.0)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 44.0 | 44.0 | 44.0 | 44.0 |
+| 1 ms | 44.0 | 44.0 | 44.0 | 44.4 |
+| 2 ms | 45.8 | 48.9 | 52.7 | 64.4 |
+| 3 ms | 65.5 | 71.3 | 77.6 | 87.3 |
+| 4 ms | 82.4 | 89.9 | 174.8 | 174.3 |
+
+**Pitch gyro rms, sim − log (deg/s)** (target: as small as possible; baseline 30.6)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 30.6 | 30.6 | 30.6 | 30.6 |
+| 1 ms | 30.6 | 30.6 | 30.8 | 42.8 |
+| 2 ms | 51.2 | 72.4 | 79.3 | 80.1 |
+| 3 ms | 80.3 | 83.5 | 85.4 | 94.4 |
+| 4 ms | 89.5 | 95.8 | 161.2 | 162.8 |
+
+**Yaw gyro rms, sim − log (deg/s)** (target: as small as possible; baseline 64.0)
+
+| delay \ tau | 0 ms | 0.5 ms | 1 ms | 2 ms |
+|---|---|---|---|---|
+| 0 ms | 64.0 | 64.0 | 64.0 | 64.0 |
+| 1 ms | 64.0 | 64.0 | 64.3 | 65.3 |
+| 2 ms | 106.8 | 137.0 | 108.9 | 65.5 |
+| 3 ms | 171.0 | 104.1 | 66.6 | 66.0 |
+| 4 ms | 68.0 | 68.1 | 131.0 | 130.9 |
+
+#### Every run, full table
+
+Each cell rise to 90 % / lag at 50 % / overshoot / settle within 5 % (step windows); log is the same in every run:
+- log roll: 16.2 / 3.8 / 13.2 % / 452.0 (19)
+- log pitch: 17.8 / 5.2 / 3.9 % / 115.7 (20)
+- log yaw: 19.3 / 3.7 / 1.3 % / 23.3 (77)
+
+**delay 0 ms, tau 0 ms** (contact 0, modes off 0; coast 13.858 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.2 / 2.3 % / 24.0 (22) | 174.7 / 167.2, 44.0 |
+| pitch | 20.0 / 3.9 / 0.3 % / 24.0 (24) | 160.9 / 156.6, 30.6 |
+| yaw | 12.0 / 0.0 / 1.7 % / 16.0 (77) | 130.3 / 113.0, 64.0 |
+
+**delay 0 ms, tau 0.5 ms** (contact 0, modes off 0; coast 14.116 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.2 / 2.3 % / 24.0 (22) | 174.7 / 167.2, 44.0 |
+| pitch | 20.0 / 3.9 / 0.4 % / 23.0 (24) | 160.9 / 156.6, 30.6 |
+| yaw | 12.0 / 0.0 / 1.7 % / 16.0 (77) | 130.3 / 113.0, 64.0 |
+
+**delay 0 ms, tau 1 ms** (contact 0, modes off 0; coast 14.319 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.2 / 2.4 % / 24.0 (22) | 174.7 / 167.3, 44.0 |
+| pitch | 20.0 / 3.9 / 0.4 % / 23.0 (24) | 160.9 / 156.6, 30.6 |
+| yaw | 12.0 / 0.0 / 1.7 % / 16.0 (77) | 130.3 / 113.0, 64.0 |
+
+**delay 0 ms, tau 2 ms** (contact 0, modes off 0; coast 14.799 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.3 / 2.5 % / 23.0 (22) | 174.7 / 167.3, 44.0 |
+| pitch | 20.0 / 3.9 / 0.4 % / 23.0 (24) | 160.9 / 156.6, 30.6 |
+| yaw | 12.0 / 0.0 / 1.7 % / 15.0 (77) | 130.3 / 113.0, 64.0 |
+
+**delay 1 ms, tau 0 ms** (contact 0, modes off 0; coast 14.281 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.2 / 2.4 % / 24.0 (22) | 174.7 / 167.3, 44.0 |
+| pitch | 20.0 / 3.9 / 0.4 % / 23.0 (24) | 160.9 / 156.6, 30.6 |
+| yaw | 12.0 / 0.0 / 1.7 % / 16.0 (77) | 130.3 / 113.0, 64.0 |
+
+**delay 1 ms, tau 0.5 ms** (contact 0, modes off 0; coast 14.573 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.2 / 2.5 % / 23.0 (22) | 174.7 / 167.3, 44.0 |
+| pitch | 20.0 / 3.9 / 0.4 % / 23.0 (24) | 160.9 / 156.6, 30.6 |
+| yaw | 12.0 / 0.0 / 1.7 % / 15.0 (77) | 130.3 / 113.0, 64.0 |
+
+**delay 1 ms, tau 1 ms** (contact 0, modes off 0; coast 15.040 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.3 / 2.5 % / 23.0 (22) | 174.7 / 167.3, 44.0 |
+| pitch | 20.0 / 3.9 / 0.4 % / 23.0 (24) | 160.9 / 156.6, 30.8 |
+| yaw | 11.0 / 0.0 / 1.8 % / 15.0 (77) | 130.3 / 113.1, 64.3 |
+
+**delay 1 ms, tau 2 ms** (contact 0, modes off 0; coast 16.630 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 19.0 / 4.2 / 2.6 % / 23.0 (22) | 174.7 / 166.8, 44.4 |
+| pitch | 20.0 / 4.2 / 0.4 % / 23.0 (24) | 160.9 / 158.2, 42.8 |
+| yaw | 11.0 / 0.0 / 1.8 % / 15.0 (77) | 130.3 / 113.8, 65.3 |
+
+**delay 2 ms, tau 0 ms** (contact 0, modes off 0; coast 16.524 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.5 / 2.1 % / 24.0 (22) | 174.7 / 166.4, 45.8 |
+| pitch | 22.0 / 4.0 / -0.5 % / 25.0 (24) | 160.9 / 160.1, 51.2 |
+| yaw | 12.0 / 0.0 / 2.1 % / 43.0 (77) | 130.3 / 141.8, 106.8 |
+
+**delay 2 ms, tau 0.5 ms** (contact 0, modes off 0; coast 21.170 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.2 / 1.7 % / 23.0 (22) | 174.7 / 166.7, 48.9 |
+| pitch | 21.0 / 5.7 / 3.6 % / 25.0 (24) | 160.9 / 165.5, 72.4 |
+| yaw | 11.0 / 0.0 / 3.3 % / 46.0 (77) | 130.3 / 165.8, 137.0 |
+
+**delay 2 ms, tau 1 ms** (contact 0, modes off 0; coast 19.338 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 4.6 / 1.5 % / 23.0 (22) | 174.7 / 165.6, 52.7 |
+| pitch | 18.0 / 4.7 / 7.9 % / 151.0 (24) | 160.9 / 165.3, 79.3 |
+| yaw | 12.0 / 0.0 / 1.5 % / 45.0 (77) | 130.3 / 143.0, 108.9 |
+
+**delay 2 ms, tau 2 ms** (contact 0, modes off 0; coast 15.833 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 22.0 / 6.0 / -0.4 % / 24.0 (22) | 174.7 / 166.1, 64.4 |
+| pitch | 29.0 / 9.0 / -3.8 % / 29.0 (24) | 160.9 / 161.6, 80.1 |
+| yaw | 12.0 / 0.0 / 1.6 % / 47.0 (77) | 130.3 / 112.9, 65.5 |
+
+**delay 3 ms, tau 0 ms** (contact 0, modes off 0; coast 24.469 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 20.0 / 5.6 / 0.6 % / 22.0 (22) | 174.7 / 167.6, 65.5 |
+| pitch | 71.0 / 9.6 / -4.4 % / 450.0 (24) | 160.9 / 163.1, 80.3 |
+| yaw | 12.0 / 0.7 / 9.0 % / 56.0 (76) | 130.3 / 196.9, 171.0 |
+
+**delay 3 ms, tau 0.5 ms** (contact 0, modes off 0; coast 15.518 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 23.0 / 6.3 / 1.7 % / 26.0 (22) | 174.7 / 169.4, 71.3 |
+| pitch | 29.0 / 8.9 / -1.7 % / 64.0 (23) | 160.9 / 163.0, 83.5 |
+| yaw | 13.0 / 0.0 / 0.0 % / 45.0 (77) | 130.3 / 137.7, 104.1 |
+
+**delay 3 ms, tau 1 ms** (contact 0, modes off 0; coast 26.573 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 26.0 / 8.2 / -3.3 % / 26.0 (22) | 174.7 / 169.3, 77.6 |
+| pitch | 35.0 / 10.5 / -3.7 % / 64.0 (24) | 160.9 / 162.0, 85.4 |
+| yaw | 13.0 / 0.0 / 0.4 % / 45.0 (77) | 130.3 / 111.7, 66.6 |
+
+**delay 3 ms, tau 2 ms** (contact 0, modes off 0; coast 27.383 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 27.0 / 9.0 / -3.6 % / 26.0 (22) | 174.7 / 172.2, 87.3 |
+| pitch | 71.0 / 11.2 / -6.6 % / 34.0 (24) | 160.9 / 165.9, 94.4 |
+| yaw | 13.0 / 0.2 / 0.7 % / 14.0 (77) | 130.3 / 110.5, 66.0 |
+
+**delay 4 ms, tau 0 ms** (contact 0, modes off 0; coast 29.167 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 27.0 / 8.8 / -3.2 % / 27.0 (22) | 174.7 / 170.2, 82.4 |
+| pitch | 36.0 / 11.3 / -5.3 % / 34.0 (23) | 160.9 / 162.1, 89.5 |
+| yaw | 13.0 / 0.1 / -0.1 % / 15.0 (77) | 130.3 / 111.8, 68.0 |
+
+**delay 4 ms, tau 0.5 ms** (contact 0, modes off 0; coast 26.864 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | 30.0 / 9.8 / -4.2 % / 29.0 (22) | 174.7 / 172.8, 89.9 |
+| pitch | 83.0 / 12.3 / -7.8 % / 34.0 (24) | 160.9 / 166.6, 95.8 |
+| yaw | 13.0 / 0.3 / 0.4 % / 14.0 (77) | 130.3 / 111.1, 68.1 |
+
+**delay 4 ms, tau 1 ms** (contact 0, modes off 0; coast 27.275 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | none | 174.7 / 6.7, 174.8 |
+| pitch | none | 160.9 / 9.2, 161.2 |
+| yaw | none | 130.3 / 13.6, 131.0 |
+
+**delay 4 ms, tau 2 ms** (contact 0, modes off 0; coast 27.241 deg)
+
+| Axis | Sim | Gyro rms log / sim, sim − log |
+|---|---|---|
+| roll | none | 174.7 / 23.5, 174.3 |
+| pitch | none | 160.9 / 25.0, 162.8 |
+| yaw | none | 130.3 / 13.9, 130.9 |
+
+### What the grid shows (no values picked)
+
+- **Yaw lag** stays at 0 to 0.7 ms at every delay up to 4 ms (log 3.7 ms),
+  and yaw rise stays 11 to 13 ms (log 19.3).
+- **Roll overshoot** does not rise toward 13 %: it holds at 2.3 to 2.6 %
+  to 1 ms and falls with more delay, below zero from 3 ms.
+- **Roll settle** stays 22 to 29 ms everywhere (log 452 ms). Pitch settle
+  passes 100 ms only at 2 ms / 1 ms (151) and 3 ms / 0 (450), cells where
+  the pitch gyro error has grown to 79 to 80 deg/s.
+- **Gyro rms error** is flat to 1 ms and grows from 2 ms on all three axes
+  (roll 44 → 46 to 87, pitch 31 → 51 to 94, yaw 64 → up to 171).
+- **Coast** grows with delay, away from WebFPV's 8.7 deg (13.9 → 24 to 29
+  deg at 3 to 4 ms).
+
+### What went wrong
+
+- The first cut gated the pack current on the lagged duty; the review caught
+  it, and the sweep was run again on the fix.
+- The first grid script assumed every run had a step to measure, and stopped
+  at the first that did not.
+
+### Next (waiting for the owner)
+
+1. The grid above.
+2. Whether `phase1/m4-actuator-delay` goes to a PR as it is (the stage off
+   by default).
