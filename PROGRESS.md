@@ -5117,3 +5117,29 @@ The owner:
 ran the link's rate. 4 shows the actuator delay moving roll overshoot away
 from the log and worsening the gyro match on every axis, as round 6 did on
 the old metric. Per the owner, the next step is Phase 2.
+
+---
+
+## 2026-10-23 | Phase 1 M4 | world contact as PR #3 (owner decisions)
+
+On `phase1/m4-world-contact`, now merged with the plant work (0ce2ccb, the
+same resolution as the earlier local merge 5e64103). Opened as PR #3,
+stacked on `phase1/m4-plant` (PR #2); it merges when its review is clean.
+
+- **#26's lintel predicate: confirmed by the owner** (a footprint point
+  leaving through the open doorway under the lintel counts as leaving the
+  room, not as through the wall).
+- **The slot wedge (round 3's high finding): a failing test and this note,
+  no fix yet** (owner: "not a fix tonight").
+  `tests/node/world-slot-wedge.test.mjs`, the reviewer's two-box repro: the
+  garage's west wall end and the crate beside it, 42.9 mm apart; the quad
+  posed motors off on its side across the gap; 30 s. It asks for the bounds
+  the reviewer's candidate fix met: after 2 s no CONTACT event, |omega|
+  under 0.2 rad/s, no footprint point more than 0.1 mm in either box. Today:
+  307 CONTACT events after 2 s (7 to 15 a second, all 30 s), |omega| up to
+  13.9 rad/s, a point 0.275 mm into the crate. `npm test` fails on it, so
+  PR #3's CI is red until it is fixed. The reviewer's candidate (CARRY_MIN
+  1e-4 to 2e-6, one contact per push axis, no bounce at a resting speed) is
+  in round 3's record; it does not reach section 49's standard of rest and
+  makes three of 720 slot drops worse.
+- The rest of round 3's findings stay open as listed in the M4 entry.
