@@ -8,6 +8,8 @@
 //        [--auw-g 25.79] [--rest-before 4.2] [--rest-after 4.08]
 //        [--pack "weBLEEDfpv 340 mAh 1S BT2.0"] [--cells 1] [--current-scale 1.24]
 //        [--out file.json]
+//   node tools/hover-from-log.mjs <log.BBL> --plateau --log 0 [--hover tests/reference/air65-hover.json] [--out file.json]
+//        the full-duty plateau of a punch-out log instead (see analysePlateau)
 //
 // <log.BBL> is a path, or a name in SIM_CORE_LOGS (default D:/IGOW6/sim-core,
 // tools/logs.mjs): logs stay out of git, what they give is committed.
@@ -63,7 +65,7 @@ const TWO_PI = 2 * Math.PI;
 // header's motorOutput: that is the mixer's range, which starts above 48 with
 // static idle and ends below 2047 with motor_output_limit.
 const dutyOf = (motor) => (motor - 48) / 1999;
-const WINDOW_RULES = 'mean accZ within 5 % of 1 g, accZ sd < 10 % of 1 g, gyro rms < 10 deg/s, setpoint rms < 10 deg/s, motors above logged idle';
+const WINDOW_RULES = 'mean accZ within 10 % of 1 g, accZ sd < 12 % of 1 g, gyro and setpoint rms < 12 deg/s, motors above logged idle; the longest run of such seconds, less one second at each end';
 
 // Per-second bins of the decoded rows (t in s from the first frame).
 export function binRows(rows) {
@@ -88,9 +90,14 @@ export function binRows(rows) {
 }
 
 // The longest run of consecutive steady-hover bins, as [first s, last s + 1].
+// The owner's criteria for the Air65 hover (tests/reference/air65-hover.json
+// window_note), with the limits the owner's own window [3, 59] of that log keeps
+// inside: its seconds reach 6.3 % off 1 g in mean accZ, 10.3 % in its spread and 10.5 deg/s of gyro
+// rms. The run's first and last seconds are the climb into the hover and the
+// move out of it, so they are left out.
 export function findWindow(bins, { acc1G, motorIdle }) {
-  const steady = (b) => Math.abs(b.accZ / acc1G - 1) < 0.05 && b.accZsd < 0.1 * acc1G
-    && b.gyroRms < 10 && b.setpRms < 10 && b.motor > motorIdle;
+  const steady = (b) => Math.abs(b.accZ / acc1G - 1) < 0.1 && b.accZsd < 0.12 * acc1G
+    && b.gyroRms < 12 && b.setpRms < 12 && b.motor > motorIdle;
   let best = null;
   let start = null;
   for (let i = 0; i <= bins.length; i++) {
@@ -101,7 +108,8 @@ export function findWindow(bins, { acc1G, motorIdle }) {
       start = i < bins.length && steady(bins[i]) ? i : null;
     }
   }
-  return best ? [bins[best[0]].s, bins[best[1] - 1].s + 1] : null;
+  if (!best || best[1] - best[0] < 3) return null;
+  return [bins[best[0]].s + 1, bins[best[1] - 1].s];
 }
 
 // The hover numbers over a window of bins, and what follows for the plant.
@@ -184,8 +192,9 @@ function args(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith('--')) out[a.slice(2)] = argv[++i];
-    else out._.push(a);
+    if (!a.startsWith('--')) out._.push(a);
+    else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) out[a.slice(2)] = argv[++i];
+    else out[a.slice(2)] = true;   // a bare flag (--plateau)
   }
   return out;
 }
@@ -222,7 +231,8 @@ export async function readLog(logPath, quadmathDir, li = 0) {
     thrust_linear: headerNum(u, 'thrust_linear'), vbat_sag_compensation: headerNum(u, 'vbat_sag_compensation'),
     throttle_boost: headerNum(u, 'throttle_boost'), rates_type: headerNum(u, 'rates_type'),
     thr_mid: headerNum(u, 'thr_mid'), thr_expo: headerNum(u, 'thr_expo'),
-    // The rest of the throttle path (tests/lib/bench-hover.mjs flies them).
+    // The rest of the throttle path (tools/config-from-log.mjs checks the
+    // whole header against a diff).
     // vbatcellvoltage is min, warning, max in 0.01 V; the warning voltage sets
     // the range vbat_sag_compensation works over (flight/mixer_init.c:350-354).
     dyn_idle_min_rpm: headerNum(u, 'dyn_idle_min_rpm'), dshot_idle_value: headerNum(u, 'dshot_idle_value'),
@@ -236,7 +246,13 @@ export async function readLog(logPath, quadmathDir, li = 0) {
   if (!acc1G) throw new Error('header has no acc_1G');
 
   const frames = [];
-  for (const ev of h.getDataParser()) if (ev.kind === 'main') frames.push(ev.data);
+  // Slow frames carry the flight mode flags; kept with the index of the main
+  // frame they follow.
+  const slow = [];
+  for (const ev of h.getDataParser()) {
+    if (ev.kind === 'main') frames.push(ev.data);
+    else if (ev.kind === 'slow' && ev.data && ev.data.fields) slow.push({ at: frames.length, flightModeFlags: ev.data.fields.get('flightModeFlags') ?? null });
+  }
   if (frames.length < 64) throw new Error(`log ${li} has ${frames.length} main frames`);
   const get = (fr, k) => fr.fields.get(k);
   // blackbox_high_resolution logs rcCommand, setpoint and gyro x10
@@ -246,6 +262,7 @@ export async function readLog(logPath, quadmathDir, li = 0) {
   const rows = frames.map((fr) => ({
     t: fr.time - t0,
     thr: get(fr, 'rcCommand[3]') / hiRes,
+    rc: [0, 1, 2, 3].map((i) => get(fr, `rcCommand[${i}]`) / hiRes),
     vbat: (get(fr, 'vbatLatest') ?? 0) / 100,
     amps: (get(fr, 'amperageLatest') ?? 0) / 100,
     m: [0, 1, 2, 3].map((i) => get(fr, `motor[${i}]`)),
@@ -255,8 +272,16 @@ export async function readLog(logPath, quadmathDir, li = 0) {
     setp: [0, 1, 2].map((i) => get(fr, `setpoint[${i}]`) / hiRes),
   }));
   if (rows.some((r) => r.erpm.some((v) => v == null))) throw new Error('log has no eRPM fields (dshot_bidir off?)');
+  // A corrupt frame can decode as a huge value (quadmath blackbox-extract.js
+  // holds the last good sample for the same reason); frames with a motor
+  // outside DShot's 0..2047 or a negative eRPM are dropped and counted.
+  const good = rows.filter((r) => r.m.every((v) => v >= 0 && v <= 2047) && r.erpm.every((v) => v >= 0));
+  const dropped = rows.length - good.length;
   return {
-    logCount: file.logCount, header, acc1G, rows,
+    logCount: file.logCount, header, acc1G, rows: good, dropped,
+    // Each slow frame at the time of the main frame before it.
+    slow: slow.map((x) => ({ t: frames[Math.max(0, x.at - 1)].time - t0, flightModeFlags: x.flightModeFlags })),
+    rawHeader: Object.fromEntries(u),
     info: { datetime: u.get('Log start datetime') ?? null, craft: h.craftName, board: h.boardInfo, firmware: h.firmwareRevision },
   };
 }
@@ -288,7 +313,7 @@ export async function hoverFromLog(logPath, quadmathDir, air, opts = {}, print =
   return {
     source: basename(logPath),
     flown: [log.info.datetime, log.info.craft, log.info.board, log.info.firmware].filter(Boolean).join(', '),
-    log: { frames: rows.length, duration_s: round(dur, 1), rate_hz: Math.round(rows.length / dur), logs_in_file: log.logCount },
+    log: { frames: rows.length, duration_s: round(dur, 1), rate_hz: Math.round(rows.length / dur), logs_in_file: log.logCount, corrupt_frames_dropped: log.dropped },
     window_s: window,
     window_note: opts.window ? 'given with --window' : `the longest steady run: ${WINDOW_RULES} (tools/hover-from-log.mjs)`,
     header: log.header,
@@ -296,6 +321,131 @@ export async function hoverFromLog(logPath, quadmathDir, air, opts = {}, print =
     derived,
   };
 }
+
+// ---- Full-duty plateau mode (--plateau): the punches of a punch-out log.
+const PLATEAU_RULES = '50 ms bins with mean duty > 0.9; runs less than 100 ms apart are one punch; steady values leave out the first 100 ms (the rotors spinning up); onset accZ is the highest bin in the first 150 ms';
+
+// 50 ms bins of the rows: duty, rpm, pack, accZ (g).
+export function binRows50(rows, acc1G, motorPoles) {
+  const W = 0.05;
+  const bins = [];
+  let i = 0;
+  const end = rows[rows.length - 1].t;
+  for (let k = 0; k * W < end; k++) {
+    const s = k * W;
+    const seg = [];
+    while (i < rows.length && rows[i].t < s + W) {
+      if (rows[i].t >= s) seg.push(rows[i]);
+      i++;
+    }
+    if (!seg.length) continue;
+    const mean = (fn) => seg.reduce((a, r) => a + fn(r), 0) / seg.length;
+    bins.push({
+      t: s,
+      duty: mean((r) => dutyOf(r.m.reduce((a, b) => a + b, 0) / r.m.length)),
+      rpm: (mean((r) => r.erpm.reduce((a, b) => a + b, 0) / r.erpm.length) * 100) / (motorPoles / 2),
+      vbat: mean((r) => r.vbat), amps: mean((r) => r.amps),
+      accZ: mean((r) => r.acc[2]) / acc1G,
+    });
+  }
+  return bins;
+}
+
+// Current against rpm, 2 krpm bands of 50 ms bins with the motors driven.
+export function currentBands(bins, scale = 1) {
+  const mean = (set, k) => set.reduce((a, b) => a + b[k], 0) / set.length;
+  const bands = [];
+  for (let lo = 20000; lo < 80000; lo += 2000) {
+    const band = bins.filter((b) => b.duty > 0.1 && b.rpm >= lo && b.rpm < lo + 2000);
+    if (band.length >= 4) bands.push({ krpm: [lo / 1000, (lo + 2000) / 1000], bins: band.length, rpm: Math.round(mean(band, 'rpm')), amps: round(mean(band, 'amps') * scale, 2) });
+  }
+  return bands;
+}
+
+// The punches, their steady plateau and onset, the pack's sag from the hover
+// before each, and current against rpm over the whole log.
+export function analysePlateau(bins, air, hover, opts = {}) {
+  const W = 0.05;
+  const scale = opts.currentScale ?? 1;
+  const mean = (set, k) => set.reduce((a, b) => a + b[k], 0) / set.length;
+  const runs = [];
+  for (const b of bins.filter((x) => x.duty > 0.9)) {
+    const last = runs.at(-1);
+    if (last && b.t - last.at(-1).t <= 2 * W + 1e-9) last.push(b);
+    else runs.push([b]);
+  }
+  const punches = runs.filter((run) => run.length >= 3).map((run) => {
+    const t0 = run[0].t;
+    const steady = run.filter((b) => b.t >= t0 + 0.1 - 1e-9);
+    const onset = run.filter((b) => b.t < t0 + 0.15 - 1e-9);
+    const pre = bins.filter((b) => b.t >= t0 - 0.3 - 1e-9 && b.t < t0 - 0.1 - 1e-9);
+    const p = {
+      start_s: round(t0, 2), end_s: round(run.at(-1).t + W, 2), bins: run.length,
+      steady: {
+        duty: round(mean(steady, 'duty'), 3), rpm: Math.round(mean(steady, 'rpm')),
+        vbat: round(mean(steady, 'vbat'), 3), amps: round(mean(steady, 'amps') * scale, 2),
+      },
+      onset_accZ_g: round(Math.max(...onset.map((b) => b.accZ)), 2),
+      before: pre.length ? { duty: round(mean(pre, 'duty'), 3), vbat: round(mean(pre, 'vbat'), 3), amps: round(mean(pre, 'amps') * scale, 2) } : null,
+    };
+    // From hover: the pack's sag over the step in current is its IR.
+    if (p.before && p.before.duty < 0.5) {
+      p.cell_ir_ohm = round((p.before.vbat - p.steady.vbat) / ((p.steady.amps - p.before.amps) * (opts.cells ?? air.cells.value)), 4);
+    }
+    return p;
+  });
+  if (!punches.length) throw new Error(`no full-duty plateau (${PLATEAU_RULES})`);
+  const steadyBins = runs.filter((run) => run.length >= 3).flatMap((run) => run.filter((b) => b.t >= run[0].t + 0.1 - 1e-9));
+  const m = {
+    duty: round(mean(steadyBins, 'duty'), 3),
+    rpm: Math.round(mean(steadyBins, 'rpm')),
+    vbat_v: round(mean(steadyBins, 'vbat'), 3),
+    amps_a: round(mean(steadyBins, 'amps') * scale, 2),
+    onset_accZ_g: Math.max(...punches.map((p) => p.onset_accZ_g)),
+  };
+  m.omega_rad_s = Math.round((m.rpm * TWO_PI) / 60);
+  const bands = currentBands(bins, scale);
+  const derived = {
+    load_fraction_full: round(m.rpm / (air.kv.value * m.vbat_v * m.duty), 4),
+    load_fraction_note: `rpm / (KV ${air.kv.value} x vbat x duty) on the steady plateau`,
+  };
+  if (hover) {
+    const wh = hover.measured.hover_omega_rad_s;
+    derived.thrust_law = {
+      omega_hover_rad_s: wh,
+      predicted_onset_accZ_g: round((m.omega_rad_s / wh) ** 2, 3),
+      measured_onset_accZ_g: m.onset_accZ_g,
+      note: 'thrust = kt w^2 with kt from the hover (m g / (4 w_hover^2)): at the plateau rpm, thrust / weight = (w / w_hover)^2, the specific force at onset before the quad gains speed',
+    };
+  }
+  const irs = punches.filter((p) => p.cell_ir_ohm !== undefined).map((p) => p.cell_ir_ohm);
+  if (irs.length) {
+    derived.cell_ir_ohm = irs;
+    derived.cell_ir_note = `(vbat before - vbat steady) / (amps steady - amps before) per punch from hover, before = 300..100 ms before the punch${scale !== 1 ? `, current x ${scale}` : ', logged current'}`;
+  }
+  return { punches, measured: m, current_vs_rpm: bands, derived };
+}
+
+export async function plateauFromLog(logPath, quadmathDir, air, hover, opts = {}) {
+  const li = Number(opts.log ?? 0);
+  const log = await readLog(logPath, quadmathDir, li);
+  const bins = binRows50(log.rows, log.acc1G, log.header.motor_poles);
+  const scale = opts['current-scale'] == null ? 1 : Number(opts['current-scale']);
+  const a = analysePlateau(bins, air, hover, { currentScale: scale });
+  const dur = log.rows[log.rows.length - 1].t;
+  return {
+    source: basename(logPath),
+    log_index: li,
+    mode: 'full-duty plateau',
+    rule: PLATEAU_RULES,
+    flown: [log.info.datetime, log.info.craft, log.info.board, log.info.firmware].filter(Boolean).join(', '),
+    log: { frames: log.rows.length, duration_s: round(dur, 1), rate_hz: Math.round(log.rows.length / dur), logs_in_file: log.logCount, corrupt_frames_dropped: log.dropped },
+    current_scale: scale,
+    header: log.header,
+    ...a,
+  };
+}
+
 
 async function main() {
   const a = args(process.argv.slice(2));
@@ -307,6 +457,16 @@ async function main() {
   }
   const root = fileURLToPath(new URL('..', import.meta.url));
   const air = JSON.parse(readFileSync(resolve(root, a.airframe ?? 'airframes/air65.json'), 'utf8')).values;
+  if (a.plateau !== undefined) {
+    const hover = JSON.parse(readFileSync(resolve(root, a.hover ?? 'tests/reference/air65-hover.json'), 'utf8'));
+    const p = await plateauFromLog(logPath, qm, air, hover, a);
+    const text = `${JSON.stringify(p, null, 2)}\n`;
+    if (a.out) writeFileSync(a.out, text);
+    else process.stdout.write(text);
+    for (const x of p.punches) console.error(`punch ${x.start_s}-${x.end_s} s: steady duty ${x.steady.duty}, ${x.steady.rpm} rpm, ${x.steady.vbat} V, ${x.steady.amps} A; onset ${x.onset_accZ_g} g${x.cell_ir_ohm !== undefined ? `; from ${x.before.vbat} V at ${x.before.amps} A, cell IR ${x.cell_ir_ohm}` : ''}`);
+    console.error(`plateau: duty ${p.measured.duty}, ${p.measured.rpm} rpm, ${p.measured.vbat_v} V, ${p.measured.amps_a} A, onset ${p.measured.onset_accZ_g} g; load fraction at full ${p.derived.load_fraction_full}; thrust law predicts ${p.derived.thrust_law?.predicted_onset_accZ_g} g`);
+    return;
+  }
   const out = await hoverFromLog(logPath, qm, air, a, (line) => console.error(line));
   const text = `${JSON.stringify(out, null, 2)}\n`;
   if (a.out) writeFileSync(a.out, text);

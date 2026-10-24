@@ -178,7 +178,7 @@ static void derive(void)
     derived[PD_OMEGA_HOVER] = wHover;
     const double vHover = wHover / kv + r * kqProp * wHover * wHover / ktMotor;
     derived[PD_DUTY_HOVER] = vHover / vRef;
-    derived[PD_DUTY_CURRENT_REF] = blk[PB_I_REF_DUTY];
+    derived[PD_AMPS_FULL] = blk[PB_I_HOVER] * pow(wFull * RPM_PER_RAD_S / blk[PB_RPM_HOVER], blk[PB_CURRENT_EXP]);
 }
 
 static void publishSensors(void)
@@ -282,10 +282,10 @@ int sc_plant_configure(const double *block, int count)
         }
         if (m == SC_MODEL_PHYSICAL && !(block[PB_KV] > 0 && block[PB_V_REF_CELL] > 0 && block[PB_LOAD_FRACTION] > 0
                                         && block[PB_LOAD_FRACTION] < 1 && block[PB_KQ_RATIO] > 0
-                                        && block[PB_CAPACITY_MAH] > 0 && block[PB_I_REF] >= 0 && block[PB_CELL_IR] >= 0
+                                        && block[PB_CAPACITY_MAH] > 0 && block[PB_I_HOVER] >= 0 && block[PB_CELL_IR] >= 0
                                         && block[PB_DUCT_RADIUS] > 0 && block[PB_HULL_BELOW] > 0
-                                        && block[PB_HULL_ABOVE] > 0 && block[PB_I_REF_DUTY] > 0
-                                        && block[PB_I_REF_DUTY] <= 1)) {
+                                        && block[PB_HULL_ABOVE] > 0 && block[PB_RPM_HOVER] > 0
+                                        && block[PB_CURRENT_EXP] > 0)) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -300,8 +300,7 @@ int sc_plant_configure(const double *block, int count)
     // lower root of u (V - I(u) R) = hover volts, which needs iRef x cellIR at
     // most half the full-pack voltage. Otherwise refuse and keep the old block.
     if (m == SC_MODEL_PHYSICAL
-        && !(derived[PD_DUTY_CURRENT_REF] > 0 && derived[PD_DUTY_CURRENT_REF] <= 1
-             && 2 * blk[PB_I_REF] * blk[PB_CELL_IR] <= blk[PB_OCV + 6])) {
+        && !(2 * blk[PB_I_HOVER] * blk[PB_CELL_IR] <= blk[PB_OCV + 6])) {
         memcpy(blk, prevBlk, sizeof(blk));
         model = prevModel;
         memset(derived, 0, sizeof(derived));
@@ -401,14 +400,21 @@ static void dragForce(const double vWorld[3], const double q[4], double meanOut,
 static void stepPhysical(const double duty[SC_MOTOR_COUNT], double dt)
 {
     const double cells = blk[PB_CELLS];
-    // Pack current: the bench cruise current scaled by duty over hover duty
-    // (owner decision 2026-10-22, a stand-in until Phase 3).
-    double meanDuty = 0;
+    // Pack current from the rotors' speed (owner decision 2026-10-23, from the
+    // hover and punch logs): each rotor draws a quarter of the hover current at
+    // the hover rpm, scaled by (rpm / rpm at hover)^exponent; last tick's rpm.
+    // A rotor at duty 0 draws nothing from the pack: the averaged motor below
+    // sees duty x pack voltage, so at duty 0 its winding is shorted and brakes
+    // the rotor, and its ESC draws duty x the winding current, none. Duty 0 is
+    // DShot 0 (disarmed, motor stop, crash flip's idle pair) and DShot 48, the
+    // armed floor under dynamic idle (flight/mixer_init.c:342-343); one step
+    // up, the power law applies in full.
+    double amps = 0;
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
-        meanDuty += fabs(duty[i]);
+        if (duty[i] == 0) continue;
+        const double rpm = fabs(omegaMotor[i]) * RPM_PER_RAD_S;
+        amps += 0.25 * blk[PB_I_HOVER] * pow(rpm / blk[PB_RPM_HOVER], blk[PB_CURRENT_EXP]);
     }
-    meanDuty /= SC_MOTOR_COUNT;
-    const double amps = blk[PB_I_REF] * meanDuty / derived[PD_DUTY_CURRENT_REF];
     const double volts = fmax(0, ocvCell(sc_plant.soc) * cells - amps * blk[PB_CELL_IR] * cells);
     sc_plant.amps = amps;
     sc_plant.vbatLoaded = volts;
@@ -1183,7 +1189,12 @@ void sc_plant_step(double dt)
     for (int k = 0; k < 3; k++) {
         f[k] += drag[k];
     }
-    if (p[2] <= sc_world_floor_z() + FLOOR_PAD_M + 0.015) {
+    // Near the ground: quadmath's test is the CG over the floor (QP:720-727);
+    // the physical model's is its hull clearance, the same datum as its ground
+    // effect, so a box top counts as the floor does (the Air65's hullBelow is
+    // quadmath's 10 mm pad, so over the floor nothing changes).
+    const bool physical = model == SC_MODEL_PHYSICAL;
+    if (physical ? clr <= 0.015 : p[2] <= sc_world_floor_z() + FLOOR_PAD_M + 0.015) {
         // Ground-contact brake, never an in-air damper.
         f[0] -= v[0] * 0.55 * m;
         f[1] -= v[1] * 0.55 * m;
@@ -1192,7 +1203,8 @@ void sc_plant_step(double dt)
         v[k] += f[k] * (dt / m);
         p[k] += v[k] * dt;
     }
-    sc_plant.airborne = p[2] > sc_world_floor_z() + FLOOR_PAD_M + 0.04 || fabs(total) > m * g * 0.5;
+    sc_plant.airborne = (physical ? clr + (p[2] - pStart[2]) > 0.04 : p[2] > sc_world_floor_z() + FLOOR_PAD_M + 0.04)
+                        || fabs(total) > m * g * 0.5;
 
     // Floor, boxes and triggers (H:3150-3204), then what an accelerometer reads:
     // the velocity change over the tick less gravity, in the body frame.

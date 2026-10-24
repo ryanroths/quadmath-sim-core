@@ -86,7 +86,8 @@ enum {
     FC_MODE_3D = 49,
     FC_RPM_FILTER = 50,         // isRpmFilterEnabled()
     FC_ACC = 51,                // Betaflight's accelerometer, g (acc.accADC / acc_1G)
-    FC_LEN = 54,
+    FC_PID_SETPOINT = 54,       // the setpoint the PID ran on (after angle mode), deg/s, as the blackbox logs it
+    FC_LEN = 57,
 };
 
 static double scState[ST_LEN];
@@ -167,6 +168,7 @@ static void fillFc(void)
     f[FC_RPM_FILTER] = isRpmFilterEnabled() ? 1 : 0;
     for (int axis = 0; axis < 3; axis++) {
         f[FC_ACC + axis] = acc.dev.acc_1G ? acc.accADC[axis] / acc.dev.acc_1G : 0;
+        f[FC_PID_SETPOINT + axis] = pidGetPreviousSetpoint(axis);
     }
 }
 

@@ -38,8 +38,9 @@ const FC = Object.freeze({
   setpoint: [8, 3], gyroFiltered: [11, 3], pidSum: [14, 3], rcCommand: [17, 4], motor: [21, 4],
   debug: [25, 8], debugMode: [33, 1], motorsEnabled: [34, 1], rcData: [35, 8], rxSignal: [43, 1],
   attitude: [44, 3], airmode: [47, 1], crashFlip: [48, 1], mode3d: [49, 1], rpmFilter: [50, 1], acc: [51, 3],
+  pidSetpoint: [54, 3],
 });
-const FC_LEN = 54;
+const FC_LEN = 57;
 const FC_BOOLEANS = new Set(['armed', 'motorsEnabled', 'rxSignal', 'airmode', 'crashFlip', 'mode3d', 'rpmFilter']);
 
 // Betaflight flightModeFlags bits (fc/runtime_config.h).
@@ -88,13 +89,13 @@ export const PLANT_FIELDS = Object.freeze([
   'kv', 'vRefCell', 'loadFraction', 'tmax', 'kqRatio', 'tau', 'tauDownMult', 'reverseScale',
   'cdAFront', 'cdAPlan', 'skinB', 'aeroB', 'aeroC', 'discK', 'discEnd', 'groundK',
   'gravity', 'airDensity',
-  'cells', 'capacityMah', 'cellIR', 'iRef', 'ocv',
+  'cells', 'capacityMah', 'cellIR', 'iHover', 'ocv',
   'sagDrop', 'hoverSeconds', 'sagScale',
   'bounceScale', 'crashScale', 'spinScale',
   'ductOuterRadius', 'hullBelow', 'hullAbove',
-  'iRefDuty',
+  'rpmHover', 'currentExponent',
 ]);
-const PLANT_LEN = 44;
+const PLANT_LEN = 45;
 const PB_WHEELBASE = 2;
 const PB_DUCT_RADIUS = 40;
 const PB_HULL_BELOW = 41;
@@ -102,7 +103,7 @@ const PB_HULL_ABOVE = 42;
 const PLANT_MODELS = Object.freeze({ rest: 0, physical: 1, parity: 2 });
 const PLANT_DERIVED = Object.freeze([
   'kvRad', 'ktMotor', 'omegaFull', 'ktProp', 'kqProp', 'rWinding', 'jRotor', 'omegaHover', 'dutyHover',
-  'ixx', 'iyy', 'izz', 'arm', 'dutyCurrentRef',
+  'ixx', 'iyy', 'izz', 'arm', 'ampsFull',
 ]);
 const PB_MASS = 1;
 const PB_GRAVITY = 21;

@@ -3,11 +3,15 @@
 // predictors and encodings (vendor/betaflight src/main/blackbox/blackbox.c
 // :182-275) and its header lines (:1361-1399). For testing
 // tools/hover-from-log.mjs through a real decoder; no flight log is in the
-// repository. Shape: idle, take-off, 56 s of hover (3-59 s), a throttle blip,
+// repository. Shape: idle, take-off, 58 s of hover (2-60 s; the tool keeps 3-59), a throttle blip,
 // hover, landing; the hover holds rcCommand 1371, motor 720 (duty 0.336) and
-// logged eRPM 1942 (32,367 rpm on 12 poles).
+// logged eRPM 1942 (32,367 rpm on 12 poles). Slow frames carry the mode
+// switches as Betaflight logs them (rcModeActivationMask, bit n = box id n,
+// blackbox.c:902): one after the first main frame and one after the frame
+// where each later entry of modes takes effect; modes is [[t s, mask], ...],
+// by default ARM alone (acro) from the start.
 //
-//   synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = false }) -> Buffer
+//   synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = false, modes = [[0, 1]] }) -> Buffer
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 
@@ -28,7 +32,7 @@ const FIELDS = [
   ['eRPM[0]', 0, 0, 1, 1, 0], ['eRPM[1]', 0, 0, 1, 1, 0], ['eRPM[2]', 0, 0, 1, 1, 0], ['eRPM[3]', 0, 0, 1, 1, 0],
 ];
 
-export function synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = false } = {}) {
+export function synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = false, modes = [[0, 1]] } = {}) {
   const scale = hiRes ? 10 : 1;
   const header = [
     'Product:Blackbox flight data recorder by Nicholas Sherlock',
@@ -93,15 +97,16 @@ export function synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = fal
   const svb = (v) => uvb(((v << 1) ^ (v >> 31)) >>> 0);
   const neg14 = (v) => uvb((-v) & 0x3fff);
   const n = Math.round(66.1 * rate);
+  let mode = 0;
   for (let k = 0; k < n; k++) {
     const t = k / rate;
     const w = Math.sin(k * 0.7);
-    const hover = (t >= 3 && t < 59) || (t >= 60 && t < 64);
-    const u = Math.min(1, Math.max(0, (t - 3) / 56));
+    const hover = (t >= 2 && t < 60) || (t >= 61 && t < 64);
+    const u = Math.min(1, Math.max(0, (t - 2) / 58));
     let thr = 1371, motor = 720, erpm = 1942, accZ = ACC_1G + 20 * w, vbat = 4.11 - 0.25 * u, amps = 2.79 + 0.32 * u;
     if (t < 1) { thr = 1000; motor = motorLow; erpm = 0; accZ = ACC_1G; vbat = 4.24; amps = 0.62; }
-    else if (!hover && t < 3) { thr = 1450; motor = 900; erpm = 2300; accZ = 1.3 * ACC_1G; }
-    else if (!hover && t < 60) { thr = 1600; motor = 1100; erpm = 2600; accZ = 1.6 * ACC_1G + 300 * w; }
+    else if (!hover && t < 2) { thr = 1450; motor = 900; erpm = 2300; accZ = 1.3 * ACC_1G; }
+    else if (!hover && t < 61) { thr = 1600; motor = 1100; erpm = 2600; accZ = 1.6 * ACC_1G + 300 * w; }
     else if (!hover) { thr = 1200; motor = 400; erpm = 1300; accZ = 0.7 * ACC_1G + 400 * w; }
     const r = {
       loopIteration: k * (8000 / rate), time: 5_000_000 + Math.round(t * 1e6),
@@ -123,6 +128,14 @@ export function synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = fal
       else if (ie === 0) svb(v);
       else if (ie === 3) neg14(v);
       else throw new Error(`encoding ${ie}`);
+    }
+    // flightModeFlags (the mode mask), stateFlags, failsafePhase,
+    // rxSignalReceived, rxFlightChannelsValid
+    if (mode < modes.length && modes[mode][0] <= t) {
+      while (mode + 1 < modes.length && modes[mode + 1][0] <= t) mode++;
+      bytes.push('S'.charCodeAt(0));
+      for (const v of [modes[mode][1], 0, 0, 1, 1]) uvb(v);
+      mode++;
     }
   }
   bytes.push('E'.charCodeAt(0), 0xff);

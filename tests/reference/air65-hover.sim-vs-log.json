@@ -1,0 +1,129 @@
+{
+  "source": "BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_090813_BETAFPVG473.BBL",
+  "log_index": 0,
+  "stretch_s": [
+    0,
+    66.074
+  ],
+  "log": {
+    "frames": 131230,
+    "rate_hz": 1986.1
+  },
+  "sim": {
+    "ticks": 66075,
+    "rate_hz": 1000,
+    "flightModeFlags": 0,
+    "aux": [
+      1900,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000,
+      1000
+    ],
+    "open_air_m": 1000,
+    "height_m": [
+      -21.136,
+      0
+    ],
+    "contact_ticks": 0
+  },
+  "log_mode_mask": 1,
+  "log_mode_changes": [
+    {
+      "t": 66.058,
+      "mask": 0
+    }
+  ],
+  "mode_mismatch_ticks": 0,
+  "sim_mode_changes": [],
+  "rc_readback_max_error": [
+    0,
+    0,
+    0,
+    1.99
+  ],
+  "axes": [
+    {
+      "name": "roll",
+      "gyroRmsLog": 5.04,
+      "gyroRmsSim": 4.53,
+      "gyroErrRms": 2.36,
+      "setpointErrRms": 0.263,
+      "stepLog": null,
+      "stepSim": null
+    },
+    {
+      "name": "pitch",
+      "gyroRmsLog": 3.85,
+      "gyroRmsSim": 3.56,
+      "gyroErrRms": 1.63,
+      "setpointErrRms": 0.221,
+      "stepLog": null,
+      "stepSim": null
+    },
+    {
+      "name": "yaw",
+      "gyroRmsLog": 2.26,
+      "gyroRmsSim": 1.44,
+      "gyroErrRms": 1.79,
+      "setpointErrRms": 0.143,
+      "stepLog": null,
+      "stepSim": null
+    }
+  ],
+  "log_current_vs_rpm": [
+    {
+      "krpm": [
+        24,
+        26
+      ],
+      "bins": 5,
+      "rpm": 25611,
+      "amps": 2.62
+    },
+    {
+      "krpm": [
+        28,
+        30
+      ],
+      "bins": 13,
+      "rpm": 29501,
+      "amps": 2.51
+    },
+    {
+      "krpm": [
+        30,
+        32
+      ],
+      "bins": 323,
+      "rpm": 31536,
+      "amps": 2.91
+    },
+    {
+      "krpm": [
+        32,
+        34
+      ],
+      "bins": 902,
+      "rpm": 32627,
+      "amps": 3.09
+    },
+    {
+      "krpm": [
+        34,
+        36
+      ],
+      "bins": 36,
+      "rpm": 34515,
+      "amps": 3.46
+    }
+  ],
+  "diff": "configs/air65-ryfly-2026-10-23.txt"
+}

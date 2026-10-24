@@ -1,0 +1,96 @@
+{
+  "source": "BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_090813_BETAFPVG473.BBL",
+  "flown": "0000-01-01T00:00:00.000+00:00, AIR65 RYFLY, BEFH BETAFPVG473, Betaflight 4.5.0 (c155f5830) STM32G47X",
+  "log": {
+    "frames": 131230,
+    "duration_s": 66.1,
+    "rate_hz": 1986,
+    "logs_in_file": 1,
+    "corrupt_frames_dropped": 74
+  },
+  "window_s": [
+    3,
+    59
+  ],
+  "window_note": "the longest steady run: mean accZ within 10 % of 1 g, accZ sd < 12 % of 1 g, gyro and setpoint rms < 12 deg/s, motors above logged idle; the longest run of such seconds, less one second at each end (tools/hover-from-log.mjs)",
+  "header": {
+    "motorOutput": [
+      48,
+      2047
+    ],
+    "motor_poles": 12,
+    "dshot_bidir": 1,
+    "vbat_scale": 110,
+    "currentSensor": [
+      -600,
+      750
+    ],
+    "thrust_linear": 20,
+    "vbat_sag_compensation": 70,
+    "throttle_boost": 5,
+    "rates_type": 3,
+    "thr_mid": 50,
+    "thr_expo": 0,
+    "dyn_idle_min_rpm": 55,
+    "dshot_idle_value": 400,
+    "motor_output_limit": 100,
+    "throttle_limit_type": 0,
+    "throttle_limit_percent": 100,
+    "vbatcellvoltage": [
+      330,
+      333,
+      440
+    ],
+    "blackbox_high_resolution": 0
+  },
+  "measured": {
+    "hover_throttle_rc": 1371,
+    "hover_stick": 0.371,
+    "hover_motor_duty": 0.336,
+    "hover_erpm_logged_mean": 1942,
+    "hover_rpm": 32369,
+    "hover_omega_rad_s": 3390,
+    "vbat_mean_v": 3.97,
+    "amps_mean_a": 3.04,
+    "power_mean_w": 12.06,
+    "first_10s": {
+      "vbat": 4.065,
+      "amps": 2.94,
+      "duty": 0.327,
+      "rpm": 32327
+    },
+    "last_10s": {
+      "vbat": 3.886,
+      "amps": 3.11,
+      "duty": 0.343,
+      "rpm": 32347
+    },
+    "idle_prearm_bin0": {
+      "vbat": 4.24,
+      "amps": 0.62
+    },
+    "vbat_rest_before": null,
+    "vbat_rest_after": 4.08,
+    "cells": 1,
+    "pack": "weBLEEDfpv 340 mAh 1S BT2.0",
+    "auw_g": 25.79
+  },
+  "derived": {
+    "static_load_fraction_hover": 0.809,
+    "static_load_fraction_note": "hover_rpm / (KV 30000 x vbat_mean x hover_motor_duty)",
+    "kt_prop_from_hover_N_per_rad2": 5.5047e-9,
+    "kt_note": "m g / (4 omega^2) at m = 0.02579 kg (auw_g), g = 9.81",
+    "plant_load_fraction_for_hover_ratio": 0.6323,
+    "plant_load_fraction_note": "the plant's loadFraction (its full-throttle point at 4.2 V per cell) at which its own hover ratio equals static_load_fraction_hover",
+    "tmax_N_at_load_fraction": {
+      "0.65": 0.40491,
+      "0.6323": 0.38319
+    },
+    "tmax_note": "kt x (lf x Kv x vRefCell)^2: the airframe tmax that carries the measured kt at that loadFraction",
+    "cell_ir_start_ohm": 0.0605,
+    "cell_ir_start_note": "(4.24 - 4.09) V / (2.98 - 0.62) A: bin 0 (before take-off) against the window's first second; state of charge moves in between",
+    "cell_ir_end_ohm": 0.0691,
+    "cell_ir_end_note": "(4.08 - 3.87) V / 3.05 A: rest after landing against the window's last second",
+    "current_sensor_note": "currentSensor -600, 750 as logged; not corrected"
+  }
+}
