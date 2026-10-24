@@ -5143,3 +5143,25 @@ stacked on `phase1/m4-plant` (PR #2); it merges when its review is clean.
   in round 3's record; it does not reach section 49's standard of rest and
   makes three of 720 slot drops worse.
 - The rest of round 3's findings stay open as listed in the M4 entry.
+
+---
+
+## 2026-10-24 | Phase 1 M4 | PR #2 merged; PR #3 rebased onto main
+
+PR #2 (the plant) was merged into `main` by the owner as 0456b16, after its
+CI passed on d26821a (the round-5 entry's "CI below": that run was green).
+
+`phase1/m4-world-contact` is rebased onto `main` (owner: "PR #2 merged.
+Rebase PR #3 onto main."). The 14 world-contact commits are replayed on
+0456b16; the three merges that brought the plant work in (0ce2ccb, e180a5f,
+81a6285) fall away. Each replayed commit kept `main`'s dist and took the
+world's new plant-world sections ahead of `main`'s open-check tail, with the
+world's list in the PASS line. Two commits follow them: plant-world #36's
+re-aimed hits, which lived in those merges, and the dist rebuilt with both
+(212,101 B, sha256
+`edb6c9dce5af9c759fa2111134628be235c2a04532e4b8d452ae37681794e044`). The
+resulting tree is the tested one of 81a6285 exactly, but for the order of
+the entries in this file (the PR #3 entry now follows round 5). The
+pre-rebase history is kept locally as `backup/m4-world-contact-merged`.
+PR #3 now targets `main`; its CI stays red on the slot-wedge test alone, on
+purpose.
