@@ -7,6 +7,7 @@
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { SimCore, plantBlock, sticksToChannels as ch } from '../../src/js/sim-core.js';
 import * as feel from '../lib/feel.mjs';
@@ -921,18 +922,29 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   // and the one 72 mm along, on box 3, holds the quad whether or not the gap
   // does (a world with the gap opened to 20 um passed), so the quad is yawed
   // -0.1 rad and the rim on the gap meets the wall alone, 7 mm ahead of the
-  // next point. Through: past x = -6.75 as before, into a box, or into the
-  // gap (the wall above the door taken as one solid).
+  // next point. Through: past x = -6.75, into a box, or into the gap (the
+  // wall above the door taken as one solid), or across the wall's face plane
+  // (1 mm in) anywhere but the open doorway under the lintel. A point that
+  // crossed it in the doorway left the room through the door, not through
+  // the wall: after the hit the quad can tumble down in front of the door
+  // and fly out under the lintel (7 of these hits do with the sliding
+  // friction of plant.c's sweeps, every point clear of every box).
   const office = await mapBoxes('office');
   const seam = office[3].min[1];
   const face = office[3].max[0];
   assert.ok(Math.abs(seam - office[5].max[1] - 1e-6) < 1e-9 && office[5].max[0] === face
     && office[5].min[2] < 2.2 && office[5].max[2] > 2.2, 'the lintel ends 1 um short of the wall, flush with its face, at the height flown');
   const above = { min: office[5].min, max: [face, office[3].max[1], office[5].max[2]] };
+  // The doorway: between wall boxes 4 and 3, under the lintel (box 5), all
+  // three flush with the face.
+  const door = { y: [office[4].max[1], office[3].min[1]], z: [0, office[5].min[2]] };
+  assert.ok(office[4].max[0] === face && office[4].max[1] < office[5].min[1] + 1e-9 && office[5].min[2] > 1.5 && office[4].min[2] === 0, 'the doorway is under the lintel');
+  const inDoor = (p) => p[1] > door.y[0] && p[1] < door.y[1] && p[2] >= door.z[0] && p[2] < door.z[1];
   const lq = [Math.cos(0.05) * Math.cos(0.075), Math.sin(0.05) * Math.sin(0.075), -Math.cos(0.05) * Math.sin(0.075), -Math.sin(0.05) * Math.cos(0.075)];
   let through = 0;
   let onGap = 0;
   let lead = Infinity;
+  let viaDoor = 0;
   for (const dy of [1e-6, -1e-6, 3e-4, 1e-3, -1e-3, 2e-3, -2e-3]) {
     for (const v of [2, 5, 8]) {
       const pos = placing(0, [-6.5, seam + dy, 2.2], lq);
@@ -943,13 +955,32 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
       c.motorOverride(-1, D(0.34));
       let bad = false;
       let hit = null;
+      let prev = null;
+      const passed = [false, false, false, false, false];    // through the doorway
       for (let k = 0; k < 2000; k++) {
         c.step(1);
-        if (footMin(c, 0) < -6.75 || footInside(c, office) || footInside(c, [above])) bad = true;
+        const fp = c.footprint;
+        // Each point's crossings of the plane 1 mm behind the face (footInside's
+        // tolerance), where its path met it.
+        if (prev) {
+          fp.forEach((p, i) => {
+            const q = prev[i];
+            const behind = face - 1e-3;
+            if ((q[0] - behind) * (p[0] - behind) < 0) {
+              const t = (behind - q[0]) / (p[0] - q[0]);
+              const at = q.map((u, a) => u + t * (p[a] - u));
+              if (inDoor(at)) passed[i] = true;
+              else bad = true;
+            }
+          });
+        }
+        prev = fp;
+        if (fp.some((p, i) => p[0] < -6.75 && !passed[i]) || footInside(c, office) || footInside(c, [above])) bad = true;
         const ids = contactIds(c);
         if (!hit && ids.length) hit = { ids, fp: c.footprint };
       }
       if (bad) through++;
+      else if (passed.some(Boolean)) viaDoor++;
       // The first contact is the leading rim's alone, on the wall face, on
       // the gap (to the 1 um pose quantum), on box 3 on one side of it and
       // box 5 on the other.
@@ -960,7 +991,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
         && hit.ids.every((id) => (Math.abs(dy) < 1e-5 ? id === 3 || id === 5 : id === (dy > 0 ? 3 : 5)))) onGap++;
     }
   }
-  console.log(`office door lintel, 21 hits along the 1 um gap: ${onGap} first touched the wall with the leading rim alone on the gap (the next point ${(lead * 1e3).toFixed(1)} mm or more behind), ${through} went through, into the wall or into the gap`);
+  console.log(`office door lintel, 21 hits along the 1 um gap: ${onGap} first touched the wall with the leading rim alone on the gap (the next point ${(lead * 1e3).toFixed(1)} mm or more behind), ${through} went through, into the wall or into the gap; ${viaDoor} left the room afterwards through the doorway`);
   assert.equal(onGap, 21, 'every hit lands on the gap');
   assert.equal(through, 0);
 }
@@ -1262,7 +1293,10 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   // into the corner (20 to 25 um). edge: that tick ends with rim 3 on the
   // post's edge. Each hit runs 50 ms, against the post in one piece; the
   // control, the post above the split 1 mm proud of the walls, is a real
-  // ledge and must be caught.
+  // ledge and must be caught. held: the upper piece reported a contact with
+  // rim 3 in the corner below the split (the footprint's hull, #38, rises
+  // from rim 3 toward the canopy and meets the 1 mm overhang before rim 3
+  // reaches the split).
   const walls = [{ min: [-1, 1, 0], max: [2, 1.1, 3] }, { min: [2, -1, 0], max: [2.1, 1, 3] }];
   const lower = { min: [2, 1, 0], max: [2.1, 1.1, 1.5] };
   const posts = {
@@ -1278,13 +1312,15 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     c.step(300);
     c.teleport({ pos: [2 - gap - REACH, 1 - gap - REACH, 1.5 - below + REST], vel: [0.05, 0.05, vz] });
     let edge = null;
+    let held = false;
     for (let k = 0; k < 50; k++) {
       const z0 = c.footprint[3][2];
       c.step(1);
       const p = c.footprint[3];
       if (edge === null && z0 < 1.5 && p[2] >= 1.5 - 1e-9) edge = Math.abs(p[0] - post[0].min[0]) < 1e-9 && Math.abs(p[1] - post[0].min[1]) < 1e-9;
+      if (kinds(c.events(), 'contact').some((e) => e.box === 3) && p[0] > 1.999 && p[1] > 0.999 && p[2] < 1.5) held = true;
     }
-    return { z: c.footprint[3][2], edge, inside: footInside(c, boxes) };
+    return { z: c.footprint[3][2], edge, held, inside: footInside(c, boxes) };
   };
   const noLedge = (r, one) => r.z > 1.5005 && Math.abs(r.z - one.z) < 5e-3;
   for (const [k, hit] of [[225e-6, 2.25e-3, 0.5], [225e-6, 2.14e-3, 0.5], [180e-6, 2.79e-3, 0.8]].entries()) {
@@ -1297,7 +1333,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     // touches along the post's seam.
     assert.ok(noLedge(split, whole), 'no ledge at the split');
     assert.ok(!split.inside && !whole.inside, 'no rim inside the walls');
-    if (ledge) assert.ok(ledge.edge && !noLedge(ledge, whole), 'the check sees a real ledge at the split');
+    if (ledge) assert.ok((ledge.edge || ledge.held) && !noLedge(ledge, whole), 'the check sees a real ledge at the split');
   }
 
   // Deep in the solid: every point within 1 mm (27 samples) is inside some
@@ -1555,4 +1591,1478 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   }
 }
 
-console.log('plant-world: box tops, edges, seams, stacks, corners, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current: PASS');
+// 35. A box lifted off the floor by less than world.c's grounding tolerance
+// (ON_FACE_WU, 0.1 mm) stands on it: it has no bottom face, so it reaches
+// down to the floor, or a rim lying on the floor under it is outside the
+// 5 um near-box window (PAST_WU) and slides under the side. The press of 22
+// against the box on the floor plane and lifted 6, 20, 50 and 99 um: the
+// same footprint path every tick, the front rims held on the floor at the
+// foot of the side.
+{
+  const a = 0.5;
+  const ahead = REACH * Math.cos(a) - REST * Math.sin(a);
+  const below = REACH * Math.sin(a) + REST * Math.cos(a);
+  const rows = [];
+  for (const lift of [0, 6e-6, 20e-6, 50e-6, 99e-6]) {
+    const core = await flight({ floorZ: 0, boxes: [{ min: [2, -1, lift], max: [2.3, 1, 0.5], id: 5 }] });
+    core.teleport({ pos: [1.995 - ahead, 0, below], quat: [Math.cos(a / 2), 0, Math.sin(a / 2), 0], vel: [0.5, 0, 0] });
+    core.events();
+    core.motorOverride(-1, D(0.33));
+    const path = [];
+    let deepest = -Infinity;    // farthest x of any point below the top
+    let pressed = 0;            // ticks a rim lay on the floor against the side, touching both
+    let hits = 0;
+    for (let t = 0; t < 3000; t++) {
+      core.step(1);
+      hits += kinds(core.events(), 'contact').filter((e) => e.box === 5).length;
+      const fp = core.footprint;
+      path.push(fp);
+      if (core.state.contactFlags === 3 && fp.some((p) => Math.abs(p[0] - 2) < 1e-3 && Math.abs(p[2]) < 1e-6)) pressed++;
+      deepest = Math.max(deepest, ...fp.filter((p) => p[2] < 0.499).map((p) => p[0]));
+    }
+    rows.push({ lift, path, deepest, pressed, hits });
+  }
+  const [flat] = rows;
+  for (const r of rows) r.apart = Math.max(...r.path.map((fp, k) => Math.max(...fp.map((p, i) => maxAbs(p.map((v, ax) => v - flat.path[k][i][ax]))))));
+  const lifted = rows.slice(1);
+  console.log(`boxes lifted ${lifted.map((r) => r.lift * 1e6).join(', ')} um off the floor, pressed into at floor level for 3 s: deepest below the top x ${lifted.map((r) => r.deepest.toFixed(6)).join(', ')}; ${lifted.map((r) => r.pressed).join(', ')} ticks on the floor against the side (on the floor plane ${flat.pressed}); footprints at most ${Math.max(...lifted.map((r) => r.apart)).toExponential(2)} m from the floor-plane box's`);
+  assert.ok(flat.pressed >= 1000 && flat.deepest <= 2.000001, 'the box on the floor plane holds the rims at its foot');
+  for (const r of lifted) {
+    assert.ok(r.deepest <= 2.000001, `lifted ${r.lift * 1e6} um: kept out from under the box`);
+    assert.ok(r.apart < 1e-9 && r.hits === flat.hits, `lifted ${r.lift * 1e6} um: as the box on the floor plane`);
+  }
+}
+
+// 36. The concave corner with a split post (29), entered deeper than the rim
+// climbs past the split: rim 3 more than 5 um into the corner (world.c's
+// near-box window, PAST_WU) and less far past the split than into it. Only
+// the upper post piece is then near, and all three of its faces the rim
+// came through this tick are inner faces: the post's two toward the room
+// (the walls continue past them) and its bottom (the lower piece does). The
+// bottom was the shallowest and held the rim at the split, an invisible
+// ledge with a contact on the upper piece; the rim crossed the split inside
+// the solid, so world.c ranks that face after the others (crossedInside).
+// Aimed hits as in 29, rim 3 into the corner square or skewed: the same
+// footprint path and contacts as the post in one piece. Control: the post
+// above the split 1 mm proud of the walls is a real ledge and holds the rim.
+{
+  const walls = [{ min: [-1, 1, 0], max: [2, 1.1, 3] }, { min: [2, -1, 0], max: [2.1, 1, 3] }];
+  const lower = { min: [2, 1, 0], max: [2.1, 1.1, 1.5] };
+  const posts = {
+    split: [lower, { min: [2, 1, 1.5], max: [2.1, 1.1, 3] }],
+    whole: [{ min: [2, 1, 0], max: [2.1, 1.1, 3] }],
+    ledge: [lower, { min: [1.999, 0.999, 1.5], max: [2.1, 1.1, 3] }],
+  };
+  const corner = async (post, [gx, gy, below]) => {
+    const boxes = [...walls, ...post].map((b, id) => ({ ...b, id }));
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport({ pos: [0, 0, 1] });
+    c.motorOverride(-1, c.plantDerived.dutyHover);
+    c.step(300);
+    c.teleport({ pos: [2 - gx - REACH, 1 - gy - REACH, 1.5 - below + REST], vel: [0.05, 0.05, 0.5] });
+    c.events();
+    const path = [];
+    const ev = [];
+    let cross = null;
+    for (let k = 0; k < 50; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [k, e.box, Number(e.impactMs.toFixed(6)), e.crashed]));
+      const p = c.footprint[3];
+      const [p1, p2] = [path[k - 1]?.[3], path[k - 2]?.[3]];
+      // The tick rim 3 crosses the split: where the two ticks before put it
+      // without the walls (at their speed), and whether it ends on the edge.
+      if (!cross && p2 && p1[2] < 1.5 && p[2] >= 1.5 - 1e-9) {
+        cross = { into: Math.min(2 * p1[0] - p2[0] - 2, 2 * p1[1] - p2[1] - 1), past: 2 * p1[2] - p2[2] - 1.5, edge: Math.abs(p[0] - 2) < 1e-9 && Math.abs(p[1] - 1) < 1e-9 };
+      }
+      path.push(c.footprint);
+    }
+    return { path, ev, cross, z: c.footprint[3][2], inside: footInside(c, boxes) };
+  };
+  // Aimed on the plant of their day: with loadFraction 0.65 and the rpm-based
+  // current (2026-10-23) the third and fourth hits start 10 um lower so they
+  // stay less far past the split than into the corner (the guard below).
+  const hits = [[225e-6, 225e-6, 2.473e-3], [200e-6, 200e-6, 2.463e-3], [240e-6, 240e-6, 2.49e-3], [200e-6, 230e-6, 2.48e-3], [230e-6, 200e-6, 2.48e-3]];
+  let worst = 0;
+  for (const [k, hit] of hits.entries()) {
+    const split = await corner(posts.split, hit);
+    const whole = await corner(posts.whole, hit);
+    const apart = Math.max(...split.path.map((fp, t) => Math.max(...fp.map((p, i) => maxAbs(p.map((v, a) => v - whole.path[t][i][a]))))));
+    worst = Math.max(worst, apart);
+    const c = split.cross;
+    console.log(`  rim 3 ${(c.into * 1e6).toFixed(1)} um into the corner, ${(c.past * 1e6).toFixed(1)} um past the split, on the edge ${c.edge}: z after 50 ms ${split.z.toFixed(6)} (post in one piece ${whole.z.toFixed(6)}), footprints ${apart.toExponential(2)} m apart, contacts ${JSON.stringify(split.ev.map((e) => e[1]))} (one piece ${JSON.stringify(whole.ev.map((e) => e[1]))})`);
+    // Not vacuous: deeper into the corner than the window, less far past the split.
+    assert.ok(c.edge && whole.cross.edge && c.into > 5e-6 && c.past > 0 && c.past < c.into, `hit ${JSON.stringify(hit)} is in the corner past the window and less far past the split`);
+    assert.ok(apart < 1e-9 && JSON.stringify(split.ev) === JSON.stringify(whole.ev), `hit ${JSON.stringify(hit)}: as the post in one piece`);
+    assert.ok(!split.inside && split.z > 1.5005, 'climbed past the split, no rim inside');
+    if (!k) {
+      const ledge = await corner(posts.ledge, hit);
+      assert.ok(ledge.z < 1.5, 'the real ledge holds the rim');
+    }
+  }
+  console.log(`concave corner, rim 3 deeper into the corner than past the post's split, ${hits.length} hits: footprints at most ${worst.toExponential(2)} m from the post in one piece`);
+}
+
+// 37. Pressed into a split wall as it rises into the ceiling beside the
+// seam (29, now with 0.5 m/s into the wall): the same as the wall in one
+// piece. Rim 1 ends the first tick inside the wall piece 20 to 90 um from
+// the seam, past the wall face (an inner face there, under the ceiling) and
+// into the ceiling (whose bottom is an inner face where the wall is). The
+// seam face was the shallowest of the three inner faces and passed world.c's
+// travel check on its 0.1 mm allowance (ON_FACE_WU) with no travel across
+// it: the rim was pushed onto the seam, an extra wall contact whose friction
+// took 18% off its speed into the ceiling. Contacts are compared by surface
+// (a wall piece or the ceiling), impact and crash flag.
+{
+  const mapBoxes = async (id) => JSON.parse(await readFile(new URL(`tests/fixtures/maps/${id}.json`, root), 'utf8')).boxes
+    .map((b, i) => ({ min: b.um.slice(0, 3).map((v) => v * 1e-6), max: b.um.slice(3).map((v) => v * 1e-6), id: i }));
+  const room = await mapBoxes('room');
+  const merged = [{ min: [0, 1, 2].map((a) => Math.min(room[0].min[a], room[1].min[a], room[2].min[a])), max: [0, 1, 2].map((a) => Math.max(room[0].max[a], room[1].max[a], room[2].max[a])), id: 0 }, ...room.slice(3)];
+  // The pose of 29: on its tail, belly to the +x wall, rim 1 on the wall
+  // face 0.5 mm under the ceiling, rimY from the seam.
+  const L = REACH * Math.SQRT2;
+  const c22 = Math.cos(Math.PI / 8);
+  const s22 = Math.sin(Math.PI / 8);
+  const up = [c22 * Math.SQRT1_2, -s22 * Math.SQRT1_2, -c22 * Math.SQRT1_2, s22 * Math.SQRT1_2];
+  const wallX = room[0].min[0];
+  const seamY = room[1].max[1];
+  const ceilZ = room[12].min[2];
+  const surface = (e) => (e.box >= 0 && e.box <= 2 ? 'wall' : e.box);
+  let differ = 0;
+  let hitMin = Infinity;
+  // Beside the seam at 0.05 to 1.5 m/s into the wall, rising at 1 or 3 m/s,
+  // still or drifting off the seam; then across it, and 2 mm off it (29's).
+  const aims = [
+    [0.00002, [0.5, 0, 3]], [0.00005, [0.5, 0, 3]], [0.00009, [0.5, 0, 3]], [-0.00003, [0.5, 0, 3]], [-0.00008, [0.5, 0, 3]],
+    [0.00003, [0.05, 0, 3]], [0.00003, [1.5, 0, 3]], [0.00001, [0.5, 0, 1]], [0.00006, [0.5, 0.01, 3]],
+    [0.00002, [0.5, -0.05, 3]], [-0.002, [0.5, 4, 3]],
+  ];
+  for (const [rimY, vel] of aims) {
+    const pos = [wallX - REST, seamY + rimY, ceilZ - 5e-4 - L];
+    const run = async (boxes) => {
+      const c = await flight({ floorZ: 0, boxes });
+      c.teleport({ pos, quat: up, vel });
+      c.events();
+      c.step(1);
+      const r = c.footprint[1];
+      const first = kinds(c.events(), 'contact');
+      const ev = [...first];
+      for (let k = 1; k < 20; k++) {
+        c.step(1);
+        ev.push(...kinds(c.events(), 'contact'));
+      }
+      return { r, ev: ev.map((e) => [surface(e), Number(e.impactMs.toFixed(6)), e.crashed]), first: first.map((e) => [surface(e), e.impactMs]), vel: c.state.vel, pos: c.state.pos };
+    };
+    const a = await run(room);
+    const b = await run(merged);
+    // Not vacuous: rim 1 met the ceiling on the first tick, on the wall face
+    // (to 1 nm) beside the seam, and the wall reported the press.
+    const ceiling = a.first.find((e) => e[0] === 12);
+    assert.ok(ceiling && Math.abs(a.r[0] - wallX) <= 1e-9 && Math.abs(a.r[2] - ceilZ) <= 1e-6 && a.first.some((e) => e[0] === 'wall' && e[1] > 0.9 * vel[0]), `rim 1 at y ${rimY} pressed into the wall-ceiling edge: ${JSON.stringify(a.first)}`);
+    hitMin = Math.min(hitMin, ceiling[1]);
+    if (JSON.stringify(a.ev) !== JSON.stringify(b.ev) || a.vel.some((v, k) => Math.abs(v - b.vel[k]) > 1e-9) || a.pos.some((v, k) => Math.abs(v - b.pos[k]) > 1e-9)) {
+      differ++;
+      console.log(`  pressed up the split wall into the ceiling differs at ${JSON.stringify([rimY, vel])}: split ${JSON.stringify(a.ev)} vs one piece ${JSON.stringify(b.ev)}, rim 1 y after the first tick ${(a.r[1] - seamY).toExponential(2)} m from the seam`);
+    }
+  }
+  console.log(`pressed into a split wall rising into the ceiling beside its seam, ${aims.length} aimed (rim 1 hit the ceiling at ${hitMin.toFixed(3)} m/s or more): ${differ} differ from the wall in one piece`);
+  assert.equal(differ, 0);
+
+  // The T-join of 26 (a table against a wall split at y = 0, the leading rim
+  // on the table top at the seam, leaning into the wall, pressed for 3 s):
+  // the same footprint path and contacts as against the wall in one piece
+  // (a seam touch 361 ms in, from the allowance, took it 0.15 mm apart).
+  // Pitched 0.52 rad into the wall: the leading rim (motor 1, +x -y) from the CG.
+  const tq = [Math.cos(0.26), 0, Math.sin(0.26), 0];
+  const lead = [REACH * Math.cos(0.52) - REST * Math.sin(0.52), -REACH, -REACH * Math.sin(0.52) - REST * Math.cos(0.52)];
+  const tPos = [1.99 - lead[0], -lead[1], 0.5 - lead[2]];
+  const table = { min: [1, -1, 0], max: [2, 1, 0.5], id: 1 };
+  const join = async (wall) => {
+    const c = await flight({ floorZ: 0, boxes: [table, ...wall] });
+    c.teleport({ pos: tPos, quat: tq });
+    c.events();
+    c.motorOverride(-1, D(0.3));
+    const path = [];
+    const ev = [];
+    let seam = 0;
+    for (let k = 0; k < 3000; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [k, e.box === 1 ? 'table' : 'wall', Number(e.impactMs.toFixed(6))]));
+      path.push(c.footprint);
+      if (c.footprint.some((p) => p[0] > 2 - 1e-4 && Math.abs(p[1]) < 1e-3 && Math.abs(p[2] - 0.5) < 1e-4)) seam++;
+    }
+    return { path, ev, seam };
+  };
+  const tSplit = await join([{ min: [2, -1, 0], max: [2.2, 0, 2], id: 2 }, { min: [2, 0, 0], max: [2.2, 1, 2], id: 3 }]);
+  const tOne = await join([{ min: [2, -1, 0], max: [2.2, 1, 2], id: 2 }]);
+  const tApart = Math.max(...tSplit.path.map((fp, k) => Math.max(...fp.map((p, i) => maxAbs(p.map((u, a) => u - tOne.path[k][i][a]))))));
+  console.log(`T-join against the split wall, pressed 3 s: ${tSplit.seam} ms with a rim in the join, contacts ${JSON.stringify(tSplit.ev)} (one piece ${JSON.stringify(tOne.ev)}), footprints ${tApart.toExponential(2)} m apart`);
+  assert.ok(tSplit.seam >= 1000, 'pressed into the T-join');
+  assert.ok(tApart < 1e-9 && JSON.stringify(tSplit.ev) === JSON.stringify(tOne.ev), 'the T-join as against the wall in one piece');
+}
+
+// The footprint hull checks of 38 and after: the hull of the five points,
+// how deep a box's edges are inside it, and 27's pose against a wall.
+const CANOPY = air65.values.hullAbove.value;
+// The hull's faces (rims 0 1 3 2 round the base, the canopy at the apex),
+// pointing out, and how deep a point is inside it (negative outside).
+const hullDepthAt = (fp) => {
+  const v = [fp[0], fp[1], fp[3], fp[2], fp[4]];
+  const c = [0, 1, 2].map((a) => v.reduce((s, p) => s + p[a], 0) / 5);
+  const sub = (a, b) => a.map((x, i) => x - b[i]);
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const planes = [[0, 1, 2], [0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]].map(([i, j, k]) => {
+    const [p, q, r] = [sub(v[j], v[i]), sub(v[k], v[i]), sub(c, v[i])];
+    const n = [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+    const len = Math.hypot(...n) * (dot(n, r) > 0 ? -1 : 1);
+    const u = n.map((x) => x / len);
+    return { u, d: dot(u, v[i]) };
+  });
+  return { planes, at: (x) => Math.min(...planes.map(({ u, d }) => d - dot(u, x))) };
+};
+// The deepest any point of the box's twelve edges is inside the hull: each
+// edge clipped to the hull, then sampled.
+const edgeIn = (fp, box) => {
+  const { planes, at } = hullDepthAt(fp);
+  let worst = 0;
+  for (let s = 0; s < 12; s++) {
+    const k = Math.floor(s / 4);
+    const [k1, k2] = [(k + 1) % 3, (k + 2) % 3];
+    const a = [0, 0, 0];
+    const e = [0, 0, 0];
+    a[k] = box.min[k];
+    e[k] = box.max[k];
+    a[k1] = e[k1] = s & 1 ? box.max[k1] : box.min[k1];
+    a[k2] = e[k2] = s & 2 ? box.max[k2] : box.min[k2];
+    let [t0, t1] = [0, 1];
+    for (const { u, d } of planes) {
+      const [da, de] = [u[0] * a[0] + u[1] * a[1] + u[2] * a[2] - d, u[0] * e[0] + u[1] * e[1] + u[2] * e[2] - d];
+      if (da > 0 && de > 0) t0 = 2;
+      else if (da > 0) t0 = Math.max(t0, da / (da - de));
+      else if (de > 0) t1 = Math.min(t1, da / (da - de));
+    }
+    for (let j = 0; t0 <= t1 && j <= 32; j++) {
+      const t = t0 + ((t1 - t0) * j) / 32;
+      worst = Math.max(worst, at(a.map((x, i) => x + t * (e[i] - x))));
+    }
+  }
+  return worst;
+};
+// 27's pose: pitched tilt into +x after a yaw just past 45 deg, rim 1 on
+// the wall face, on the quaternion the plant gets.
+const pose = (tilt, yaw) => {
+  const [cp, sp, cy, sy] = [Math.cos(tilt / 2), Math.sin(tilt / 2), Math.cos(yaw / 2), Math.sin(yaw / 2)];
+  const quat = [cp * cy, sp * sy, sp * cy, cp * sy];
+  const r = quat.map((v) => Math.round(v * 1e9) * 1e-9);
+  const n = Math.sqrt(r.reduce((s, v) => s + v * v, 0));
+  const [w, x, y, z] = r.map((v) => v / n);
+  const rot = (v) => {
+    const t = [2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])];
+    return [v[0] + w * t[0] + (y * t[2] - z * t[1]), v[1] + w * t[1] + (z * t[0] - x * t[2]), v[2] + w * t[2] + (x * t[1] - y * t[0])];
+  };
+  return { quat, rim: rot([REACH, -REACH, -REST]), canopy: rot([0, 0, CANOPY]) };
+};
+const onFace = (tilt) => {
+  const ahead = Math.floor(pose(tilt, Math.PI / 4).rim[0] * 1e6 + 1e-9) * 1e-6;
+  let lo = Math.PI / 4;
+  let hi = pose(tilt, lo).rim[0] <= ahead ? lo : lo + 0.05;
+  while (hi > lo && hi - lo > 1e-15) {
+    const m = (lo + hi) / 2;
+    if (pose(tilt, m).rim[0] > ahead) lo = m;
+    else hi = m;
+  }
+  return { ...pose(tilt, hi), cgX: 2 - ahead };
+};
+
+// 38. A box edge never passes through the footprint's hull, the convex hull
+// of the five points (a square pyramid: the duct rims round the base, the
+// canopy 28 mm above them at the apex). Pressed up under a shelf shallower
+// than the quad against a wall, near level and yawed so that rim 1 leads on
+// the wall face as in 27, the shelf's front edge comes down between rim 1 and
+// the rest of the footprint, where no point is: the body swung over it and
+// ended with points on the shelf. Each press starts 30 mm under the shelf
+// (the hull clear of it) and checks every tick that no point of the shelf's
+// edges is inside the hull (world.c sc_world_hull holds it off) and no
+// footprint point is inside a box. Not vacuous: the shelf reported its first
+// contact with every footprint point still 5 mm or more from it, so the hull
+// met the edge. Then a quad set down level on a table with its CG 10 mm
+// behind the edge and its front rims over it rests on its back rims and the
+// edge, still and level, rather than tipping with the edge through its hull.
+{
+  let worst = 0;
+  let inside = 0;
+  let hullFirst = 0;
+  let presses = 0;
+  let lowest = Infinity;
+  for (const depth of [0.03, 0.04, 0.045]) {
+    const boxes = [{ min: [2 - depth, -1, 0.9], max: [2, 1, 0.94], id: 1 }, { min: [2, -1, 0], max: [2.08, 1, 2.4], id: 2 }];
+    for (const [tilt, duty, vz] of [[1e-5, D(0.5), 0.5], [1e-5, D(0.62), 0.5], [1e-4, D(0.5), 0.5], [1e-4, D(0.62), 0.5], [1e-3, D(0.5), 0.5], [1e-3, D(0.62), 0.5], [0, 0.45, 0.2]]) {
+      const { quat, rim, cgX } = onFace(tilt);
+      const c = await flight({ floorZ: 0, boxes });
+      c.teleport({ pos: [cgX, 0, 0.87 - rim[2]], quat, vel: [tilt ? 0 : 1e-6, 0, vz] });
+      c.events();
+      c.motorOverride(-1, duty);
+      let met = null;
+      for (let k = 0; k < 3000; k++) {
+        c.step(1);
+        const fp = c.footprint;
+        worst = Math.max(worst, edgeIn(fp, boxes[0]));
+        if (footInside(c, boxes, 1e-6)) inside++;
+        // How far the nearest footprint point is from the shelf.
+        if (met === null && kinds(c.events(), 'contact').some((e) => e.box === 1)) met = Math.min(...fp.map((p) => Math.hypot(...[0, 1, 2].map((a) => Math.max(0, boxes[0].min[a] - p[a], p[a] - boxes[0].max[a])))));
+      }
+      presses++;
+      if (met !== null && met >= 0.005) hullFirst++;
+      lowest = Math.min(lowest, met ?? 0);
+    }
+  }
+  console.log(`presses up under 30, 40 and 45 mm shelves against a wall, ${presses}: shelf edges at most ${(worst * 1e6).toFixed(3)} um inside the footprint's hull, ${inside} ticks with a point inside a box; ${hullFirst} met the shelf with every point 5 mm or more from it (at least ${(lowest * 1e3).toFixed(1)} mm)`);
+  assert.ok(worst < 1e-6, 'no shelf edge through the hull');
+  assert.equal(inside, 0, 'no footprint point inside a box');
+  assert.equal(hullFirst, presses, 'the hull met the shelf edge, not a point');
+
+  // The table edge: level, yaw 0, CG 10 mm behind the edge (x 2), rims 1
+  // and 3 25.8 mm past it, set down 0.5 mm above the top.
+  const table = [{ min: [1, -1, 0], max: [2, 1, 0.5], id: 1 }];
+  const c = await flight({ floorZ: 0, boxes: table });
+  c.teleport({ pos: [1.99, 0, 0.5 + REST + 5e-4] });
+  let tWorst = 0;
+  let spin = 0;
+  for (let k = 0; k < 2000; k++) {
+    c.step(1);
+    tWorst = Math.max(tWorst, edgeIn(c.footprint, table[0]));
+    if (k >= 1000) spin = Math.max(spin, Math.hypot(...c.state.omega));
+  }
+  const q = c.state.quat;
+  const upZ = 1 - 2 * (q[1] * q[1] + q[2] * q[2]);
+  const fp = c.footprint;
+  console.log(`set down level with the CG 10 mm behind a table edge: after 2 s up-z ${upZ.toFixed(6)}, back rims at z ${fp[0][2].toFixed(6)} ${fp[2][2].toFixed(6)}, front rims ${fp[1][2].toFixed(6)} ${fp[3][2].toFixed(6)} over the edge; edge at most ${(tWorst * 1e6).toFixed(3)} um inside the hull; |omega| at most ${spin.toExponential(2)} rad/s over the last second`);
+  assert.ok(tWorst < 1e-6, 'the table edge never through the hull');
+  assert.ok(upZ > 0.9999 && fp[1][0] > 2.02 && Math.abs(fp[0][2] - 0.5) < 2e-5, 'resting level on its back rims and the edge, the front rims over it');
+  assert.ok(spin < 1e-3, 'and still');
+}
+
+// The boxes of a quadmath map fixture (ids: the box's index in the map).
+const mapFixture = async (id) => JSON.parse(await readFile(new URL(`tests/fixtures/maps/${id}.json`, root), 'utf8')).boxes
+  .map((b, i) => ({ min: b.um.slice(0, 3).map((v) => v * 1e-6), max: b.um.slice(3).map((v) => v * 1e-6), id: i }));
+
+// 39. The parity model's box contact is quadmath's CG point as committed in
+// 2a8ec95: the footprint's three rules in world.c resolvePoint (a box
+// standing on the floor reaching down to it, an inner face crossed inside the
+// solid ranking last, no on-face allowance for an inner face) are not
+// applied to it. The gate cannot see this (P2 flies with no boxes, P5 checks
+// the clearance query), so it is pinned here: seeded parity flights into the
+// boxes of eight maps hash to 2a8ec95's states and events; a box whose bottom
+// is 10.03 to 10.09 mm up (within ON_FACE_WU of the CG's padded floor) lets
+// the sliding CG pass under it, as quadmath's does; and the CG pressed into
+// the room's split wall as it rises into the ceiling beside the seam meets
+// the wall first, as it did (with the footprint's rules it met the ceiling
+// first, at 2.99 m/s).
+{
+  const parity = { ...air65, id: 'parity-box-contact', model: 'parity' };
+  let seed = 12345;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  const all = createHash('sha256');
+  let runs = 0;
+  let contacts = 0;
+  for (const id of ['room', 'garage', 'office', 'living', 'gym', 'warehouse', 'backyard', 'trainer']) {
+    const boxes = await mapFixture(id);
+    const h = createHash('sha256');
+    const c = await flight({ floorZ: 0, boxes }, parity);
+    for (let r = 0; r < 60; r++) {
+      // Near a random face of a random box, flying into it.
+      const b = boxes[Math.floor(rnd() * boxes.length)];
+      const ax = Math.floor(rnd() * 3);
+      const side = rnd() < 0.5 ? -1 : 1;
+      const pos = [0, 1, 2].map((a) => b.min[a] + rnd() * (b.max[a] - b.min[a]));
+      pos[ax] = (side > 0 ? b.max[ax] : b.min[ax]) + side * (0.0002 + rnd() * 0.02);
+      if (pos[2] < 0.01) pos[2] = 0.01 + rnd() * 0.02;
+      const vel = [0, 1, 2].map(() => (rnd() - 0.5) * 6);
+      vel[ax] = -side * (0.2 + rnd() * 8);
+      c.teleport({ pos, vel });
+      c.events();
+      for (let k = 0; k < 120; k++) {
+        c.step(1);
+        const ev = c.events();
+        contacts += kinds(ev, 'contact').length;
+        const s = c.state;
+        h.update(JSON.stringify([s.pos, s.vel, s.omega, ev]));
+      }
+      runs++;
+    }
+    all.update(h.digest('hex'));
+  }
+  const digest = all.digest('hex').slice(0, 16);
+  console.log(`parity model flown into the boxes of 8 maps, ${runs} flights, ${contacts} contact events: digest ${digest} (2a8ec95: 577, 1b06c2d6b3e71136)`);
+  assert.equal(contacts, 577, 'the same contact events as 2a8ec95');
+  assert.equal(digest, '1b06c2d6b3e71136', 'the same states and events as 2a8ec95');
+
+  const under = [];
+  for (const [lift, x0, vx, cgX] of [[0.01003, 1.9995, 3, 2.019383], [0.01005, 1.9995, 3, 2.019383], [0.01009, 1.9995, 3, 2.019383], [0.01005, 1.999, 0.5, 2.00232]]) {
+    const c = await flight({ floorZ: 0, boxes: [{ min: [2, -1, lift], max: [2.3, 1, 0.5], id: 5 }] }, parity);
+    c.teleport({ pos: [x0, 0, 0.01], vel: [vx, 0, 0] });
+    c.events();
+    const ev = [];
+    for (let k = 0; k < 100; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact'));
+    }
+    under.push(`${(lift * 1e3).toFixed(2)} mm up at ${vx} m/s: x ${c.state.pos[0].toFixed(6)}, ${ev.length} contacts`);
+    assert.ok(ev.length === 0 && Math.abs(c.state.pos[0] - cgX) < 1e-6, `the CG passes under the box: ${under.at(-1)}`);
+  }
+  console.log(`parity CG sliding on its floor toward a box: ${under.join('; ')}`);
+
+  const room = await mapFixture('room');
+  const merged = [{ min: [0, 1, 2].map((a) => Math.min(...room.slice(0, 3).map((b) => b.min[a]))), max: [0, 1, 2].map((a) => Math.max(...room.slice(0, 3).map((b) => b.max[a]))), id: 0 }, ...room.slice(3)];
+  const [wallX, seamY, ceilZ] = [room[0].min[0], room[1].max[1], room[12].min[2]];
+  const press = async (boxes) => {
+    const c = await flight({ floorZ: 0, boxes }, parity);
+    c.teleport({ pos: [wallX - 2e-4, seamY + 2e-5, ceilZ - 1e-3], vel: [0.5, 0, 3] });
+    c.events();
+    const ev = [];
+    for (let k = 0; k < 20; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [e.box <= 2 ? 'wall' : e.box, Number(e.impactMs.toFixed(4))]));
+    }
+    return { ev, vel: c.state.vel };
+  };
+  const split = await press(room);
+  const whole = await press(merged);
+  console.log(`parity CG pressed into the room's split wall, rising into the ceiling 20 um from the seam: ${JSON.stringify(split.ev)}, vel z ${split.vel[2].toFixed(6)}; the wall in one piece ${JSON.stringify(whole.ev)}, vel z ${whole.vel[2].toFixed(6)}`);
+  assert.deepEqual(split.ev, [['wall', 0], ['wall', 0.4097], [12, 2.0092]], 'split wall: the wall first, as committed');
+  assert.ok(Math.abs(split.vel[2] + 0.837070343) < 1e-8, 'split wall: the same velocity');
+  assert.deepEqual(whole.ev, [['wall', 0.4997], [12, 2.4502]], 'one piece: the wall first, as committed');
+  assert.ok(Math.abs(whole.vel[2] + 0.979411859) < 1e-8, 'one piece: the same velocity');
+}
+
+// 40. A solid in pieces meets the footprint's hull as the same solid in one
+// piece (world.c buildSolids): a table split near, under or across the edge
+// the quad lands on, in two, three or four pieces, and 38's shelf split along
+// and across its front edge, give the same footprint path tick by tick and
+// the same contacts as the box in one piece, the shelf's edge staying out of
+// the hull; and every order of the pieces in the map's list gives the same
+// path (the hull's contacts are taken in order in plant.c's sweeps). Per
+// piece, a seam was a face: a sliver of the far piece across it pushed the
+// quad up to 5 mm sideways in one tick with a phantom contact and a roll
+// kick, the split shelf held its edge 2.2 um inside the hull, and swapping
+// two pieces in the list moved the quad 44 um.
+{
+  const cut = (boxes, ax, at) => boxes.flatMap((b) => (b.min[ax] < at && at < b.max[ax]
+    ? [{ ...b, max: b.max.map((v, a) => (a === ax ? at : v)) }, { ...b, min: b.min.map((v, a) => (a === ax ? at : v)) }]
+    : [b]));
+  const yawQ = (yaw) => [Math.cos(yaw / 2), 0, 0, Math.sin(yaw / 2)];
+  const fly = async (boxes, { pos, vel, quat, duty }, ticks, edgeOf) => {
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport({ pos, vel, quat });
+    c.events();
+    if (duty) c.motorOverride(-1, duty);
+    const path = [];
+    const ev = [];
+    let edge = 0;
+    for (let k = 0; k < ticks; k++) {
+      c.step(1);
+      path.push(c.footprint);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [k, e.box, Number(e.impactMs.toFixed(6)), e.crashed]));
+      if (edgeOf) edge = Math.max(edge, edgeIn(c.footprint, edgeOf));
+    }
+    return { path, ev, edge };
+  };
+  const apart = (a, b) => Math.max(...a.path.map((fp, k) => Math.max(...fp.map((p, i) => maxAbs(p.map((v, ax) => v - b.path[k][i][ax]))))));
+  let runs = 0;
+  let worst = 0;
+  const differ = [];
+  const same = (what, split, whole) => {
+    const d = apart(split, whole);
+    runs++;
+    worst = Math.max(worst, d);
+    if (!(d < 1e-9) || JSON.stringify(split.ev) !== JSON.stringify(whole.ev)) differ.push(`${what}: ${d.toExponential(2)} m apart, contacts ${JSON.stringify(split.ev.slice(0, 4))} vs ${JSON.stringify(whole.ev.slice(0, 4))}`);
+  };
+
+  // The table, the pieces all reporting its id.
+  const table = [{ min: [1, -1, 0], max: [2, 1, 0.5], id: 1 }];
+  const ySeams = [REACH - 3e-3, REACH - 1e-4, -(REACH - 1e-4), 0.0338, 0.01, 0];
+  const splits = [
+    ...ySeams.map((y) => [`y ${y.toFixed(4)}`, cut(table, 1, y)]),
+    ['y -0.005 and 0.008', cut(cut(table, 1, -0.005), 1, 0.008)],
+    ['x 1.995', cut(table, 0, 1.995)],
+    ['x 1.97', cut(table, 0, 1.97)],
+    ['z 0.3', cut(table, 2, 0.3)],
+    ['quartered', cut(cut(table, 1, 0), 0, 1.97)],
+  ];
+  // Dropped level or yawed onto the edge, the CG 10 mm behind it.
+  for (const [vz, yaw, up] of [[-1, 0, 2e-3], [-2, 0, 2e-3], [-1, 0.3, 2e-3], [-3, 0, 5e-4]]) {
+    const start = { pos: [1.99, 0, 0.5 + REST + up], vel: [0, 0, vz], quat: yawQ(yaw) };
+    const whole = await fly(table, start, 600);
+    for (const [name, boxes] of splits.slice(0, ySeams.length)) same(`dropped at ${vz} m/s yaw ${yaw}, cut at ${name}`, await fly(boxes, start, 600), whole);
+  }
+  // Set down level on the edge (38's table) for 2 s.
+  const setDown = { pos: [1.99, 0, 0.5 + REST + 5e-4] };
+  const rest = await fly(table, setDown, 2000);
+  for (const [name, boxes] of splits) same(`set down, cut at ${name}`, await fly(boxes, setDown, 2000), rest);
+  // Set down 3 mm off a seam, the pieces in every order.
+  const perms = (a) => (a.length <= 1 ? [a] : a.flatMap((x, i) => perms([...a.slice(0, i), ...a.slice(i + 1)]).map((p) => [x, ...p])));
+  const offSeam = { pos: [1.99, 0.003, 0.5 + REST + 5e-4] };
+  const restOff = await fly(table, offSeam, 2000);
+  for (const pieces of [cut(table, 1, 0), cut(cut(table, 1, -0.005), 1, 0.008)]) {
+    for (const order of perms(pieces)) same(`set down 3 mm off the seam, ${order.length} pieces in the order ${order.map((b) => b.min[1]).join(' ')}`, await fly(order, offSeam, 2000), restOff);
+  }
+
+  // 38's shelf press, the shelf split along and across its front edge.
+  const shelf = [{ min: [1.96, -1, 0.9], max: [2, 1, 0.94], id: 1 }];
+  const wall = { min: [2, -1, 0], max: [2.08, 1, 2.4], id: 2 };
+  let shelfEdge = 0;
+  for (const [tilt, duty] of [[1e-3, D(0.62)], [1e-4, D(0.62)]]) {
+    const { quat, rim, cgX } = onFace(tilt);
+    const press = { pos: [cgX, 0, 0.87 - rim[2]], quat, vel: [0, 0, 0.5], duty };
+    const whole = await fly([...shelf, wall], press, 3000, shelf[0]);
+    for (const [name, pieces] of [['y 0', cut(shelf, 1, 0)], ['y 0.02', cut(shelf, 1, 0.02)], ['y -0.02', cut(shelf, 1, -0.02)], ['y 0.045', cut(shelf, 1, 0.045)], ['y -0.045', cut(shelf, 1, -0.045)], ['x 1.98', cut(shelf, 0, 1.98)], ['z 0.92', cut(shelf, 2, 0.92)]]) {
+      const split = await fly([...pieces, wall], press, 3000, shelf[0]);
+      shelfEdge = Math.max(shelfEdge, split.edge);
+      same(`shelf press tilt ${tilt}, cut at ${name}`, split, whole);
+    }
+  }
+  console.log(`a table and a shelf in pieces against the same in one piece, ${runs} flights (cuts along, across and under the edge, 2 to 4 pieces, every order of 2 and 3): ${differ.length} differ, footprints at most ${worst.toExponential(2)} m apart; the split shelf's edge at most ${(shelfEdge * 1e6).toFixed(3)} um inside the hull`);
+  for (const d of differ.slice(0, 6)) console.log(`  ${d}`);
+  assert.equal(differ.length, 0, 'a solid in pieces meets the hull as the solid in one piece');
+  assert.ok(shelfEdge < 1e-6, 'the split shelf edge never through the hull');
+}
+
+// 41. A box standing on the floor reaches down through it for the hull too
+// (world.c satOverlap), as it has no bottom face for a point: no way out of
+// it takes the hull down. A level quad skimming 0.2 or 1 mm above the floor
+// at 2 or 5 m/s, square or yawed 30 deg, into a 20 or 40 mm post standing on
+// the floor that passes between its rims keeps every rim on or above the
+// floor and the post out of the hull. The least-overlap axis was a sloped
+// side face of the hull, about 0.79 vertical, so the push went down: rims up
+// to 5.75 mm under the floor. And posed in the gym beside a 40 mm post that
+// is 20 mm into the hull, no point inside it, with the motors at 0.265, the
+// quad comes off the post onto the floor; it was pushed 25 mm under the
+// floor, and held there every tick by the floor lifting it and the hull
+// pushing it down again.
+{
+  let runs = 0;
+  let low = 0;
+  let deep = 0;
+  for (const width of [0.02, 0.04]) {
+    const post = { min: [1, -width / 2, 0], max: [1 + width, width / 2, 0.7], id: 1 };
+    for (const gap of [0.0002, 0.001]) {
+      for (const speed of [2, 5]) {
+        for (const yawDeg of [0, 30]) {
+          for (const dy of [0, 0.008]) {
+            const yaw = (yawDeg * Math.PI) / 180;
+            // 30 mm short of the post, the rims REACH (cos + sin) ahead of the CG.
+            const ahead = REACH * (Math.cos(yaw) + Math.sin(yaw));
+            const c = await flight({ floorZ: 0, boxes: [post] });
+            c.teleport({ pos: [post.min[0] - ahead - 0.03, dy, REST + gap], quat: [Math.cos(yaw / 2), 0, 0, Math.sin(yaw / 2)], vel: [speed, 0, 0] });
+            c.motorOverride(-1, HOVER_DUTY);
+            for (let k = 0; k < 600; k++) {
+              c.step(1);
+              c.events();
+              low = Math.min(low, footMin(c, 2));
+              deep = Math.max(deep, edgeIn(c.footprint, post));
+            }
+            runs++;
+          }
+        }
+      }
+    }
+  }
+  console.log(`skimming the floor into a post standing on it, ${runs} skims: lowest rim ${(low * 1e3).toFixed(3)} mm, the post at most ${(deep * 1e3).toFixed(3)} mm inside the hull`);
+  assert.ok(low > -5e-4, 'no rim pushed under the floor');
+  assert.ok(deep < 1e-3, 'the post kept out of the hull');
+
+  const gym = await mapFixture('gym');
+  const c = await flight({ floorZ: 0, boxes: gym });
+  c.teleport({ pos: [7.520772, -5.181785, 0.014805], quat: [0.9987369473220914, -0.003535410201526186, -0.019845015588958355, 0.046023757829308384], vel: [-0.470755, 1.486271, -0.62221] });
+  c.motorOverride(-1, 0.2650545358657837);
+  let gLow = 0;
+  for (let k = 0; k < 1500; k++) {
+    c.step(1);
+    c.events();
+    gLow = Math.min(gLow, footMin(c, 2));
+  }
+  console.log(`posed in the gym with a 40 mm post 20 mm into the hull, motors at 0.265 for 1.5 s: lowest rim ${(gLow * 1e3).toFixed(3)} mm, CG ends at z ${c.state.pos[2].toFixed(4)}`);
+  assert.ok(gLow > -5e-4, 'no rim pushed under the floor');
+  assert.ok(Math.abs(c.state.pos[2] - REST) < 5e-4, 'resting on the floor');
+}
+
+// Map flights from a pose for 42 and after (from a regression sweep of random
+// poses in the map fixtures): Betaflight angle mode with 24's altitude hold
+// at zHold, sticks held ('tele'), or all four motors at a fixed duty
+// ('press'). Per tick: the deepest a footprint point is inside the solid (the
+// union of the boxes, the shortest way out along an axis, gaps under 2 um
+// bridged, for a point more than 0.1 um inside a box: one on a face in a
+// concave corner is on the surface), the ticks with a point more than 1 mm
+// in, the largest one-tick push (the CG's move less what its velocity
+// explains, from the tick after the pose), and the lowest rim.
+const unionDepth = (boxes, p) => {
+  if (!boxes.some((b) => [0, 1, 2].every((a) => p[a] > b.min[a] + 1e-7 && p[a] < b.max[a] - 1e-7))) return 0;
+  let best = Infinity;
+  for (let a = 0; a < 3; a++) {
+    for (const s of [-1, 1]) {
+      let t = 0;
+      for (let g = 0; g < 64; g++) {
+        const q = p.slice();
+        q[a] += s * t;
+        let ext = -1;
+        for (const b of boxes) {
+          if (![0, 1, 2].every((k) => q[k] >= b.min[k] - 2e-6 && q[k] <= b.max[k] + 2e-6)) continue;
+          const e = s > 0 ? b.max[a] - p[a] : p[a] - b.min[a];
+          if (e > t + 1e-9) ext = Math.max(ext, e);
+        }
+        if (ext < 0) break;
+        t = ext;
+      }
+      best = Math.min(best, t);
+    }
+  }
+  return best;
+};
+const flyPose = async (boxes, { pose, duty, zHold, sticks, ticks }) => {
+  const c = await flight({ floorZ: 0, boxes });
+  const chs = (s) => ch(s, [2000, 2000]);
+  if (duty === undefined) {
+    c.input(chs({ throttle: 0 }));
+    c.step(100);
+  }
+  c.teleport(pose);
+  if (duty !== undefined) c.motorOverride(-1, duty);
+  let prev = c.state;
+  const r = { inside: 0, deepTicks: 0, push: 0, low: 0 };
+  for (let k = 0; k < ticks; k++) {
+    if (duty === undefined && k % 4 === 0) {
+      const s = c.state;
+      c.input(chs({ throttle: Math.max(0, Math.min(1, 0.38 + 0.25 * (zHold - s.pos[2]) - 0.15 * s.vel[2])), ...sticks }));
+    }
+    c.step(1);
+    c.events();
+    const s = c.state;
+    const fp = c.footprint;
+    const din = Math.max(...fp.map((p) => unionDepth(boxes, p)));
+    r.inside = Math.max(r.inside, din);
+    if (din > 1e-3) r.deepTicks++;
+    r.low = Math.min(r.low, ...fp.map((p) => p[2]));
+    const d = [0, 1, 2].map((a) => s.pos[a] - prev.pos[a]);
+    if (k > 0) r.push = Math.max(r.push, Math.min(Math.hypot(...d.map((v, a) => v - prev.vel[a] * 1e-3)), Math.hypot(...d.map((v, a) => v - s.vel[a] * 1e-3))));
+    prev = s;
+  }
+  r.fault = c.fault;
+  r.end = c.state.pos;
+  return r;
+};
+const fmtPose = (r) => `${(r.inside * 1e3).toFixed(2)} mm in (${r.deepTicks} ticks > 1 mm), push ${(r.push * 1e3).toFixed(1)} mm, lowest rim ${(r.low * 1e3).toFixed(2)} mm`;
+
+// 42. A hull overlap the quad began the tick with is pushed back only as far
+// as it went deeper this tick (world.c sc_world_hull), and a solid a
+// footprint point began the tick inside is left to that point. The overlap
+// a pose leaves, or opposite hull pushes that cancel, used to be carried
+// until it grew by 28 nm and then pushed out whole in one tick, whatever
+// else was there: between two gym posts 43 mm apart a 19.5 mm push threw the
+// quad 22 mm into the next post and that one threw it back. Six poses from a
+// sweep of the gym, office and backyard: clean, against posts under a bench
+// (1.5 s at 0.125), and posed across a seam, a slab and a post, give no
+// one-tick push over 5 mm (21 to 41 mm before; the build before the hull, 0.9
+// to 4.1 mm); posed with a thin wall through the quad and a rim beside it,
+// no rim is held inside the wall (the hull holding the wall at its depth kept
+// a rim 9.9 mm in it when the point's solid was not left to the point).
+{
+  const maps = {};
+  for (const id of ['gym', 'office', 'backyard']) maps[id] = await mapFixture(id);
+  const poses = [
+    ['gym, clean, posts 70 and 79 under bench 78', 'gym', { pos: [-1.206141, -5.572899, 1.066924], quat: [0.12360403657049014, -0.007755651928591021, 0.002760218489604517, 0.9922974721324916], vel: [-0.460586, 0.102564, 0.042379] }, 0.12485433015972375],
+    ['gym, posed across seam 61/58', 'gym', { pos: [-7.54818, -5.195096, 0.356278], quat: [-0.8878893283170867, -0.02574103581107849, 0.004789797304898303, 0.4593114385444624], vel: [-1.464351, 8.111448, 0.298202] }, 0.15625133514404296],
+    ['gym, posed across seam 21/18', 'gym', { pos: [-7.496143, 5.214499, 0.320935], quat: [-0.5949891253785448, -0.022519397961825643, 0.27627648406604444, 0.7544217134658943], vel: [-1.594593, -3.903893, -0.44409] }, 0.3201125621795654],
+    ['office, posed across seam 79/76', 'office', { pos: [-3.6169, 1.957242, 0.373651], quat: [-0.9583604029563483, 0.00935002721375848, 0.0007611195693421739, 0.2854073154869175], vel: [0.227051, -0.132998, 0.134752] }, 0.3384892702102661],
+    ['office, posed at box 65', 'office', { pos: [-3.225434, 4.671019, 0.040892], quat: [0.4743427241172406, 0.13894981159139036, 0.01016627583630364, 0.869245981740136], vel: [4.404882, -7.034932, 4.925329] }, 0.07794291973114013],
+    ['backyard, posed with thin wall 47 through the quad', 'backyard', { pos: [-0.343597, 0.758099, 0.69806], quat: [0.9987510352172345, -0.00874539080904451, 0.005781718884875036, 0.048851402424452114], vel: [0.842135, -0.893103, -0.619923] }, 0.16360745429992676],
+  ];
+  const lines = [];
+  for (const [name, map, pose, duty] of poses) {
+    const r = await flyPose(maps[map], { pose, duty, ticks: 1500 });
+    lines.push(`${name}: ${fmtPose(r)}`);
+    assert.ok(r.fault === 0 && r.push <= 5e-3, `${name}: no push over 5 mm in a tick: ${fmtPose(r)}`);
+    if (map === 'backyard') assert.ok(r.deepTicks <= 20, `${name}: no rim held inside the wall: ${fmtPose(r)}`);
+  }
+  console.log(`hull overlaps carried from the tick before, 6 map poses for 1.5 s:\n  ${lines.join('\n  ')}`);
+}
+
+// 43. The hull's push never takes a footprint point into the solid. It came
+// after the points' push with nothing after it: pushed along the box face
+// axis most along the separating axis, which on the pyramid's sloped sides is
+// mostly vertical, a shelf edge meeting the hull over a slot lower than the
+// hull pushed the quad down into the table it flew over (rims through a 3 mm
+// plate in one tick), or under the floor below an overhang; wedged between
+// two boxes closer together than the footprint, the hull pushed it back into
+// the box the points had just left, every tick, and a rim crept 5 to 21 mm
+// into it; and a rim lying on a desk top was carried 1.3 mm under a
+// keyboard's edge onto the seam, where the next tick found it deep in the
+// solid and pushed it 29 mm out through the bottom of the desk. world.c
+// pushes the hull along the face axis most along the separating axis, or
+// the next one at least half along it, whose swept push takes no point into
+// a solid or under the floor (with none, no push: the contact's response
+// holds it), and plant.c resolves the five points again after the hull's
+// push, from where the points' push left them.
+{
+  // Level at the hover duty, the leading rims 5 mm short of a lower plate's
+  // edge and 0.5 mm above its top, flown in under an upper plate.
+  const slot = async (boxes) => {
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport({ pos: [0, 0, 5] });
+    c.motorOverride(-1, HOVER_DUTY);
+    c.step(300);
+    return c;
+  };
+  const depthIn = (p, b) => Math.min(...[0, 1, 2].map((a) => Math.min(p[a] - b.min[a], b.max[a] - p[a])));
+  // A 100 mm table with a shelf 20 mm above it, at 1 m/s (the shelf edge
+  // meets the hull's front face).
+  const table = { min: [2, -1, 0.4], max: [2.5, 1, 0.5], id: 1 };
+  const shelf = { min: [2, -1, 0.52], max: [2.5, 1, 0.6], id: 2 };
+  const c = await slot([table, shelf]);
+  c.teleport({ pos: [2 - REACH - 0.005, 0, 0.5 + REST + 5e-4], vel: [1, 0, 0] });
+  c.events();
+  c.motorOverride(-1, HOVER_DUTY);
+  let tableIn = 0;
+  let met = false;
+  for (let k = 0; k < 200; k++) {
+    c.step(1);
+    met = met || kinds(c.events(), 'contact').some((e) => e.box === 2);
+    tableIn = Math.max(tableIn, ...c.footprint.map((p) => depthIn(p, table)));
+  }
+  const shelfEdge = edgeIn(c.footprint, shelf);
+  console.log(`flown at 1 m/s over a table under a shelf 20 mm above it: the shelf met ${met}, a point at most ${(tableIn * 1e6).toFixed(1)} um inside the table, the shelf edge ${(shelfEdge * 1e6).toFixed(3)} um inside the hull after 200 ms`);
+  assert.ok(met && tableIn < 1e-6, 'the hull meets the shelf and pushes no rim into the table');
+  assert.ok(shelfEdge < 1e-6, 'the shelf edge out of the hull');
+
+  // 3 and 6 mm plates with a plate 12 or 20 mm above, at 2 and 6 m/s: no
+  // point through the lower plate in a tick, none ending a tick inside one.
+  let through = 0;
+  let plateIn = 0;
+  let entries = 0;
+  for (const T of [0.003, 0.006]) {
+    for (const G of [0.012, 0.02]) {
+      for (const vx of [2, 6]) {
+        const lower = { min: [2, -1, 0.5 - T], max: [2.5, 1, 0.5], id: 1 };
+        const upper = { min: [2, -1, 0.5 + G], max: [2.5, 1, 0.6], id: 2 };
+        const p = await slot([lower, upper]);
+        p.teleport({ pos: [2 - REACH - 0.005, 0, 0.5 + REST + 5e-4], vel: [vx, 0, 0] });
+        p.events();
+        p.motorOverride(-1, HOVER_DUTY);
+        let prev = p.footprint;
+        for (let k = 0; k < 400; k++) {
+          p.step(1);
+          p.events();
+          const fp = p.footprint;
+          for (let i = 0; i < 5; i++) {
+            const [a, b] = [prev[i], fp[i]];
+            if (a[0] > 2 && b[0] > 2 && a[0] < 2.5 && b[0] < 2.5 && a[2] >= 0.5 - 1e-9 && b[2] < 0.5 - T) through++;
+            plateIn = Math.max(plateIn, depthIn(b, lower), depthIn(b, upper));
+          }
+          prev = fp;
+        }
+        entries++;
+      }
+    }
+  }
+  // Under an overhang 12 or 20 mm above the floor, at 2 and 6 m/s.
+  let under = 0;
+  for (const G of [0.012, 0.02]) {
+    for (const vx of [2, 6]) {
+      const o = await slot([{ min: [2, -1, G], max: [2.5, 1, 0.3], id: 2 }]);
+      o.teleport({ pos: [2 - REACH - 0.005, 0, REST + 5e-4], vel: [vx, 0, 0] });
+      o.events();
+      o.motorOverride(-1, HOVER_DUTY);
+      for (let k = 0; k < 400; k++) {
+        o.step(1);
+        o.events();
+        under = Math.max(under, -footMin(o, 2));
+      }
+      entries++;
+    }
+  }
+  console.log(`flown into slots lower than the hull, ${entries} entries: ${through} ticks with a point through the lower plate, a point at most ${(plateIn * 1e6).toFixed(1)} um inside a plate and ${(under * 1e6).toFixed(1)} um under the floor`);
+  assert.equal(through, 0, 'no point through the lower plate');
+  assert.ok(plateIn < 1e-6 && under < 1e-6, 'no point pushed into a plate or under the floor');
+
+  // Map flights from a sweep: Betaflight angle mode, 24's altitude hold, held
+  // between two boxes closer together than the footprint (an office table
+  // leg and a partition, the room's wall and a low box, the backyard's beam
+  // and a roof slab 60 mm apart), and landing on the office desk beside the
+  // keyboard (5.3 m/s).
+  const lines = [];
+  for (const [name, map, pose, zHold, sticks] of [
+    ['office, table leg 41 and partition 37', 'office', { pos: [0.105893, 4.60203, 0.152758], quat: [-0.3886696315182631, -0.009984701395721962, 0.006956920319340776, 0.9212968167388652], vel: [0.999223, 0.551991, -0.424379] }, 0.152757684053421, { pitch: -0.22789168269250093, roll: -0.37585837651343124, yaw: 0 }],
+    ['room, wall 10 and box 15', 'room', { pos: [-1.048826, -1.739526, 0.214697], quat: [0.39288832325546275, 0.11502417072863094, -0.10557673667500096, 0.9062349354724522], vel: [0.158267, 0.251165, 0.025668] }, 0.21469748803406954, { pitch: -0.15592447640421242, roll: 0.04756093639224333, yaw: -0.09935929826460778 }],
+    ['backyard, beam 11 and roof slab 10', 'backyard', { pos: [1.25931, -3.742787, 3.404201], quat: [-0.36996368121153633, -0.003315394665742849, 0.09285792813793554, 0.9243880613273568], vel: [-4.636253, 0.369212, 0.530182] }, 3.404200709402714, { pitch: 0.2111138653981522, roll: 0.022243550890769098, yaw: 0 }],
+    ['office desk 64 beside keyboard 70', 'office', { pos: [-3.343331, 3.961153, 0.403577], quat: [-0.7918971866949445, -0.1269360413928296, 0.15879881422178174, 0.5758203050448171], vel: [-1.996532, 4.126, -2.691447] }, 0.40357710212221, { pitch: -0.17791794918871284, roll: 0.004814905242936384, yaw: 0 }],
+  ]) {
+    const r = await flyPose(await mapFixture(map), { pose, zHold, sticks, ticks: 2500 });
+    lines.push(`${name}: ${fmtPose(r)}`);
+    assert.ok(r.fault === 0 && r.deepTicks === 0 && r.low > -5e-4, `${name}: no point held inside a box or under the floor: ${fmtPose(r)}`);
+    assert.ok(r.push < 3e-3, `${name}: no push over 3 mm in a tick: ${fmtPose(r)}`);
+  }
+  console.log(`map flights for 2.5 s held between boxes closer than the footprint, and onto a desk:\n  ${lines.join('\n  ')}`);
+}
+
+// 44. A hull contact with no push (each push world.c tried takes a footprint
+// point into the solid) only stops the hull moving into the box. Its
+// response used to hold the speed the quad was leaving at, as a point's
+// does: posed in the backyard with thin wall 47 through the quad between its
+// rims and a rim on the wall's far face, motors at 0.16 (below hover), the
+// contact kept the quad moving at the wall the rim was pushed out of, so
+// each tick the rim was pushed back (1.7 mm) and the sweeps wound the quad
+// up to the spin cap (150 rad/s) and 4.6 m/s. 1.5 s from the pose: no
+// one-tick push over 1 mm (2a8ec95, with no hull: 0.9 mm) and the spin
+// never near the cap (2a8ec95: 51 rad/s).
+{
+  const yard = await mapFixture('backyard');
+  const c = await flight({ floorZ: 0, boxes: yard });
+  c.teleport({ pos: [-0.343597, 0.758099, 0.69806], quat: [0.9987510352172345, -0.00874539080904451, 0.005781718884875036, 0.048851402424452114], vel: [0.842135, -0.893103, -0.619923] });
+  c.motorOverride(-1, 0.16360745429992676);
+  let prev = null;
+  let push = 0;
+  let spin = 0;
+  let speed = 0;
+  for (let k = 0; k < 1500; k++) {
+    c.step(1);
+    c.events();
+    const s = c.state;
+    if (k >= 20) {
+      spin = Math.max(spin, Math.hypot(...s.omega));
+      speed = Math.max(speed, Math.hypot(...s.vel));
+    }
+    if (prev) {
+      const d = [0, 1, 2].map((a) => s.pos[a] - prev.pos[a]);
+      push = Math.max(push, Math.min(Math.hypot(...d.map((v, a) => v - prev.vel[a] * 1e-3)), Math.hypot(...d.map((v, a) => v - s.vel[a] * 1e-3))));
+    }
+    prev = s;
+  }
+  console.log(`posed with a thin wall through the quad, motors below hover, 1.5 s: largest one-tick push ${(push * 1e3).toFixed(2)} mm, |omega| at most ${spin.toFixed(1)} rad/s and |v| ${speed.toFixed(2)} m/s after the first 20 ms`);
+  assert.ok(push <= 1e-3, 'no rim pushed back over 1 mm a tick');
+  assert.ok(spin < 100, 'the quad not wound up toward the spin cap');
+}
+
+// 45. A box top smaller than the footprint, between the rims (a beam, a post,
+// a cube, a partition), holds a quad resting on it still: world.c holds a box
+// at up to four of the ends inside the hull (the deepest, the farthest from
+// it, and the farthest each side of the line between them), so the top is
+// held at its corners in the hull. Held at two, a diagonal of the top, the
+// quad tipped about it, the support flipped between the diagonals, and with
+// the motors off it rocked at up to 0.9 rad/s and crept along the box for
+// good. Set down level on a 20 mm beam (centred and 2 mm off), on a 20 mm
+// post 2 and 1 mm off and yawed 0.3 rad, dropped tilted onto a 16 mm cube,
+// and on office partition #14 and backyard beam #16 with the map loaded:
+// |omega| under 2e-3 rad/s and the CG within 10 um over the late seconds
+// (on the yawed post a yaw twitch of about 1e-3 rad/s, decaying in a few
+// ms, about once a second; the rest are under 1e-5 rad/s).
+{
+  const quatOf = (roll, pitch, yaw) => {
+    const [cr, sr, cp, sp, cy, sy] = [Math.cos(roll / 2), Math.sin(roll / 2), Math.cos(pitch / 2), Math.sin(pitch / 2), Math.cos(yaw / 2), Math.sin(yaw / 2)];
+    return [cr * cp * cy + sr * sp * sy, sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy, cr * cp * sy - sr * sp * cy];
+  };
+  const rest = async (boxes, pose, ticks, late) => {
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport(pose);
+    c.events();
+    let spin = 0;
+    let from = null;
+    for (let k = 0; k < ticks; k++) {
+      c.step(1);
+      c.events();
+      if (k === ticks - late) from = [...c.state.pos];
+      if (k >= ticks - late) spin = Math.max(spin, Math.hypot(...c.state.omega));
+    }
+    return { spin, creep: Math.hypot(...c.state.pos.map((v, a) => v - from[a])) };
+  };
+  const top = 0.5 + REST + 5e-4;
+  const beam = [{ min: [1.99, -1, 0], max: [2.01, 1, 0.5], id: 1 }];
+  const cases = [
+    ['20 mm beam, centred', beam, { pos: [2, 0, top] }],
+    ['20 mm beam, 2 mm off', beam, { pos: [2.002, 0, top] }],
+    ['20 mm post, 2 and 1 mm off, yawed 0.3', [{ min: [1.99, -0.01, 0], max: [2.01, 0.01, 0.5], id: 1 }], { pos: [2.002, 0.001, top], quat: quatOf(0, 0, 0.3) }],
+    ['16 mm cube, dropped tilted', [{ min: [-0.00182, -0.00896, 0.484], max: [0.01418, 0.00704, 0.5], id: 1 }], { pos: [0, 0, 0.53], quat: quatOf(-0.0335, 0.032, 1.869), vel: [0, 0, -0.235] }],
+  ];
+  const lines = [];
+  let worstSpin = 0;
+  let worstCreep = 0;
+  for (const [name, boxes, pose] of cases) {
+    const r = await rest(boxes, pose, 10000, 7000);
+    lines.push(`${name}: |omega| ${r.spin.toExponential(2)} rad/s, moved ${(r.creep * 1e6).toFixed(2)} um`);
+    worstSpin = Math.max(worstSpin, r.spin);
+    worstCreep = Math.max(worstCreep, r.creep);
+  }
+  for (const [map, i] of [['office', 14], ['backyard', 16]]) {
+    const boxes = await mapFixture(map);
+    const b = boxes[i];
+    const r = await rest(boxes, { pos: [(b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, b.max[2] + REST + 5e-4] }, 6000, 3000);
+    lines.push(`${map} #${i} (${((b.max[0] - b.min[0]) * 1e3).toFixed(0)} x ${((b.max[1] - b.min[1]) * 1e3).toFixed(0)} mm), map loaded: |omega| ${r.spin.toExponential(2)} rad/s, moved ${(r.creep * 1e6).toFixed(2)} um`);
+    worstSpin = Math.max(worstSpin, r.spin);
+    worstCreep = Math.max(worstCreep, r.creep);
+  }
+  console.log(`resting on box tops smaller than the footprint, motors off (the last 7 s of 10, or 3 of 6 in a map):\n  ${lines.join('\n  ')}`);
+  assert.ok(worstSpin < 2e-3, 'still on a narrow box top');
+  assert.ok(worstCreep < 1e-5, 'no creep on a narrow box top');
+}
+
+// Checks 46 and after replay runs of the round-2 review's regression sweeps
+// (map fixtures, random poses and spawn flights). The separating-axis depth of a
+// box in the footprint's hull (rims 0 1 3 2 round the base, the canopy at
+// the apex; the box's three axes, the hull's five faces and the box axes
+// across the hull's eight edges): how far the hull must move to clear it, 0
+// when an axis separates them.
+const hullSat = (fp, b) => {
+  const v = [fp[0], fp[1], fp[3], fp[2], fp[4]];
+  const axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1], ...hullDepthAt(fp).planes.map((p) => p.u)];
+  for (const [i, j] of [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 4], [2, 4], [3, 4]]) {
+    const ed = [0, 1, 2].map((a) => v[j][a] - v[i][a]);
+    for (let u = 0; u < 3; u++) {
+      const e = [0, 0, 0];
+      e[u] = 1;
+      const a = [e[1] * ed[2] - e[2] * ed[1], e[2] * ed[0] - e[0] * ed[2], e[0] * ed[1] - e[1] * ed[0]];
+      const l = Math.hypot(...a);
+      if (l > 1e-9 * Math.hypot(...ed)) axes.push(a.map((x) => x / l));
+    }
+  }
+  let best = Infinity;
+  for (const a of axes) {
+    const s = v.map((p) => p[0] * a[0] + p[1] * a[1] + p[2] * a[2]);
+    let c = 0;
+    let r = 0;
+    for (let k = 0; k < 3; k++) {
+      c += (b.min[k] + b.max[k]) * 0.5 * a[k];
+      r += (b.max[k] - b.min[k]) * 0.5 * Math.abs(a[k]);
+    }
+    const o = Math.min(c + r - Math.min(...s), Math.max(...s) - (c - r));
+    if (o <= 0) return 0;
+    best = Math.min(best, o);
+  }
+  return best;
+};
+// The solids of the hull (world.c buildSolids): pieces that meet or overlap
+// along one axis, within 5 um, with the same extent on the other two, merged;
+// ids lists the boxes in each.
+const solidsOf = (boxes) => {
+  let s = boxes.map((b) => ({ min: b.min.slice(), max: b.max.slice(), ids: [b.id] }));
+  for (let merged = true; merged;) {
+    merged = false;
+    for (let ax = 0; ax < 3; ax++) {
+      const [t0, t1] = [(ax + 1) % 3, (ax + 2) % 3];
+      s.sort((a, b) => a.min[t0] - b.min[t0] || a.max[t0] - b.max[t0] || a.min[t1] - b.min[t1] || a.max[t1] - b.max[t1] || a.min[ax] - b.min[ax]);
+      const out = [];
+      for (let k = 0; k < s.length;) {
+        const cur = { min: s[k].min.slice(), max: s[k].max.slice(), ids: s[k].ids.slice() };
+        let m = k + 1;
+        for (; m < s.length; m++) {
+          const o = s[m];
+          if (o.min[t0] !== cur.min[t0] || o.max[t0] !== cur.max[t0] || o.min[t1] !== cur.min[t1] || o.max[t1] !== cur.max[t1] || o.min[ax] > cur.max[ax] + 5e-6) break;
+          cur.max[ax] = Math.max(cur.max[ax], o.max[ax]);
+          cur.ids.push(...o.ids);
+          merged = true;
+        }
+        out.push(cur);
+        k = m;
+      }
+      s = out;
+    }
+  }
+  return s;
+};
+const solidOf = (boxes, id) => solidsOf(boxes).find((x) => x.ids.includes(id));
+// How deep a footprint point is in the solid with the floor solid too (as
+// 42's unionDepth, but a box standing on the floor reaches down to it and no
+// way out goes down through it): a rim lying on the floor inside such a box
+// is in it however far.
+const floorDepth = (boxes, p) => {
+  const stand = (b) => b.min[2] <= 1e-4;
+  const lo = (b) => (stand(b) ? -Infinity : b.min[2]);
+  if (!boxes.some((b) => [0, 1].every((a) => p[a] > b.min[a] + 1e-7 && p[a] < b.max[a] - 1e-7) && p[2] < b.max[2] - 1e-7 && (p[2] > b.min[2] + 1e-7 || (stand(b) && p[2] >= -1e-6)))) return 0;
+  let best = Infinity;
+  for (let a = 0; a < 3; a++) {
+    for (const s of [-1, 1]) {
+      let t = 0;
+      for (let g = 0; g < 64; g++) {
+        const q = p.slice();
+        q[a] += s * t;
+        let ext = -1;
+        for (const b of boxes) {
+          if (![0, 1, 2].every((k) => q[k] >= (k === 2 ? lo(b) : b.min[k]) - 2e-6 && q[k] <= b.max[k] + 2e-6)) continue;
+          const e = s > 0 ? b.max[a] - p[a] : p[a] - (a === 2 ? lo(b) : b.min[a]);
+          if (e > t + 1e-9) ext = Math.max(ext, e);
+        }
+        if (ext < 0) break;
+        t = ext;
+      }
+      if (!(a === 2 && s < 0 && p[2] - t <= 1e-4)) best = Math.min(best, t);
+    }
+  }
+  return best;
+};
+// A sweep run: from the spawn or a pose, Betaflight angle mode with 24's
+// altitude hold (sticks held, or in timed phases, each with its own height
+// and 5% more throttle), or all four motors at a fixed duty ('press').
+// onTick(core, k, events) after each tick.
+const flyScen = async (boxes, sc, onTick) => {
+  const c = await flight({ floorZ: 0, boxes });
+  const chs = (s) => ch(s, [2000, 2000]);
+  if (sc.kind !== 'press') {
+    c.input(chs({ throttle: 0 }));
+    c.step(100);
+  }
+  if (sc.pose) c.teleport(sc.pose);
+  if (sc.kind === 'press') c.motorOverride(-1, sc.duty);
+  for (let k = 0; k < sc.T; k++) {
+    if (sc.kind !== 'press' && k % 4 === 0) {
+      const s = c.state;
+      const phase = sc.phases?.find((p) => k >= p.from && k < p.to);
+      const zHold = phase ? phase.z : sc.zHold;
+      const thr = Math.max(0, Math.min(1, 0.38 + 0.25 * (zHold - s.pos[2]) - 0.15 * s.vel[2]));
+      c.input(chs({ throttle: Math.min(1, thr + (phase ? 0.05 : 0)), ...(sc.phases ? phase?.sticks ?? {} : sc.sticks) }));
+    }
+    c.step(1);
+    onTick(c, k, c.events());
+  }
+  return c;
+};
+// The largest one-tick push: the CG's move less what its velocity explains.
+const pushOf = (prev, s) => {
+  const d = [0, 1, 2].map((a) => s.pos[a] - prev.pos[a]);
+  return Math.min(Math.hypot(...d.map((v, a) => v - prev.vel[a] * 1e-3)), Math.hypot(...d.map((v, a) => v - s.vel[a] * 1e-3)));
+};
+
+// 46. A hull contact whose every push world.c tried takes a point into a
+// solid (a slot narrower than the footprint) holds the box off: world.c also
+// tries a face axis at least a quarter along the separating axis (a push at
+// most four times what it went deeper), plant.c tops each contact up along
+// its own push where the others' left it short (HULL_PASSES), and what a
+// contact went deeper that the CG's move left undone is speed out in the
+// sweeps. With no push allowed the contact only stopped the hull moving into
+// the box after the tick had integrated, so the overlap gained each tick
+// stayed: a tumbled quad wedged on the end of gym bench plank 18 beside leg
+// 32 (42.8 mm apart), motors at 0.491, took the plank 26 mm into the hull in
+// 4 s, and ended with it between two rims, no point ever in a box. 5 s from
+// that pose: the plank at most 3 mm in the hull (where the pose's tumble
+// leaves it) and never between rims over and under it, 5 mm or more inside
+// its outline.
+{
+  const gym = await mapFixture('gym');
+  const plank = solidOf(gym, 18);
+  const pose = { pos: [-7.498602460357434, 5.171075637521855, 0.40725636423829387], quat: [-0.38744988902797606, -0.18477336893562324, 0.8517191952717225, 0.30052586915285423], vel: [0.029637463372159917, 0.022648589698413556, -0.017533765986255643] };
+  let worst = 0;
+  let straddle = 0;
+  const at = [];
+  await flyScen(gym, { kind: 'press', pose, duty: 0.49091488984413445, T: 5000 }, (c, k) => {
+    const fp = c.footprint;
+    const d = hullSat(fp, plank);
+    worst = Math.max(worst, d);
+    if ((k + 1) % 1000 === 0) at.push((d * 1e3).toFixed(2));
+    // Rims over and under the plank, 5 mm or more inside its length and
+    // width: the plank between them.
+    const over = fp.slice(0, 4).filter((p) => [0, 1].every((a) => p[a] > plank.min[a] + 5e-3 && p[a] < plank.max[a] - 5e-3));
+    if (over.some((p) => p[2] > plank.max[2]) && over.some((p) => p[2] < plank.min[2])) straddle++;
+  });
+  console.log(`wedged on gym bench plank 18 beside leg 32, motors at 0.491 for 5 s: the plank at most ${(worst * 1e3).toFixed(2)} mm in the hull (each second ${at.join(', ')}), ${straddle} ticks with rims over and under it`);
+  assert.ok(worst <= 3e-3, 'the plank held off the hull');
+  assert.equal(straddle, 0, 'the plank never between the rims');
+}
+
+// 47. A footprint point in a solid leaves the solid to that point only when
+// its way out (the face of least penetration) is along the hull's separating
+// axis: rims pinched 0 to 0.27 mm into the sides of warehouse post 117 (68.6
+// x 45.7 mm) as the quad climbed beside it turned the hull off for the whole
+// post, which went 27 mm into the hull. Betaflight angle mode with altitude
+// hold, 3 s from the sweep's pose: post 117 at most 1 mm in the hull.
+{
+  const warehouse = await mapFixture('warehouse');
+  const post = solidOf(warehouse, 117);
+  let worst = 0;
+  await flyScen(warehouse, { kind: 'tele', pose: { pos: [-3.40993, 0.280899, 0.893759], quat: [0.7094403990209931, -0.011549510178955318, 0.01453428091699555, 0.7045208894914232], vel: [0.322812, 4.358864, -0.155635] }, zHold: 0.9129985292556525, sticks: { pitch: 0.14634322170983396, roll: 0.0657591317630003, yaw: 0 }, T: 3000 }, (c) => {
+    worst = Math.max(worst, hullSat(c.footprint, post));
+  });
+  console.log(`climbing beside warehouse post 117 with rims pinched at its sides, 3 s: the post at most ${(worst * 1e3).toFixed(3)} mm in the hull`);
+  assert.ok(worst <= 1e-3, 'the post held off the hull');
+}
+
+// 48. A pinch (points pushed out of boxes on opposite sides, their pushes
+// cancelled in the CG's) moves the pinched points out through plant.c's
+// sweeps, so the lever arms turn the quad out of both boxes. The pushes
+// cancelled and both points crept in: in the city the canopy pressed into
+// slab 34's front edge and rim 2 into step 48's side 21 mm apart went 7.4 mm
+// in and took the CG into the slab; in the backyard the canopy in panel 41
+// and two rims in deck 36 put the CG in the panel for 85 ticks; in the room
+// rims between boxes 7 and 8 went 4.4 mm in and the quad was kicked to
+// 147 rad/s. Betaflight angle mode with altitude hold, 3 s from each sweep
+// pose: no point more than 0.1 mm into a box, the CG never through one.
+{
+  const lines = [];
+  for (const [name, map, sc] of [
+    ['city, slab 34 and step 48', 'city-explore', { pose: { pos: [-0.333924, -10.922382, 0.61091], quat: [0.6446041734864632, -0.01475697214583747, 0.002654031748452138, 0.7643694443215263], vel: [-0.794435, -1.986859, 2.687625] }, zHold: 0.8085459551167382, sticks: { pitch: -0.008494600700460875, roll: -0.04609442609029228, yaw: 0 } }],
+    ['backyard, panel 41 and deck 36', 'backyard', { pose: { pos: [6.294375, 0.249279, 0.021003], quat: [0.26113132013868345, 0.06972699606874326, 0.027464422023802632, 0.9623898821084708], vel: [1.184371, 9.823987, 1.635108] }, zHold: 0.04965864630766435, sticks: { pitch: 0.0635928748576859, roll: -0.04916036327978371, yaw: 0.27837328375317155 } }],
+    ['room, boxes 7 and 8', 'room', { pose: { pos: [0.04954, 1.734994, 1.58544], quat: [-0.47574615325233555, -0.0015866355695091138, -0.007686013510039211, 0.8795476140889124], vel: [0.376532, 4.060928, -1.131258] }, zHold: 1.5213581888737446, sticks: { pitch: -0.26578126924738144, roll: 0.206848991801463, yaw: 0 } }],
+  ]) {
+    const boxes = await mapFixture(map);
+    let deep = 0;
+    let cg = 0;
+    let spin = 0;
+    let prev = null;
+    await flyScen(boxes, { kind: 'tele', T: 3000, ...sc }, (c) => {
+      const s = c.state;
+      deep = Math.max(deep, ...c.footprint.map((p) => unionDepth(boxes, p)));
+      if (boxes.some((b) => [0, 1, 2].every((a) => s.pos[a] > b.min[a] + 5e-4 && s.pos[a] < b.max[a] - 5e-4))) cg++;
+      if (prev && Math.hypot(...prev.omega) < 5 && Math.hypot(...prev.vel) < 0.3) spin = Math.max(spin, Math.hypot(...s.omega) - Math.hypot(...prev.omega));
+      prev = s;
+    });
+    lines.push(`${name}: a point at most ${(deep * 1e3).toFixed(3)} mm in, the CG in a box ${cg} ticks, largest spin-up from rest ${spin.toFixed(1)} rad/s`);
+    assert.ok(deep <= 1e-4 && cg === 0, `${name}: pinched points turned out: ${lines.at(-1)}`);
+    assert.ok(spin < 10, `${name}: no kick out of the pinch: ${lines.at(-1)}`);
+  }
+  console.log(`pinched between two boxes, 3 sweep flights for 3 s:\n  ${lines.join('\n  ')}`);
+}
+
+// 49. A quad hung on the edges of three solids by the hull alone comes to
+// rest: world.c keeps up to HULL_BOXES (4) hull contacts a tick. With the
+// deepest two kept, a quad leaning 50 deg in the notch at the room's roof
+// corner (the corner edges of walls 3 and 7 and of ceiling slab 12, which
+// stands 34 mm proud of the wall tops) dropped a different one every tick;
+// that one sank and was pushed back the next, and with its motors off the
+// quad rocked for good (21 CONTACT events in 16 s, up to 0.97 rad/s, 14 deg
+// of rotation). Motors off, from the sweep's pose: after 4 s, over the next
+// 16 s no CONTACT event, |omega| under 1e-3 rad/s, the CG within 10 um, and
+// no box edge in the hull.
+{
+  const room = await mapFixture('room');
+  const c = await flight({ floorZ: 0, boxes: room });
+  c.teleport({ pos: [-2.462882, 1.855511, 2.480482], quat: [-0.8516217039475954, 0.010313032075448009, 0.1455671850364142, 0.5034325271328614], vel: [0.44862209999999997, -0.4950522, -0.26499809999999996] });
+  c.motorOverride(-1, 0);
+  c.step(4000);
+  c.events();
+  const from = c.state.pos;
+  let events = 0;
+  let spin = 0;
+  let edge = 0;
+  const near = room.filter((b) => [3, 7, 12].includes(b.id));
+  for (let k = 0; k < 16000; k++) {
+    c.step(1);
+    events += kinds(c.events(), 'contact').length;
+    spin = Math.max(spin, Math.hypot(...c.state.omega));
+    if (k % 100 === 0) edge = Math.max(edge, ...near.map((b) => edgeIn(c.footprint, b)));
+  }
+  const moved = Math.hypot(...c.state.pos.map((v, a) => v - from[a]));
+  console.log(`hung on the room's roof-corner edges (walls 3 and 7, slab 12), motors off, 16 s after settling 4 s: ${events} contact events, |omega| at most ${spin.toExponential(2)} rad/s, CG moved ${(moved * 1e6).toFixed(2)} um, box edges at most ${(edge * 1e6).toFixed(3)} um in the hull`);
+  assert.ok(events === 0 && spin < 1e-3 && moved < 1e-5, 'at rest in the notch');
+  assert.ok(edge < 1e-6, 'no box edge in the hull');
+}
+
+// 50. A sliding contact takes the exact one-row Gauss-Seidel step along its
+// slip (plant.c's sweeps). Solving the whole tangential error and keeping the
+// part along the slip moved it by up to about twice its error, and a row
+// stepped past its error grows: motors off, rims 0 and 2 on the floor and
+// rim 3 lying on the side of backyard deck 39, the quad went from 0.07 m/s
+// and 1.8 rad/s to 2.6 m/s and 117 rad/s in one tick (as on 2a8ec95). 4 s
+// from the sweep's pose: no one-tick spin-up over 5 rad/s, |omega| under 10.
+{
+  const yard = await mapFixture('backyard');
+  const c = await flight({ floorZ: 0, boxes: yard });
+  c.teleport({ pos: [2.4807856761043374, 0.9384597034889406, 0.019070914199102625], quat: [-0.18771634264818413, 0.13042490051738878, 0.025192239350749563, 0.9731995022112956], vel: [-0.025168908166955318, -0.0050279439800840296, -0.043128299445611105] });
+  c.motorOverride(-1, 0);
+  let gain = 0;
+  let spin = 0;
+  let prev = 0;
+  for (let k = 0; k < 4000; k++) {
+    c.step(1);
+    c.events();
+    const om = Math.hypot(...c.state.omega);
+    if (k) gain = Math.max(gain, om - prev);
+    spin = Math.max(spin, om);
+    prev = om;
+  }
+  console.log(`motors off, rims on the floor and one on backyard deck 39's side, 4 s: largest one-tick spin-up ${gain.toFixed(2)} rad/s, |omega| at most ${spin.toFixed(2)} rad/s`);
+  assert.ok(gain < 5 && spin < 10, 'no spin-up from the sliding friction');
+}
+
+// 51. A rim that meets a split wall's seam plane in the open (short of the
+// wall face, under the ceiling) did not come in through the seam: world.c
+// does not take a seam face whose plane the point met where no box is. 37's
+// pose with the CG farther from the wall, so rim 1 crosses y = 0 before it
+// reaches the wall face: the far piece's seam face, 45 um deep after 50 um of
+// travel across it, was the shallowest inner face, and the rim was shoved
+// onto the seam with a wall contact whose friction cut its speed into the
+// ceiling (2.45 m/s, not crashed, against 2.99 m/s and a crash in one piece).
+// 8 aims and 30 seeded approaches crossing the seam plane in the open: the
+// same contacts and velocities as the wall in one piece.
+{
+  const room = await mapFixture('room');
+  const merged = [{ min: [0, 1, 2].map((a) => Math.min(...room.slice(0, 3).map((b) => b.min[a]))), max: [0, 1, 2].map((a) => Math.max(...room.slice(0, 3).map((b) => b.max[a]))), id: 0 }, ...room.slice(3)];
+  const L = REACH * Math.SQRT2;
+  const [c22, s22] = [Math.cos(Math.PI / 8), Math.sin(Math.PI / 8)];
+  const up = [c22 * Math.SQRT1_2, -s22 * Math.SQRT1_2, -c22 * Math.SQRT1_2, s22 * Math.SQRT1_2];
+  const [wallX, seamY, ceilZ] = [room[0].min[0], room[1].max[1], room[12].min[2]];
+  const surface = (e) => (e.box >= 0 && e.box <= 2 ? 'wall' : e.box);
+  const run = async (boxes, pos, vel) => {
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport({ pos, quat: up, vel });
+    c.events();
+    const ev = [];
+    for (let k = 0; k < 20; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact').map((e) => [k, surface(e), Number(e.impactMs.toFixed(4)), e.crashed]));
+    }
+    return { ev, vel: c.state.vel, pos: c.state.pos };
+  };
+  const aims = [
+    [1e-4, -5e-6, [0.5, 0.05, 3]], [1e-4, 5e-6, [0.5, -0.05, 3]], [2e-4, -10e-6, [0.5, 0.05, 3]], [1e-4, 0, [0.5, 0.05, 3]],
+    [1e-4, 0, [0.5, -0.05, 3]], [3e-4, -20e-6, [1, 0.1, 3]], [1e-4, -5e-6, [0.5, 0.05, 1]], [5e-5, -2e-6, [0.5, 0.03, 2]],
+  ].map(([gx, y0, vel]) => [[wallX - REST - gx, seamY + y0, ceilZ - 5e-4 - L], vel]);
+  // Seeded: rim 1 crosses the seam plane at ty, the wall face at tx and the
+  // ceiling at tc (ms into the tick), ending nearer the seam than past the face.
+  let seed = 9;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  while (aims.length < 38) {
+    const sy = rnd() < 0.5 ? 1 : -1;
+    const [vx, vy, vz] = [0.2 + rnd() * 1.3, sy * (0.01 + rnd() * 0.2), 1 + rnd() * 2.5];
+    const ty = rnd() * 0.5;
+    const tx = ty + rnd() * (1 - ty) * 0.9;
+    const tc = ty + rnd() * (1 - ty) * 0.9;
+    if (!(Math.abs(vy) * (1 - ty) < vx * (1 - tx))) continue;
+    aims.push([[wallX - REST - vx * tx * 1e-3, seamY - vy * ty * 1e-3, ceilZ - vz * tc * 1e-3 - L], [vx, vy, vz]]);
+  }
+  let differ = 0;
+  let crashed = 0;
+  for (const [pos, vel] of aims) {
+    const a = await run(room, pos, vel);
+    const b = await run(merged, pos, vel);
+    if (b.ev.some((e) => e[1] === 12 && e[3])) crashed++;
+    if (JSON.stringify(a.ev) !== JSON.stringify(b.ev) || a.vel.some((v, k) => Math.abs(v - b.vel[k]) > 1e-9) || a.pos.some((v, k) => Math.abs(v - b.pos[k]) > 1e-9)) {
+      if (differ++ < 3) console.log(`  split wall differs crossing the seam plane in the open at ${JSON.stringify([pos, vel])}: ${JSON.stringify(a.ev.slice(0, 3))} vs one piece ${JSON.stringify(b.ev.slice(0, 3))}`);
+    }
+  }
+  console.log(`rim 1 crossing the split wall's seam plane in the open, ${aims.length} approaches (${crashed} crashing into the ceiling): ${differ} differ from the wall in one piece`);
+  assert.equal(differ, 0);
+}
+
+// 52. In 36's concave corner with a split post, a rim that crosses the
+// split (z 1.5) in the open, before it reaches either wall, came into the
+// upper piece elsewhere: world.c ranks that bottom face with the faces
+// crossed inside the solid. It ranked with the other inner faces, and less
+// far past the split than into the wall, it was the shallowest: the rim was
+// held at z 1.5 with a contact on the post, an invisible ledge (or, coming
+// down, on the lower piece). Five aimed hits climbing or descending: the
+// same footprint path and contacts as the post in one piece. 30 seeded hits
+// crossing the split in the open: at most one held at the split on the first
+// tick (29 were; a crossing within PAST_WU of the wall plane still can be).
+{
+  const walls = [{ min: [-1, 1, 0], max: [2, 1.1, 3] }, { min: [2, -1, 0], max: [2.1, 1, 3] }];
+  const posts = {
+    whole: [{ min: [2, 1, 0], max: [2.1, 1.1, 3] }],
+    split: [{ min: [2, 1, 0], max: [2.1, 1.1, 1.5] }, { min: [2, 1, 1.5], max: [2.1, 1.1, 3] }],
+  };
+  const corner = async (post, h) => {
+    const boxes = [...walls, ...post].map((b, id) => ({ ...b, id }));
+    const c = await flight({ floorZ: 0, boxes });
+    c.teleport({ pos: [0, 0, 1] });
+    c.motorOverride(-1, c.plantDerived.dutyHover);
+    c.step(300);
+    c.teleport({ pos: [2 - h.gx - REACH, 1 - h.gy - REACH, 1.5 - h.dir * h.below + REST], vel: [h.vx, h.vy, h.dir * h.vz] });
+    c.events();
+    const path = [];
+    const ev = [];
+    let z1 = null;
+    for (let k = 0; k < 60; k++) {
+      c.step(1);
+      z1 ??= c.footprint[3][2];
+      ev.push(...kinds(c.events(), 'contact').map((e) => [k, e.box, Number(e.impactMs.toFixed(5)), e.crashed]));
+      path.push(c.footprint);
+    }
+    return { path, ev, z1 };
+  };
+  const apart = (s, w) => Math.max(...s.path.map((fp, t) => Math.max(...fp.map((p, i) => maxAbs(p.map((v, a) => v - w.path[t][i][a]))))));
+  let worst = 0;
+  for (const hit of [
+    { vx: 0.3, vy: 0.3, vz: 0.1, gx: 0.1e-3, gy: 0.12e-3, below: 0.01e-3, dir: 1 },
+    { vx: 0.3, vy: 0.3, vz: 0.2, gx: 0.1e-3, gy: 0.12e-3, below: 0.02e-3, dir: 1 },
+    { vx: 0.5, vy: 0.4, vz: 0.15, gx: 0.15e-3, gy: 0.2e-3, below: 0.01e-3, dir: 1 },
+    { vx: 0.3, vy: 0.3, vz: 0.1, gx: 0.12e-3, gy: 0.1e-3, below: 0.01e-3, dir: 1 },
+    { vx: 0.3, vy: 0.3, vz: 0.1, gx: 0.1e-3, gy: 0.12e-3, below: 0.01e-3, dir: -1 },
+  ]) {
+    const s = await corner(posts.split, hit);
+    const w = await corner(posts.whole, hit);
+    const d = apart(s, w);
+    worst = Math.max(worst, d);
+    assert.ok(d < 1e-9 && JSON.stringify(s.ev) === JSON.stringify(w.ev), `split crossed in the open, ${JSON.stringify(hit)}: rim 3 first at z ${s.z1} (one piece ${w.z1}), contacts ${JSON.stringify(s.ev.slice(0, 4))} (one piece ${JSON.stringify(w.ev.slice(0, 4))})`);
+  }
+  let seed = 3;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  let n = 0;
+  let held = 0;
+  while (n < 30) {
+    const h = { dir: rnd() < 0.5 ? 1 : -1, vx: 0.1 + rnd() * 0.6, vy: 0.1 + rnd() * 0.6, vz: 0.05 + rnd() * 0.5 };
+    const tz = rnd() * 0.5;
+    const tx = tz + rnd() * (1 - tz) * 0.9;
+    const ty = tx + rnd() * (1 - tx) * 0.9;
+    Object.assign(h, { below: h.vz * tz * 1e-3, gx: h.vx * tx * 1e-3, gy: h.vy * ty * 1e-3 });
+    if (!(h.vz * 1e-3 - h.below < h.vx * 1e-3 - h.gx)) continue;
+    n++;
+    const s = await corner(posts.split, h);
+    const w = await corner(posts.whole, h);
+    if (Math.abs(s.z1 - 1.5) < 1e-9 && Math.abs(w.z1 - 1.5) > 1e-6) held++;
+  }
+  console.log(`concave corner, rim 3 crossing the post's split in the open: 5 aimed hits as the post in one piece (footprints at most ${worst.toExponential(2)} m apart); ${held} of ${n} seeded hits held at the split on the first tick`);
+  assert.ok(held <= 1, 'no ledge at the split');
+}
+
+// 53. Every hull contact a tick can hold is kept (plant.c HULL_BOXES, 4), and
+// when there are more the one left out is the shallowest whose face a deeper
+// one has too (world.c), so a box top's corners never crowd a post's side
+// out. Landing at 4 m/s on 4 mm beams between the rims (tops at z 0.3) while
+// sliding at 3 m/s into a 20 x 12 mm post between the front rims: with two
+// beams or more the deepest two contacts were the beams', the post got no
+// push or response that tick, was held 1.5 mm inside the hull for two ticks,
+// and its CONTACT came a tick late at 1.65 m/s, not a crash. With 1 to 5
+// beams the post's CONTACT comes on the landing tick at 3.0 m/s, crashed, and
+// the post is never in the hull.
+{
+  const lines = [];
+  for (const n of [1, 2, 3, 4, 5]) {
+    const boxes = [];
+    for (let i = 0; i < n; i++) {
+      const y = n === 1 ? 0 : -0.02 + (0.04 * i) / (n - 1);
+      boxes.push({ min: [-0.5, y - 0.002, 0], max: [0.5, y + 0.002, 0.3], id: i + 1 });
+    }
+    const post = { min: [0.05, -0.006, 0], max: [0.07, 0.006, 0.6], id: 99 };
+    const c = await flight({ floorZ: 0, boxes: [...boxes, post] });
+    c.teleport({ pos: [0.05 - REACH - 1.5e-3, 0, 0.3 + REST + 1e-3], vel: [3, 0, -4] });
+    c.events();
+    const ev = [];
+    let sat = 0;
+    for (let k = 0; k < 30; k++) {
+      c.step(1);
+      ev.push(...kinds(c.events(), 'contact').filter((e) => e.box === 99).map((e) => [k, Number(e.impactMs.toFixed(3)), e.crashed]));
+      sat = Math.max(sat, hullSat(c.footprint, post));
+    }
+    lines.push(`${n}: post ${JSON.stringify(ev)}, ${(sat * 1e3).toFixed(3)} mm in the hull`);
+    assert.ok(ev.length && ev[0][0] === 0 && Math.abs(ev[0][1] - 2.997) < 2e-3 && ev[0][2], `${n} beams: the post hit on the landing tick, crashed: ${lines.at(-1)}`);
+    assert.ok(sat < 1e-6, `${n} beams: the post never in the hull: ${lines.at(-1)}`);
+  }
+  console.log(`landing on beams between the rims while sliding into a post (beams: post contacts, deepest in the hull): ${lines.join('; ')}`);
+}
+
+// 54. A footprint point in a solid leaves the hull to it only along the
+// hull's separating axis, and a pinched point is turned out (47, 48): a quad
+// rising under a slab's edge 60 mm above the floor, rim 0 on the floor and
+// rim 2 pinched 0.2 to 0.7 mm into the slab's underside, had the hull turned
+// off for the slab on 99.6% of the ticks it went deeper, and the slab went
+// 38.6 mm into the hull: the quad ended wrapped round it, a rim on its top.
+// From that pose and 10 nudged ones (x 2 mm, z 1 mm, tilts 0.03 rad, speeds
+// 0.1 m/s, motors 0.29 to 0.33), 0.8 s each: the slab at most 1 mm in the
+// hull, no rim on its top.
+{
+  const slab = { min: [-1, -1, 0.06], max: [0, 1, 0.075], id: 1 };
+  const base = { pos: [-0.013006165027618408, 0, 0.028287356957554622], quat: [0.9703757112622377, 0.24024936485191303, -0.02551904544764072, 0], vel: [-0.0635575294494629, 0.11798238754272461, 0.49489583969116213] };
+  const starts = [[base, 0.30981422662734986]];
+  let seed = 11;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  while (starts.length < 11) {
+    const pos = [base.pos[0] + (rnd() - 0.5) * 0.004, 0, base.pos[2] + (rnd() - 0.5) * 0.002];
+    const dq = [(rnd() - 0.5) * 0.06, (rnd() - 0.5) * 0.06];
+    const q = [base.quat[0], base.quat[1] + dq[0] / 2, base.quat[2] + dq[1] / 2, 0];
+    const l = Math.hypot(...q);
+    const vel = base.vel.map((v) => v + (rnd() - 0.5) * 0.2);
+    starts.push([{ pos, quat: q.map((v) => v / l), vel }, 0.29 + rnd() * 0.04]);
+  }
+  let worst = 0;
+  let onTop = 0;
+  let clear = 0;
+  for (const [pose, duty] of starts) {
+    const c = await flight({ floorZ: 0, boxes: [slab] });
+    c.teleport(pose);
+    c.motorOverride(-1, duty);
+    c.step(1);
+    if (hullSat(c.footprint, slab) > 0) continue;       // a start already in the hull
+    clear++;
+    for (let k = 1; k < 800; k++) {
+      c.step(1);
+      worst = Math.max(worst, hullSat(c.footprint, slab));
+    }
+    if (c.footprint.some((p) => p[0] < 0 && Math.abs(p[2] - slab.max[2]) < 1e-6)) onTop++;
+  }
+  console.log(`rising under a slab's edge 60 mm up, a rim pinched in its underside, ${clear} clear starts for 0.8 s: the slab at most ${(worst * 1e3).toFixed(3)} mm in the hull, ${onTop} ending with a rim on its top`);
+  assert.ok(clear >= 8 && worst < 1e-3, 'the slab held off the hull');
+  assert.equal(onTop, 0, 'no rim on the slab top');
+}
+
+// 55. A rim wedged in a gap between boxes standing on the floor (the room's
+// boxes 13 and 14, 78.6 mm apart, the rims 81 mm apart at that tilt): the
+// push out of one carried the rim on the far side into the other, a tick at
+// a time, each pushing the other way. A rim lying on the floor and carried
+// into a box's side that way was out of reach of the next tick's resolution
+// (no deeper than its travel, and within ON_FACE_WU of the box's bottom
+// plane, so not deep inside) and went 8.8 mm in, unseen, until an 8.7 mm
+// push threw it out. world.c takes a footprint point as deep in a box standing on
+// the floor however near the floor it is, and plant.c resolves a point the
+// points' push carries into the solid too, from where its own resolution left
+// it, so the two pushes cancel and the pinch turns the quad. Motors off, 4 s
+// from the sweep's pose: no point more than 0.5 mm in the solid (the floor
+// solid too), neither box more than 1 mm in the hull, no push over 3 mm.
+{
+  const room = await mapFixture('room');
+  const pair = [solidOf(room, 13), solidOf(room, 14)];
+  let deep = 0;
+  let sat = 0;
+  let push = 0;
+  let prev = null;
+  await flyScen(room, { kind: 'press', pose: { pos: [2.260811, -0.928663, 0.199523], quat: [-0.6843970732435993, -0.39884336307272295, -0.4534717776625945, 0.40851923422522207], vel: [-0.12788639999999998, -0.0256866, 0.0165483] }, duty: 0, T: 4000 }, (c) => {
+    const s = c.state;
+    deep = Math.max(deep, ...c.footprint.map((p) => floorDepth(room, p)));
+    sat = Math.max(sat, ...pair.map((b) => hullSat(c.footprint, b)));
+    if (prev) push = Math.max(push, pushOf(prev, s));
+    prev = s;
+  });
+  console.log(`wedged on the floor between room boxes 13 and 14, motors off, 4 s: a point at most ${(deep * 1e3).toFixed(3)} mm in the solid, the boxes at most ${(sat * 1e3).toFixed(3)} mm in the hull, largest push ${(push * 1e3).toFixed(2)} mm`);
+  assert.ok(deep <= 5e-4 && sat <= 1e-3 && push <= 3e-3, 'no rim carried into a box beside the gap');
+}
+
+// 56. The sweep flight that exposed a vertical pinch (backyard, between box
+// 39's top and wall 47's bottom), Betaflight angle mode with altitude hold
+// from the spawn, 14 s in eleven stick phases. Before these fixes a point
+// went 2.2 mm into wall 47, the wall 16 mm into the hull, with a 6.8 mm push;
+// one partial set of them threw the quad at 61 m/s. No point more than
+// 0.1 mm into a box, no box more than 1 mm into the hull, no push over 3 mm,
+// |v| under 10 m/s.
+{
+  const yard = await mapFixture('backyard');
+  const solids = solidsOf(yard);
+  const phases = [
+    [1500, 2032, -0.18531540502227542, -0.007899457557882253, -0.023691618628799916, 1],
+    [2032, 2962, -0.16958234488038174, -0.3210045154950764, 0, 1],
+    [2962, 5084, -0.16350926558277198, -0.27664817096420513, 0, 1],
+    [5084, 5990, -0.14870879404768395, -0.035290749240752844, 0, 1],
+    [5990, 7885, -0.14189297135437068, -0.1700208565295615, 0, 1],
+    [7885, 8379, 0.054322711551128326, 0.164433127608398, -0.07915280405431986, 0.06271561258472502],
+    [8379, 10756, 0.003178039386008264, -0.012124930247874312, 0, 0.06271561258472502],
+    [10756, 11385, -0.5641381693476514, 0.5958493805482171, -0.1349869618192315, 0.06271561258472502],
+    [11385, 12662, 0.2904350844885898, 0.5851233477221791, 0, 0.06271561258472502],
+    [12662, 13217, -0.17991298900321026, 0.22193775513520475, 0, 0.06271561258472502],
+    [13217, 14878, 0.054589410113115654, -0.06598964015925322, 0.22977070305496455, 0.758399677334819],
+  ].map(([from, to, pitch, roll, yaw, z]) => ({ from, to, sticks: { pitch, roll, yaw }, z }));
+  let deep = 0;
+  let sat = 0;
+  let push = 0;
+  let speed = 0;
+  let prev = null;
+  await flyScen(yard, { kind: 'spawn', zHold: 1, phases, T: 14000 }, (c) => {
+    const s = c.state;
+    const fp = c.footprint;
+    deep = Math.max(deep, ...fp.map((p) => unionDepth(yard, p)));
+    const lo = [0, 1, 2].map((a) => Math.min(...fp.map((p) => p[a])));
+    const hi = [0, 1, 2].map((a) => Math.max(...fp.map((p) => p[a])));
+    for (const so of solids) {
+      if ([0, 1, 2].some((a) => hi[a] <= so.min[a] || lo[a] >= so.max[a])) continue;
+      if (fp.some((p) => [0, 1, 2].every((a) => p[a] > so.min[a] && p[a] < so.max[a]))) continue;
+      sat = Math.max(sat, hullSat(fp, so));
+    }
+    if (prev) push = Math.max(push, pushOf(prev, s));
+    speed = Math.max(speed, Math.hypot(...s.vel));
+    prev = s;
+  });
+  console.log(`backyard spawn flight, 14 s in eleven phases: a point at most ${(deep * 1e3).toFixed(3)} mm in a box, a box at most ${(sat * 1e3).toFixed(3)} mm in the hull, largest push ${(push * 1e3).toFixed(2)} mm, |v| at most ${speed.toFixed(2)} m/s`);
+  assert.ok(deep <= 1e-4 && sat <= 1e-3 && push <= 3e-3 && speed < 10, 'no pinch, kick or box in the hull');
+}
+
+console.log('plant-world: box tops, edges, seams, stacks, corners, box edges held off by the footprint hull, slabs at walls and map walls, crash cap, crash on a second rim, pose and spawn edge state at any attitude, ground effect on box tops, points lying on faces, portals frame-independent, rest plant, configure rollback, argument checks, twr, lerp, flat pack, hover current, the parity model box contact as committed, solids in pieces as in one piece, floor-standing boxes never pushing the hull down, carried hull overlaps pushed only as far as they deepen, hull pushes taking no point into the solid, held hull contacts only stopping motion, quads resting still on box tops smaller than the footprint, hull contacts with no push holding the box off, the hull left to a point only along its way out, pinches turned out, quads at rest hung on three solids, sliding friction stepped exactly, seams and splits crossed in the open, a post kept among more hull contacts, slabs over pinched rims, rims carried into boxes beside a gap, a backyard spawn flight clean: PASS');

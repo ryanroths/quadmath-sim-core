@@ -142,6 +142,12 @@ uint32_t sc_world_point(double pos[3], double vel[3], const double startPos[3], 
                         double crashScale, double spinScale, bool *floorHit, bool *scrub);
 // Whether a module-frame point is strictly inside a box.
 bool sc_world_inside(const double pos[3]);
+// Whether a footprint point (module frame) is in the solid: under the floor,
+// or inside a box, one standing on the floor reaching down to it.
+bool sc_world_point_in(const double pos[3]);
+// Whether a module-frame point is inside or on a box (on a seam between boxes
+// that meet, say).
+bool sc_world_in_solid(const double pos[3]);
 // After the footprint points: floor touch and leave events, and triggers at the CG.
 void sc_world_after_points(const double com[3], bool floorHit);
 // The CG's height above the floor when resting on it (edge state after a
@@ -150,3 +156,35 @@ void sc_world_set_rest_height(double metres);
 // The footprint's hull clearance (physical model): the CG's height above the
 // floor or the box top underneath, less hullBelow.
 double sc_world_hull_clearance(const double pos[3], double hullBelow);
+// The footprint's hull (physical model): the convex hull of the four duct
+// rims, in order round the base, and the canopy at the apex.
+#define SC_HULL_POINTS 5
+// A box edge or corner inside the hull (module frame): where the hull holds
+// the box off (the box feature inside it: a corner, both ends of an edge
+// across a face, or up to four corners of a box top between the rims), the
+// unit direction the hull leaves the box by, how deep (m), how much deeper
+// than at the start of the tick (m), the push back by what it went deeper
+// this tick (along a box face axis, or none; it need not clear an overlap
+// carried in from earlier ticks), and the box and that face (world.c axes)
+// it is keyed by.
+#define SC_HULL_HOLD 4
+typedef struct {
+    double point[SC_HULL_HOLD][3], normal[3], depth, gain, push[3];
+    int points, box, ax, side;
+} sc_hull_contact_t;
+// The solids the hull (module frame, at the end of the tick after the points'
+// push, and at its start) ends the tick deeper inside than it began, with no
+// footprint point inside them at the end of the tick or at its start that
+// leaves them along the hull's separating axis: up to max contacts, deepest
+// first; with more, the one left out is the shallowest whose face a deeper
+// one has too, or failing that the shallowest.
+int sc_world_hull(const double end[SC_HULL_POINTS][3], const double start[SC_HULL_POINTS][3],
+                  sc_hull_contact_t *out, int max);
+// A hull contact's world response for the hull point there moving at vel
+// (module frame, corrected in place), as a box face hit: bounce, crash and
+// friction along the contact's normal, or a box top's soft landing (scrub),
+// along the vertical, as on the floor; a contact with no push only stops the
+// point moving into the box. normal: the one it used. Queues its CONTACT
+// event.
+uint32_t sc_world_hull_hit(const sc_hull_contact_t *c, double vel[3], double bounceScale, double crashScale,
+                           double spinScale, bool *scrub, double normal[3]);
