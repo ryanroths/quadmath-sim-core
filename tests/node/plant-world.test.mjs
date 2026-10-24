@@ -1695,7 +1695,10 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     }
     return { path, ev, cross, z: c.footprint[3][2], inside: footInside(c, boxes) };
   };
-  const hits = [[225e-6, 225e-6, 2.473e-3], [200e-6, 200e-6, 2.463e-3], [240e-6, 240e-6, 2.48e-3], [200e-6, 230e-6, 2.47e-3], [230e-6, 200e-6, 2.48e-3]];
+  // Aimed on the plant of their day: with loadFraction 0.65 and the rpm-based
+  // current (2026-10-23) the third and fourth hits start 10 um lower so they
+  // stay less far past the split than into the corner (the guard below).
+  const hits = [[225e-6, 225e-6, 2.473e-3], [200e-6, 200e-6, 2.463e-3], [240e-6, 240e-6, 2.49e-3], [200e-6, 230e-6, 2.48e-3], [230e-6, 200e-6, 2.48e-3]];
   let worst = 0;
   for (const [k, hit] of hits.entries()) {
     const split = await corner(posts.split, hit);
