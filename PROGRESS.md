@@ -4856,3 +4856,194 @@ Each cell rise to 90 % / lag at 50 % / overshoot / settle within 5 % (step windo
 1. The grid above.
 2. Whether `phase1/m4-actuator-delay` goes to a PR as it is (the stage off
    by default).
+
+---
+
+## 2026-10-24 | Phase 1 M4 | round 7: the lag metric fixed; the inertia sweep
+
+The owner, after the actuator sweep:
+
+> Open the PR for the actuator stage, off by default. Then two things before
+> anything else moves:
+> 1. Yaw lag metric is wrong. 4 ms of FIFO cannot read 0 ms lag. Trace how
+>    lag-at-50% is computed: what is t=0, is it the log's setpoint edge or
+>    the sim's, and are step windows aligned per run. Fix it so t=0 is the
+>    log's setpoint edge for both. Re-run baseline and the 3 ms/0 cell.
+>    Report both before/after.
+> 2. Inertia. ixx/iyy/izz in air65.json are derived. Report how, and what
+>    they'd have to be for the baseline to reach roll overshoot ~13% with
+>    settle >100 ms. Sweep ixx=iyy at 1x, 1.5x, 2x, 3x, delay 0. Full
+>    sim-vs-log table each. Do not pick.
+
+PR #4 (`phase1/m4-actuator-delay`) is open with the stage off. This round's
+commits are on the same branch, because the fix changes how that sweep reads.
+
+### 1. The lag metric
+
+**How it was computed.** `tools/sim-vs-log.mjs` ran quadmath's
+`stepResponse` (blackbox-metrics.js, Wiener deconvolution) twice, each side
+against **its own** setpoint:
+- the log's setpoint and gyro at the log's ~2 kHz, over windows picked by
+  the log's throttle;
+- the sim's setpoint (`pidSetpoint`) and gyro at 1 kHz, over windows picked
+  by the sim's throttle.
+
+So t = 0 was each side's own setpoint edge, the candidate windows differed,
+and so did the sample rates. `lag50` is the time the averaged step first
+reaches 0.5, and 0 when its first sample is already there.
+
+**Why a FIFO read 0 ms.** `stepResponse` regularises above 25 Hz, which
+spreads the impulse response symmetrically, and folds the last 60 ms of its
+circular buffer (negative time) into the step's first sample.
+- The sim's yaw step against its own setpoint began at 0.566 at baseline.
+  `lag50` returns 0 for anything at or above 0.5. The sim's yaw also partly
+  leads its own smoothed setpoint (yaw feedforward).
+- At 3 ms / 0 the first sample was 0.474, so `lag50` read 0.7 ms.
+
+The metric is also compressed. Pure delays added to the **log's** own gyro
+read back as:
+
+| Added delay (ms) | 0.5 | 1 | 2 | 3 | 4 | 6 | 8 |
+|---|---|---|---|---|---|---|---|
+| roll lag50 change | +0.22 | +0.44 | +1.50 | +2.13 | +2.76 | +3.99 | +5.20 |
+| pitch | +0.42 | +0.83 | +1.62 | +2.45 | +3.31 | +4.98 | +6.73 |
+| yaw | +0.37 | +0.74 | +1.50 | +2.24 | +2.97 | +4.46 | +5.94 |
+
+That is 0.65 to 0.85 ms of `lag50` per ms of delay, above a floor at 0.
+
+**The fix, as asked.** Both step responses now take the **log's** setpoint as
+their input, on the log's own frames:
+- the sim's gyro is interpolated linearly from its ticks to each frame's
+  time;
+- one mask serves both: the log's throttle, less the 32 frames up to any
+  frame where the sim was in contact.
+
+So t = 0 is the log's setpoint edge for both, the candidate windows are the
+same (quadmath's quality test still accepts windows per output; the output
+gives `windows` of `considered`), and the log's own analysis is exactly what
+it was. A review of the first version found that it labelled each sim sample
+with the end of its tick. Betaflight reads the plant at a tick's start, so
+that made the sim 1 ms late; the samples now carry their own time. The old
+per-side figures stay in the output as `ownSetpoint`.
+
+Two numbers come with it, so the sim's response from the log's setpoint can
+be read:
+- **`replayDelayMs`** is the shift that best lays the sim's setpoint on the
+  log's: 2.2 / 2.4 / 2.7 ms on roll / pitch / yaw. This is the replay's own
+  input latency (the sticks reach the sim through its 250 Hz RX updates,
+  after the PID's turn in the tick). The real quad's setpoint has nothing
+  like it, so the sim's response from the log's setpoint carries it.
+- **`stepSimLoop`** is the sim's gyro against its **own** setpoint on the same
+  frames and mask: the loop alone, the like-for-like of the log's own.
+
+An earlier version put the log on the sim's 1 kHz ticks instead. That moved
+the **log's own** numbers (roll overshoot 13.2 → 7.6 %, settle 452 → 45 ms;
+pitch 3.9 → 6.7 %, 115.7 → 37 ms), so these metrics depend on the rate they
+are taken at, and the fix keeps the log's rate.
+
+**Settle is not robust.** Leaving each accepted window out in turn:
+- the log's roll settle of 452 ms comes from one window (98.36 s); without
+  it, 64.4 ms;
+- the log's pitch settle of 115.7 ms drops to 35-40 ms without any one of
+  five windows;
+- overshoot holds better (roll 10 to 14 %, pitch 3.3 to 4.6 %).
+
+Before and after. Each cell is rise to 90 % / lag at 50 % / overshoot /
+settle within 5 %, in ms and %, with the accepted windows.
+
+| Axis | Log (unchanged) | Baseline, before (own setpoint, 1 kHz) | Baseline, after (log setpoint) | Baseline, sim loop (own setpoint, log frames) |
+|---|---|---|---|---|
+| roll | 16.2 / 3.8 / 13.2 % / 452 (19) | 20.0 / 4.2 / 2.3 % / 24 (22) | 19.3 / 5.3 / 8.7 % / 150.7 (20) | 18.3 / 3.9 / 8.5 % / 23.3 (20) |
+| pitch | 17.8 / 5.2 / 3.9 % / 115.7 (20) | 20.0 / 3.9 / 0.3 % / 24 (24) | 23.3 / 6.6 / 0.2 % / 59.9 (20) | 20.8 / 4.4 / −0.1 % / 25.4 (20) |
+| yaw | 19.3 / 3.7 / 1.3 % / 23.3 (77) | 12.0 / 0.0 / 1.7 % / 16 (77) | 13.7 / 0.4 / 1.4 % / 17.2 (77) | 12.2 / 0.0 / 1.4 % / 16.2 (77) |
+
+| Axis | 3 ms / 0, before | 3 ms / 0, after (log setpoint) | 3 ms / 0, sim loop |
+|---|---|---|---|
+| roll | 20.0 / 5.6 / 0.6 % / 22 (22) | 19.8 / 6.0 / 3.1 % / 23.8 (20) | 18.3 / 4.5 / 2.5 % / 22.3 (20) |
+| pitch | 71.0 / 9.6 / −4.4 % / 450 (24) | 221.7 / 12.9 / −7.3 % / 205 (20) | 218.7 / 10.6 / −7.5 % / 201.9 (20) |
+| yaw | 12.0 / 0.7 / 9.0 % / 56 (76) | 13.7 / 2.4 / 5.9 % / 17.2 (74) | 11.7 / 0.3 / 5.8 % / 15.7 (74) |
+
+Replay delay is 2.2 / 2.4 / 2.7 ms in both runs.
+
+- From the log's setpoint, yaw lag goes from 0.4 ms at baseline to 2.4 ms at
+  3 ms / 0 (log 3.7). That is +2.0 ms for the 3 ms FIFO, as compressed as
+  the calibration above.
+- The sim's loop alone has no measurable yaw lag (0 and 0.3 ms): it sits on
+  the floor.
+- On the log's frames the sim's roll overshoots about 8.5 % at baseline. The
+  old 2.3 % came mostly from taking it at 1 kHz.
+- The baseline's 150 ms roll settle from the log's setpoint is not in the
+  sim's loop (23 ms). It comes from the replay latency against the log's
+  setpoint.
+
+### 2. Inertia
+
+**How it is derived.** `src/plant/plant.c:147-151` models the airframe as a
+uniform solid box: the wheelbase wide (65 mm), `boxHeightRatio` × wheelbase
+high (0.35 ×, 22.75 mm), with the all-up mass (25.79 g).
+- `ixx = iyy = m/12 · (wb² + h²)` = 1.0193e-5 kg m²
+- `izz = m/12 · 2 wb²` = 1.8160e-5 kg m²
+
+`boxHeightRatio` is quadmath's (QP:434-440, confidence low: "no measured
+inertia") and is used for nothing else. So the sweep sets it to scale
+ixx = iyy and leaves izz alone: 1×, 1.5×, 2×, 3× are `boxHeightRatio` 0.35,
+0.826892, 1.115796, 1.538668. Delay 0, damping as is, 1 kHz, the corrected
+metric. Yaw does not move (izz not scaled) and is left out of the table.
+
+| ixx = iyy | Axis | After (log setpoint) | Sim loop (own setpoint) | Gyro rms log / sim, sim − log (deg/s) |
+|---|---|---|---|---|
+| log | roll | 16.2 / 3.8 / 13.2 % / 452 (19) | | |
+| log | pitch | 17.8 / 5.2 / 3.9 % / 115.7 (20) | | |
+| 1× (1.0193e-5) | roll | 19.3 / 5.3 / 8.7 % / 150.7 (20) | 18.3 / 3.9 / 8.5 % / 23.3 (20) | 174.7 / 167.2, 44.0 |
+| | pitch | 23.3 / 6.6 / 0.2 % / 59.9 (20) | 20.8 / 4.4 / −0.1 % / 25.4 (20) | 160.9 / 156.6, 30.6 |
+| 1.5× (1.5289e-5) | roll | 20.3 / 6.3 / 9.4 % / 156.3 (20) | 18.8 / 4.9 / 9.3 % / 24.4 (20) | 174.7 / 167.5, 44.4 |
+| | pitch | 24.9 / 7.6 / 0.4 % / 63.9 (20) | 22.3 / 5.3 / 0.0 % / 27.4 (20) | 160.9 / 156.8, 30.9 |
+| 2× (2.0385e-5) | roll | 21.3 / 7.2 / 10.2 % / 161.3 (20) | 20.3 / 5.8 / 10.2 % / 147.6 (20) | 174.7 / 167.7, 45.0 |
+| | pitch | 26.9 / 8.5 / 0.5 % / 68.0 (20) | 23.8 / 6.3 / 0.1 % / 55.3 (20) | 160.9 / 157.0, 31.3 |
+| 3× (3.0578e-5) | roll | 23.8 / 8.8 / 11.7 % / 170.0 (20) | 22.3 / 7.4 / 12.1 % / 161.8 (20) | 174.7 / 168.2, 46.5 |
+| | pitch | 30.9 / 10.4 / 0.9 % / 78.1 (20) | 27.9 / 8.1 / 0.3 % / 62.4 (20) | 160.9 / 157.4, 32.4 |
+
+**What they would have to be.**
+- Roll overshoot rises about 1.2 points per 1× of inertia (loop: 8.5, 9.3,
+  10.2, 12.1 %). The log's 13.2 % lies beyond 3×: about 3.5 to 4× by
+  extrapolation (not run).
+- The sim loop's roll settle passes 100 ms from 2× (148 ms; 162 at 3×).
+  Against the log's setpoint it is past 100 ms at every multiple, but the
+  replay latency is part of that.
+- Both targets come from the log's own step response. Overshoot there is
+  fairly robust (10 to 14 % leave-one-out), but its 452 ms settle hangs on
+  one window (64.4 ms without it).
+- On the way there, roll rise and lag move away from the log (loop rise 18.3
+  → 22.3 ms, lag 3.9 → 7.4 ms, against 16.2 and 3.8). Pitch overshoot stays
+  at 0.3 % or less (log 3.9 %), and pitch rise and lag move away too.
+
+No value picked.
+
+### The gate on the corrected metric
+
+With the logs the gate gives `FAIL (1): X3 pitch rise to 90% ms (log)`: 23.3
+against 17.8, ±20 % and at least 4 ms. That row passed on the old metric and
+is not under investigation. Roll and pitch overshoot and yaw lag stay red
+under investigation; yaw rise, also under investigation, now passes. Without
+the logs (CI) the log rows do not run and the gate passes.
+
+### What went wrong
+
+- The first version of the fix put the log on the sim's 1 kHz ticks, which
+  moved the log's own numbers. It was redone on the log's frames.
+- That version also labelled each sim sample one tick late (1 ms) and
+  measured the sim from the log's setpoint without saying it carries 2-3 ms
+  of replay latency. The review found both; both are fixed, and the latency
+  is now reported.
+- A cross-correlation delay added as a check read 0 ms on roll for the
+  interpolated sim gyro, against 7.5 and 4.7 ms on pitch and yaw. It was
+  dropped rather than reported.
+
+### Next (waiting for the owner)
+
+1. The X3 investigation on the corrected metric. The actuator grid (round 6)
+   was read on the old metric and needs reading again. The inertia table is
+   above.
+2. Whether the pitch-rise row (above) goes under investigation.
+3. Whether the replay latency (2.2 to 2.7 ms) is taken out of the
+   sim-from-log-setpoint numbers.

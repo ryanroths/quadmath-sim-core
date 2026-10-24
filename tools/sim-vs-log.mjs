@@ -2,10 +2,11 @@
 // logged rcCommand[0..3] replayed at the log's own rate into Betaflight in
 // the sim, with the same diff, armed on the floor and then flown in open air;
 // the sim's filtered gyro against the logged gyroADC. Prints per-axis error
-// and the closed-loop step
-// response of both (rise, overshoot, settle), computed by quadmath's
-// blackbox-metrics.js stepResponse (Wiener deconvolution of setpoint to
-// gyro), imported by path like the decoder.
+// and the closed-loop step response of both from the log's setpoint (rise,
+// lag, overshoot, settle), computed by quadmath's blackbox-metrics.js
+// stepResponse (Wiener deconvolution of setpoint to gyro), imported by path
+// like the decoder; with it, the replay's own input latency and the sim's
+// loop against its own setpoint, apart.
 //
 //   node tools/sim-vs-log.mjs <log.BBL> --quadmath <quadmath clone>
 //        [--diff configs/<file>] [--airframe airframes/air65.json] [--log 0]
@@ -153,6 +154,31 @@ function lag50(r) {
 }
 
 const rmsOf = (a) => Math.sqrt(a.reduce((s, v) => s + v * v, 0) / Math.max(1, a.length));
+
+// The shift (s, -10..+10 ms) that best lays a series sampled late by that
+// shift onto the reference, over the mask: least squares, 0.5 ms steps then
+// 0.05 ms around the best; returned in ms (positive: the series lags).
+function bestShiftMs(ref, seriesAt, mask) {
+  const err = (shiftS) => {
+    const x = seriesAt(shiftS);
+    let e = 0;
+    for (let i = 0; i < ref.length; i++) if (mask[i]) e += (x[i] - ref[i]) ** 2;
+    return e;
+  };
+  let best = 0;
+  let bestE = Infinity;
+  for (let ms = -10; ms <= 10; ms += 0.5) {
+    const e = err(ms / 1000);
+    if (e < bestE) { bestE = e; best = ms; }
+  }
+  const c = best;
+  for (let ms = c - 0.5; ms <= c + 0.5 + 1e-9; ms += 0.05) {
+    const e = err(ms / 1000);
+    if (e < bestE) { bestE = e; best = ms; }
+  }
+  return +best.toFixed(2);
+}
+
 
 export async function simVsLog(file, quadmathDir, { diff, airframe, module, log: li = 0, from = 0, to = Infinity, aux = {} }, print = () => {}) {
   const log = await readLog(file, quadmathDir, li);
@@ -308,25 +334,93 @@ export async function simVsLog(file, quadmathDir, { diff, airframe, module, log:
     }
   }
   rcErr = rcErrAxis.map((v) => +v.toFixed(3));
+  // One time base for both step responses, the log's own frames: the
+  // sim's gyro and setpoint interpolated to each frame's time (linear between
+  // the ticks each side), so the log's setpoint can be the input to both and
+  // t = 0 its edge (owner decision 2026-10-24). Betaflight runs first in a
+  // tick, on the plant as the last tick left it, so what it reads and sets in
+  // a tick belongs to the tick's start (sim.t less one tick); contact is the
+  // plant after the step (sim.t). The log's own analysis is the one it
+  // always had while the sim stays out of contact.
+  const tickS = tick / 1e6;
+  const atLog = (series, k, w, k1) => series[k] + w * (series[k1] - series[k]);
+  const sampleAt = (fill, shiftS = 0) => {
+    let k = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const ts = rows[i].t - t0 + shiftS + tickS;   // in sim.t's terms
+      while (k + 1 < sim.t.length && sim.t[k + 1] <= ts) k++;
+      const k1 = Math.min(k + 1, sim.t.length - 1);
+      const span = sim.t[k1] - sim.t[k];
+      const w = span > 0 ? Math.min(1, Math.max(0, (ts - sim.t[k]) / span)) : 0;
+      fill(i, k, w, k1);
+    }
+  };
+  const simAtLog = [new Float64Array(rows.length), new Float64Array(rows.length), new Float64Array(rows.length)];
+  const simSpAtLog = [new Float64Array(rows.length), new Float64Array(rows.length), new Float64Array(rows.length)];
+  sampleAt((i, k, w, k1) => {
+    for (let a = 0; a < 3; a++) {
+      simAtLog[a][i] = atLog(sim.gyro[a], k, w, k1);
+      simSpAtLog[a][i] = atLog(sim.setpoint[a], k, w, k1);
+    }
+  });
+  const contactAtLog = new Uint8Array(rows.length);
+  {
+    let k = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const ts = rows[i].t - t0;
+      while (k + 1 < sim.t.length && sim.t[k + 1] <= ts) k++;
+      const k1 = Math.min(k + 1, sim.t.length - 1);
+      contactAtLog[i] = sim.contact[k] || sim.contact[k1] ? 1 : 0;
+    }
+  }
+  // One mask for both: the log's flight (its throttle) and no frame where the
+  // sim was in contact. quadmath's stepResponse checks the mask on every 32nd
+  // sample of a window, so each contact frame masks the 32 frames up to it,
+  // of which a window holding it checks one.
+  const stepMask = metrics.flightMask(Float64Array.from(rows, (r) => (r.thr - 1000) / 1000)).mask;
+  for (let i = 0; i < stepMask.length; i++) if (contactAtLog[i]) stepMask.fill(0, Math.max(0, i - 31), i + 1);
+  const fsSim = 1e6 / tick;
   const axes = AXES.map((name, a) => {
     const g = sim.gyro[a].map((v, k) => v - at[k].gyro[a]);
     const sp = sim.setpoint[a].map((v, k) => v - at[k].setp[a]);
-    const logFlight = metrics.flightMask(Float64Array.from(rows, (r) => (r.thr - 1000) / 1000));
+    const logSp = Float64Array.from(rows, (r) => r.setp[a]);
+    // Both step responses from the log's setpoint, over the same candidate
+    // windows (one input, one mask); quadmath's stepResponse then accepts
+    // windows per output by its own quality test, so the windows used can
+    // differ (windows, considered).
+    const stepLog = metrics.stepResponse(logSp, Float64Array.from(rows, (r) => r.gyro[a]), logFs, stepMask);
+    const stepSim = metrics.stepResponse(logSp, simAtLog[a], logFs, stepMask);
+    // From the log's setpoint the sim's response carries the replay's own
+    // input latency (the sticks reach the sim's setpoint through its RX
+    // updates): measured as the shift that best lays the sim's setpoint on
+    // the log's, and the sim's loop alone as its gyro against its own
+    // setpoint on the same frames and mask.
+    const replayDelayMs = bestShiftMs(logSp, (shiftS) => {
+      const out = new Float64Array(rows.length);
+      sampleAt((i, k, w, k1) => { out[i] = atLog(sim.setpoint[a], k, w, k1); }, shiftS);
+      return out;
+    }, stepMask);
+    const stepSimLoop = metrics.stepResponse(simSpAtLog[a], simAtLog[a], logFs, stepMask);
+    // The method before 2026-10-24, kept for comparison: the sim against its
+    // own setpoint, at its own rate, over its own windows (the log's side of
+    // it is stepLog with the log's flight mask alone).
     const simFlight = metrics.flightMask(Float64Array.from(sim.throttle));
-    // No window that holds a tick in contact: quadmath's stepResponse checks
-    // the mask on every 32nd sample of a window, so each contact tick masks
-    // the 32 ticks up to it, of which a window holding it checks one.
     for (let k = 0; k < simFlight.mask.length; k++) if (sim.contact[k]) simFlight.mask.fill(0, Math.max(0, k - 31), k + 1);
-    const stepLog = metrics.stepResponse(Float64Array.from(rows, (r) => r.setp[a]), Float64Array.from(rows, (r) => r.gyro[a]), logFs, logFlight.mask);
-    const stepSim = metrics.stepResponse(Float64Array.from(sim.setpoint[a]), Float64Array.from(sim.gyro[a]), 1e6 / tick, simFlight.mask);
+    const logFlight = metrics.flightMask(Float64Array.from(rows, (r) => (r.thr - 1000) / 1000));
+    const ownLog = metrics.stepResponse(logSp, Float64Array.from(rows, (r) => r.gyro[a]), logFs, logFlight.mask);
+    const ownSim = metrics.stepResponse(Float64Array.from(sim.setpoint[a]), Float64Array.from(sim.gyro[a]), fsSim, simFlight.mask);
+    const summary = (s) => (s ? { windows: s.windows, considered: s.considered, ...s.metrics, lag50Ms: lag50(s), headMs: Array.from(s.t.slice(0, 12), (v) => +v.toFixed(2)), head: Array.from(s.step.slice(0, 12), (v) => +v.toFixed(3)) } : null);
     return {
       name,
       gyroRmsLog: +rmsOf(at.map((r) => r.gyro[a])).toFixed(2),
       gyroRmsSim: +rmsOf(sim.gyro[a]).toFixed(2),
       gyroErrRms: +rmsOf(g).toFixed(2),
       setpointErrRms: +rmsOf(sp).toFixed(3),
-      stepLog: stepLog ? { windows: stepLog.windows, ...stepLog.metrics, lag50Ms: lag50(stepLog) } : null,
-      stepSim: stepSim ? { windows: stepSim.windows, ...stepSim.metrics, lag50Ms: lag50(stepSim) } : null,
+      stepLog: summary(stepLog),
+      stepSim: summary(stepSim),
+      replayDelayMs,
+      stepSimLoop: summary(stepSimLoop),
+      ownSetpoint: { stepLog: summary(ownLog), stepSim: summary(ownSim) },
     };
   });
   return {
