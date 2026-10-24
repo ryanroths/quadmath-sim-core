@@ -5,9 +5,13 @@
 // tools/hover-from-log.mjs through a real decoder; no flight log is in the
 // repository. Shape: idle, take-off, 58 s of hover (2-60 s; the tool keeps 3-59), a throttle blip,
 // hover, landing; the hover holds rcCommand 1371, motor 720 (duty 0.336) and
-// logged eRPM 1942 (32,367 rpm on 12 poles).
+// logged eRPM 1942 (32,367 rpm on 12 poles). Slow frames carry the mode
+// switches as Betaflight logs them (rcModeActivationMask, bit n = box id n,
+// blackbox.c:902): one after the first main frame and one after the frame
+// where each later entry of modes takes effect; modes is [[t s, mask], ...],
+// by default ARM alone (acro) from the start.
 //
-//   synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = false }) -> Buffer
+//   synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = false, modes = [[0, 1]] }) -> Buffer
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 
@@ -28,7 +32,7 @@ const FIELDS = [
   ['eRPM[0]', 0, 0, 1, 1, 0], ['eRPM[1]', 0, 0, 1, 1, 0], ['eRPM[2]', 0, 0, 1, 1, 0], ['eRPM[3]', 0, 0, 1, 1, 0],
 ];
 
-export function synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = false } = {}) {
+export function synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = false, modes = [[0, 1]] } = {}) {
   const scale = hiRes ? 10 : 1;
   const header = [
     'Product:Blackbox flight data recorder by Nicholas Sherlock',
@@ -93,6 +97,7 @@ export function synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = fal
   const svb = (v) => uvb(((v << 1) ^ (v >> 31)) >>> 0);
   const neg14 = (v) => uvb((-v) & 0x3fff);
   const n = Math.round(66.1 * rate);
+  let mode = 0;
   for (let k = 0; k < n; k++) {
     const t = k / rate;
     const w = Math.sin(k * 0.7);
@@ -123,6 +128,14 @@ export function synthHoverBbl({ rate = 200, motorLow = 48, idle = 0, hiRes = fal
       else if (ie === 0) svb(v);
       else if (ie === 3) neg14(v);
       else throw new Error(`encoding ${ie}`);
+    }
+    // flightModeFlags (the mode mask), stateFlags, failsafePhase,
+    // rxSignalReceived, rxFlightChannelsValid
+    if (mode < modes.length && modes[mode][0] <= t) {
+      while (mode + 1 < modes.length && modes[mode + 1][0] <= t) mode++;
+      bytes.push('S'.charCodeAt(0));
+      for (const v of [modes[mode][1], 0, 0, 1, 1]) uvb(v);
+      mode++;
     }
   }
   bytes.push('E'.charCodeAt(0), 0xff);

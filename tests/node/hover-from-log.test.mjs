@@ -95,19 +95,43 @@ if (qm) {
     }
     // tools/sim-vs-log.mjs on the same synthetic log: the replayed roll, pitch
     // and yaw rcCommand come back from the sim's Betaflight exactly, the
-    // setpoints match, the quad flies, and a hover gives no step response.
+    // setpoints match, the sim follows the logged mode switches (acro, ANGLE
+    // from 6 s, acro from 9 s), the quad flies, and a hover gives no step
+    // response.
     const { simVsLog } = await import('../../tools/sim-vs-log.mjs');
     const wasm = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', root)));
     const classDiff = await readFile(new URL('configs/65mm-air65-ryfly-1219s.diff', root), 'utf8');
     const airframe = JSON.parse(await readFile(new URL('airframes/air65.json', root), 'utf8'));
     const file = join(dir, 'replay.BBL');
-    writeFileSync(file, synthHoverBbl({ rate: 1000 }));
+    writeFileSync(file, synthHoverBbl({ rate: 1000, modes: [[0, 1], [6, 3], [9, 1]] }));
     const sv = await simVsLog(file, qm, { diff: classDiff, airframe, module: wasm, to: 12 });
-    console.log(`sim-vs-log (synthetic): rcCommand readback ${sv.rc_readback_max_error.join(', ')}, setpoint rms ${sv.axes.map((x) => x.setpointErrRms).join(', ')}, height ${sv.sim.height_m.join('..')} m, steps ${sv.axes.map((x) => (x.stepLog || x.stepSim ? 'some' : 'none')).join(', ')}`);
+    console.log(`sim-vs-log (synthetic): rcCommand readback ${sv.rc_readback_max_error.join(', ')}, setpoint rms ${sv.axes.map((x) => x.setpointErrRms).join(', ')}, modes ${sv.log_mode_mask} then ${JSON.stringify(sv.log_mode_changes)}, ${sv.mode_mismatch_ticks} ticks off, height ${sv.sim.height_m.join('..')} m, steps ${sv.axes.map((x) => (x.stepLog || x.stepSim ? 'some' : 'none')).join(', ')}`);
+    assert.equal(sv.log_mode_mask, 1, 'ARM alone at the start: acro');
+    assert.deepEqual(sv.log_mode_changes, [{ t: 6, mask: 3 }, { t: 9, mask: 1 }], 'the mode switches as logged');
+    assert.equal(sv.mode_mismatch_ticks, 0, 'the sim flies the logged modes');
     assert.deepEqual(sv.rc_readback_max_error.slice(0, 3), [0, 0, 0], 'roll, pitch, yaw rcCommand replayed exactly');
     assert.ok(sv.axes.every((x) => x.setpointErrRms === 0), 'setpoints match');
     assert.ok(sv.sim.height_m[1] > 0.5, 'the replayed throttle flies the quad');
+    assert.equal(sv.sim.contact_ticks, 0, 'the replay flies in open air');
     assert.ok(sv.axes.every((x) => x.stepLog === null && x.stepSim === null), 'a hover has no step to measure');
+    // The sim's own runtime modes, independent of the tool's mask: ANGLE on
+    // within an RX update of 6 s, off within one of 9 s.
+    const simModes = (x) => x.sim_mode_changes.map((c) => `${c.flags}@${Math.abs(c.t - Math.round(c.t * 2) / 2) <= 0.03 ? Math.round(c.t * 2) / 2 : c.t}`).join(' ');
+    assert.equal(simModes(sv), '1@6 0@9', 'the sim switched ANGLE on and off as logged');
+    // ANGLE and HORIZON both on (mask 7): Betaflight runs ANGLE alone
+    // (fc/core.c:970-990), and the check expects that. A three-position
+    // switch (ANGLE high, HORIZON middle, both on AUX2): one channel value
+    // per mask.
+    writeFileSync(file, synthHoverBbl({ rate: 1000, modes: [[0, 1], [6, 7], [9, 1]] }));
+    const both = await simVsLog(file, qm, { diff: classDiff, airframe, module: wasm, to: 12 });
+    const threePos = `${classDiff}\naux 1 1 1 1700 2100 0 0\naux 2 2 1 1300 1675 0 0\n`;
+    writeFileSync(file, synthHoverBbl({ rate: 1000, modes: [[0, 1], [6, 3], [9, 5], [10.5, 1]] }));
+    const sw = await simVsLog(file, qm, { diff: threePos, airframe, module: wasm, to: 12 });
+    console.log(`sim-vs-log (synthetic modes): ANGLE ${simModes(sv)}; both on ${simModes(both)}, ${both.mode_mismatch_ticks} ticks off; three-position switch ${simModes(sw)}, ${sw.mode_mismatch_ticks} ticks off`);
+    assert.equal(both.mode_mismatch_ticks, 0, 'ANGLE and HORIZON both on: ANGLE');
+    assert.equal(simModes(both), '1@6 0@9');
+    assert.equal(sw.mode_mismatch_ticks, 0, 'a three-position switch flies the logged modes');
+    assert.equal(simModes(sw), '1@6 2@9 0@10.5');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -137,7 +161,7 @@ const toolRef = JSON.parse(await readFile(new URL('tests/reference/air65-hover.t
 
 // With the decoder and the owner's logs (SIM_CORE_LOGS, tools/logs.mjs): the
 // tool on the real log gives the committed output exactly, and sim-vs-log
-// replays it (sticks back exact, ANGLE as logged, no step in a hover).
+// replays it (sticks back exact, modes as logged, no step in a hover).
 if (qm) {
   const { logPath } = await import('../../tools/logs.mjs');
   const { existsSync } = await import('node:fs');
@@ -154,10 +178,11 @@ if (qm) {
     const config = (await Promise.all(['configs/air65-ryfly-2026-10-23.txt', 'configs/air65-ryfly-2026-10-23.from-header.txt'].map((p) => readFile(new URL(p, root), 'utf8')))).join('\n');
     const airframe = JSON.parse(await readFile(new URL('airframes/air65.json', root), 'utf8'));
     const sv = await simVsLog(real, qm, { diff: config, airframe, module: wasm });
-    console.log(`real hover log: tool output equals the reference; sim-vs-log rcCommand readback ${sv.rc_readback_max_error.join(', ')}, modes log ${sv.log_flight_mode_flags} sim ${sv.sim.flightModeFlags}, gyro rms sim ${sv.axes.map((x) => x.gyroRmsSim).join('/')} vs log ${sv.axes.map((x) => x.gyroRmsLog).join('/')} deg/s`);
+    console.log(`real hover log: tool output equals the reference; sim-vs-log rcCommand readback ${sv.rc_readback_max_error.join(', ')}, modes log ${sv.log_mode_mask} (${sv.log_mode_changes.length} changes) sim ${sv.sim.flightModeFlags}, ${sv.mode_mismatch_ticks} ticks off, gyro rms sim ${sv.axes.map((x) => x.gyroRmsSim).join('/')} vs log ${sv.axes.map((x) => x.gyroRmsLog).join('/')} deg/s`);
     assert.deepEqual(sv.rc_readback_max_error.slice(0, 3), [0, 0, 0], 'roll, pitch, yaw replayed exactly');
     assert.ok(sv.rc_readback_max_error[3] <= 2, 'throttle within its smoothing');
-    assert.equal(sv.sim.flightModeFlags, sv.log_flight_mode_flags, 'the sim flies the logged mode');
+    assert.equal(sv.mode_mismatch_ticks, 0, 'the sim flies the logged modes');
+    assert.equal(sv.sim.contact_ticks, 0, 'the replay flies in open air');
     assert.ok(sv.axes.every((x) => x.stepLog === null && x.stepSim === null), 'a hover has no step to measure');
   } else {
     console.log(`real hover log not run: ${real} not found (SIM_CORE_LOGS)`);

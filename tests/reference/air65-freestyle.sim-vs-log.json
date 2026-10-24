@@ -12,10 +12,10 @@
   "sim": {
     "ticks": 123713,
     "rate_hz": 1000,
-    "flightModeFlags": 1,
+    "flightModeFlags": 0,
     "aux": [
       1900,
-      1900,
+      1000,
       1000,
       1000,
       1000,
@@ -27,12 +27,22 @@
       1000,
       1000
     ],
+    "open_air_m": 1000,
     "height_m": [
-      0.01,
-      226.607
-    ]
+      -89.411,
+      0
+    ],
+    "contact_ticks": 0
   },
-  "log_flight_mode_flags": 1,
+  "log_mode_mask": 1,
+  "log_mode_changes": [
+    {
+      "t": 123.696,
+      "mask": 0
+    }
+  ],
+  "mode_mismatch_ticks": 0,
+  "sim_mode_changes": [],
   "rc_readback_max_error": [
     0,
     0,
@@ -43,9 +53,9 @@
     {
       "name": "roll",
       "gyroRmsLog": 174.69,
-      "gyroRmsSim": 77.93,
-      "gyroErrRms": 162.75,
-      "setpointErrRms": 159.345,
+      "gyroRmsSim": 167.24,
+      "gyroErrRms": 43.91,
+      "setpointErrRms": 6.101,
       "stepLog": {
         "windows": 19,
         "riseMs": 16.2,
@@ -57,22 +67,22 @@
         "lag50Ms": 3.8
       },
       "stepSim": {
-        "windows": 24,
+        "windows": 22,
         "riseMs": 20,
-        "overshootPct": 6,
-        "peakMs": 108,
-        "settleMs": 28,
-        "steady": 1.052,
+        "overshootPct": 2.4,
+        "peakMs": 36,
+        "settleMs": 24,
+        "steady": 1.007,
         "oscillations": 0,
-        "lag50Ms": 5
+        "lag50Ms": 4
       }
     },
     {
       "name": "pitch",
       "gyroRmsLog": 160.92,
-      "gyroRmsSim": 77.02,
-      "gyroErrRms": 148.97,
-      "setpointErrRms": 148.385,
+      "gyroRmsSim": 156.58,
+      "gyroErrRms": 30.5,
+      "setpointErrRms": 5.593,
       "stepLog": {
         "windows": 20,
         "riseMs": 17.8,
@@ -84,22 +94,22 @@
         "lag50Ms": 5.2
       },
       "stepSim": {
-        "windows": 19,
-        "riseMs": 25,
-        "overshootPct": 1.9,
-        "peakMs": 112,
-        "settleMs": 32,
-        "steady": 1.007,
+        "windows": 24,
+        "riseMs": 20,
+        "overshootPct": 0.4,
+        "peakMs": 150,
+        "settleMs": 23,
+        "steady": 0.989,
         "oscillations": 0,
-        "lag50Ms": 7.1
+        "lag50Ms": 3.7
       }
     },
     {
       "name": "yaw",
       "gyroRmsLog": 130.26,
-      "gyroRmsSim": 112.65,
-      "gyroErrRms": 64.06,
-      "setpointErrRms": 3.189,
+      "gyroRmsSim": 112.95,
+      "gyroErrRms": 64.02,
+      "setpointErrRms": 2.404,
       "stepLog": {
         "windows": 77,
         "riseMs": 19.3,

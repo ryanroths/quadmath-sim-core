@@ -394,10 +394,12 @@ static void stepPhysical(const double duty[SC_MOTOR_COUNT], double dt)
     // Pack current from the rotors' speed (owner decision 2026-10-23, from the
     // hover and punch logs): each rotor draws a quarter of the hover current at
     // the hover rpm, scaled by (rpm / rpm at hover)^exponent; last tick's rpm.
-    // A rotor its ESC does not drive (duty 0: disarmed, motor stop, crash flip's
-    // idle pair) draws nothing from the pack while it coasts down: the averaged
-    // motor below sees duty x pack voltage, and its ESC draws duty x the winding
-    // current from the pack.
+    // A rotor at duty 0 draws nothing from the pack: the averaged motor below
+    // sees duty x pack voltage, so at duty 0 its winding is shorted and brakes
+    // the rotor, and its ESC draws duty x the winding current, none. Duty 0 is
+    // DShot 0 (disarmed, motor stop, crash flip's idle pair) and DShot 48, the
+    // armed floor under dynamic idle (flight/mixer_init.c:342-343); one step
+    // up, the power law applies in full.
     double amps = 0;
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
         if (duty[i] == 0) continue;

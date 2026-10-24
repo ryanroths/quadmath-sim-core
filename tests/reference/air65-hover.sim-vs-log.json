@@ -12,10 +12,10 @@
   "sim": {
     "ticks": 66075,
     "rate_hz": 1000,
-    "flightModeFlags": 1,
+    "flightModeFlags": 0,
     "aux": [
       1900,
-      1900,
+      1000,
       1000,
       1000,
       1000,
@@ -27,12 +27,22 @@
       1000,
       1000
     ],
+    "open_air_m": 1000,
     "height_m": [
-      0.01,
-      69.721
-    ]
+      -21.136,
+      0
+    ],
+    "contact_ticks": 0
   },
-  "log_flight_mode_flags": 1,
+  "log_mode_mask": 1,
+  "log_mode_changes": [
+    {
+      "t": 66.058,
+      "mask": 0
+    }
+  ],
+  "mode_mismatch_ticks": 0,
+  "sim_mode_changes": [],
   "rc_readback_max_error": [
     0,
     0,
@@ -43,18 +53,18 @@
     {
       "name": "roll",
       "gyroRmsLog": 5.04,
-      "gyroRmsSim": 1.96,
-      "gyroErrRms": 4.72,
-      "setpointErrRms": 4.21,
+      "gyroRmsSim": 4.53,
+      "gyroErrRms": 2.36,
+      "setpointErrRms": 0.263,
       "stepLog": null,
       "stepSim": null
     },
     {
       "name": "pitch",
       "gyroRmsLog": 3.85,
-      "gyroRmsSim": 1.18,
-      "gyroErrRms": 3.66,
-      "setpointErrRms": 3.392,
+      "gyroRmsSim": 3.56,
+      "gyroErrRms": 1.63,
+      "setpointErrRms": 0.221,
       "stepLog": null,
       "stepSim": null
     },
