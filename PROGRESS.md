@@ -5117,3 +5117,89 @@ The owner:
 ran the link's rate. 4 shows the actuator delay moving roll overshoot away
 from the log and worsening the gyro match on every axis, as round 6 did on
 the old metric. Per the owner, the next step is Phase 2.
+
+---
+
+## 2026-10-23 | Phase 1 M4 | world contact as PR #3 (owner decisions)
+
+On `phase1/m4-world-contact`, now merged with the plant work (0ce2ccb, the
+same resolution as the earlier local merge 5e64103). Opened as PR #3,
+stacked on `phase1/m4-plant` (PR #2); it merges when its review is clean.
+
+- **#26's lintel predicate: confirmed by the owner** (a footprint point
+  leaving through the open doorway under the lintel counts as leaving the
+  room, not as through the wall).
+- **The slot wedge (round 3's high finding): a failing test and this note,
+  no fix yet** (owner: "not a fix tonight").
+  `tests/node/world-slot-wedge.test.mjs`, the reviewer's two-box repro: the
+  garage's west wall end and the crate beside it, 42.9 mm apart; the quad
+  posed motors off on its side across the gap; 30 s. It asks for the bounds
+  the reviewer's candidate fix met: after 2 s no CONTACT event, |omega|
+  under 0.2 rad/s, no footprint point more than 0.1 mm in either box. Today:
+  307 CONTACT events after 2 s (7 to 15 a second, all 30 s), |omega| up to
+  13.9 rad/s, a point 0.275 mm into the crate. `npm test` fails on it, so
+  PR #3's CI is red until it is fixed. The reviewer's candidate (CARRY_MIN
+  1e-4 to 2e-6, one contact per push axis, no bounce at a resting speed) is
+  in round 3's record; it does not reach section 49's standard of rest and
+  makes three of 720 slot drops worse.
+- The rest of round 3's findings stay open as listed in the M4 entry.
+
+---
+
+## 2026-10-24 | Phase 1 M4 | PR #2 merged; PR #3 rebased onto main
+
+PR #2 (the plant) was merged into `main` by the owner as 0456b16, after its
+CI passed on d26821a (the round-5 entry's "CI below": that run was green).
+
+`phase1/m4-world-contact` is rebased onto `main` (owner: "PR #2 merged.
+Rebase PR #3 onto main."). The 14 world-contact commits are replayed on
+0456b16; the three merges that brought the plant work in (0ce2ccb, e180a5f,
+81a6285) fall away. Each replayed commit kept `main`'s dist and took the
+world's new plant-world sections ahead of `main`'s open-check tail, with the
+world's list in the PASS line. Two commits follow them: plant-world #36's
+re-aimed hits, which lived in those merges, and the dist rebuilt with both
+(212,101 B, sha256
+`edb6c9dce5af9c759fa2111134628be235c2a04532e4b8d452ae37681794e044`). The
+resulting tree is the tested one of 81a6285 exactly, but for the order of
+the entries in this file (the PR #3 entry now follows round 5). The
+pre-rebase history is kept locally as `backup/m4-world-contact-merged`.
+PR #3 now targets `main`; its CI stays red on the slot-wedge test alone, on
+purpose.
+
+---
+
+## 2026-10-24 | Phase 1 M4 | PR #4 merged; PR #3 rebased again, slot-wedge test skipped (issue #5)
+
+PR #4 (the actuator delay stage, rounds 6 to 8) was merged into `main` by
+the owner as 4837d48. Owner: "PR #4 merged. Rebase PR #3 onto main, mark
+the slot-wedge test skip with a reference to issue #N (open the issue),
+rebuild dist, push."
+
+- Issue #5 opened: "World contact: a motors-off quad wedged across a ~40 mm
+  slot never comes to rest"
+  (https://github.com/ryanroths/quadmath-sim-core/issues/5), with the repro,
+  the bounds and today's numbers.
+- `phase1/m4-world-contact` rebased onto 4837d48. The world commits replayed
+  without conflicts in code; this file conflicted where the world entries
+  met `main`'s rounds 6 to 8 (resolved by keeping `main`'s entries and the
+  world's after them), and the dist commit "Rebuild dist with world contact
+  on main" fell away empty once `main`'s dist was kept. The pre-rebase
+  branch is kept locally as `backup/m4-world-contact-pre-4` (99ce373).
+- The slot-wedge test is skipped in `npm test`: `tests/run-all.mjs` takes a
+  skip marker naming the issue; a skipped test is not run, shows as SKIP in
+  the summary, and is not counted as passed ("all 14 passed, 1 skipped").
+  `SC_RUN_KNOWN_FAILING=1 npm test` runs it with the rest. Run directly it
+  is still the repro and still fails, with the same numbers as before the
+  actuator stage (which is off by default): 307 CONTACT events after 2 s,
+  |omega| up to 13.918 rad/s, a point 0.275 mm into the crate. It comes out
+  of the skip list when issue #5 is fixed.
+- dist rebuilt with world contact on `main`'s plant: 212,807 B, sha256
+  `624bde935f8a4b5ec7ef5b16dbf991a8cad51e8ed940e973e3a6319e85dbf169`
+  (SC_LOOP_HZ=1000).
+- Full `npm test` on the committed tree (24ad8b4), builds included,
+  QUADMATH_DIR set: all 14 passed, 1 skipped (B1 B2 byte-exact against the
+  new hash). `gate-plant` without QUADMATH_DIR (as CI runs it): PASS.
+
+What went wrong: the first version of the skip line in `run-all.mjs` came
+out of a patch script with a raw line break where `\n` was meant (same
+output, wrong form); fixed before the commit left this machine.

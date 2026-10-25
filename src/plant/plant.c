@@ -41,7 +41,16 @@
 #define DIVERGED_RAD_S 200.0        // PROGRESS.md deliberate change 6
 #define GROUND_SCRUB 7.3            // H:3199, per second (as world.c TUMBLE_DECAY)
 #define FOOTPRINT_POINTS 5
+#define HULL_BOXES 4                // solids held off by the footprint's hull, a tick
+#define HULL_PASSES 4               // top-ups of the hull contacts' pushes, a tick
+// The points, the points the points' push carried into the solid, up to
+// SC_HULL_HOLD hold points for each hull contact, the points again after the
+// hull's push.
+#define CONTACTS (FOOTPRINT_POINTS + FOOTPRINT_POINTS + SC_HULL_HOLD * HULL_BOXES + FOOTPRINT_POINTS)
 #define CONTACT_SWEEPS 32
+#define PINCH_BIAS_MAX 0.1          // m/s: a contact's push left undone is moved out no faster
+#define SLIP_MIN 1e-6               // m/s: a contact arriving slower along the surface is static
+#define CARRY_MIN 1e-4              // m (world.c ON_FACE_WU): a carry the next tick's resolution reaches
 #define CONTACT_SPIN_CAP 150.0      // rad/s, below the divergence guard (as world.c)
 
 sc_plant_state_t sc_plant;
@@ -636,20 +645,49 @@ static double restHeightAt(const double q[4])
 
 // Contact through the footprint (owner decision 2026-10-23): four points on
 // the duct rims along the arm diagonals at the duct bottom, and the canopy
-// top. Each point meets the floor and boxes as quadmath's CG point did
-// (world.c, without the floor pad or the spin kick); what the world does to
+// top. Each point meets the floor and boxes through quadmath's CG point's
+// resolution (world.c), without the floor pad or the spin kick, and with the
+// footprint-only box rules its header lists (a box standing on the floor
+// reaches down to it, an inner face needs the travel with no slack, and an
+// inner face crossed inside the solid ranks last); what the world does to
 // the point becomes a rigid-body response through its lever arm:
 //   - every point is tested on the pose the tick integrated to;
-//   - the CG moves by the largest push out along each axis;
+//   - the CG moves by the largest push out along each axis (opposite pushes
+//     cancel), and a point that push carries more than CARRY_MIN into the
+//     solid (wedged between boxes closer together than the footprint) is
+//     resolved too, its push joining the others;
 //   - CONTACT_SWEEPS projected Gauss-Seidel sweeps of impulses at the points
 //     steer each point's velocity toward what the world gave it: along the
 //     contact normal an accumulated push that never goes below zero (a later
 //     sweep can take back what an earlier one over-gave, so four points at
-//     rest share the load without creeping, but nothing pulls), across it the
-//     world's tangential target (its friction). A fixed sweep count keeps it
+//     rest share the load without creeping, but nothing pulls), with at
+//     least the speed out (to PINCH_BIAS_MAX) that moves the part of its push
+//     the CG's move left undone (a pinch: pushes that cancelled) in a tick;
+//     across it the world's tangential target (its friction), a sliding
+//     contact by one exact row along its slip. A fixed sweep count keeps it
 //     deterministic.
 // The spin now comes from the lever arms, so the duct-hit spin kick is not
 // applied; the ground scrub (H:3196-3203) and the spin cap are.
+// A box edge or corner can pass between the points (a shelf's front edge
+// between the leading rim and the rest), so after the points' push the
+// convex hull of the five points is tested against the boxes too (world.c
+// sc_world_hull): a box it ends the tick deeper inside than it began, with no
+// point inside it at the start or end of the tick that leaves it along the
+// hull's separating axis, is pushed back by what it went deeper this tick
+// (all of the overlap only if it began outside; a carried overlap is not
+// pushed). The push is along the box face axis most along the hull's way
+// out, or failing that the next most along it, any at least a quarter along
+// it, whose push takes no point into a solid; if none qualifies there
+// is no push, and the contact only stops the hull moving into the box. The
+// box feature inside the hull (a corner, both ends of an edge across a face,
+// or up to four corners of a box top between the rims) is one to four more
+// contacts with the world's response, up to HULL_BOXES solids a tick, in the
+// same sweeps, each given as speed out what the CG's move left undone of
+// what it went deeper. The pushes add as the points' do, topped up where one
+// contact's leaves another short. The hull's push moves the points too, so
+// they are resolved again from where the points' push left them, each push
+// one more contact (world.c chooses a push that takes no point into a solid,
+// but a point lying on a seam plane is in none).
 static uint32_t footprintContact(double p[3], double v[3], const double q[4], double om[3], const double p0[3],
                                  const double q0[4], double dt)
 {
@@ -659,22 +697,30 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     double omW[3];
     qRotate(q, om, omW);
     const double spinBefore = sqrt(dot3(om, om));
-    double rw[FOOTPRINT_POINTS][3], target[FOOTPRINT_POINTS][3], normal[FOOTPRINT_POINTS][3];
-    double slip[FOOTPRINT_POINTS][3];   // unit tangential slip at contact, or zero
-    bool active[FOOTPRINT_POINTS];
+    double rw[CONTACTS][3], target[CONTACTS][3], normal[CONTACTS][3];
+    double slip[CONTACTS][3];           // unit tangential slip at contact, or zero
+    double r0[FOOTPRINT_POINTS][3];
+    bool active[CONTACTS];
     double pushHi[3] = { 0, 0, 0 }, pushLo[3] = { 0, 0, 0 };
+    double pushAt[CONTACTS][3];             // a contact's push out (a point's), or zero
+    double fromAt[CONTACTS][3];             // the CG's move it was pushed from
+    double bias[CONTACTS];                  // speed out a pinched point is given
+    const double pIn[3] = { p[0], p[1], p[2] };
+    memset(pushAt, 0, sizeof(pushAt));
+    memset(fromAt, 0, sizeof(fromAt));
+    memset(bias, 0, sizeof(bias));
     uint32_t flags = 0;
     bool anyFloor = false, anyScrub = false;
     for (int k = 0; k < FOOTPRINT_POINTS; k++) {
         active[k] = false;
         qRotate(q, body[k], rw[k]);
-        double r0[3], wxr[3], pt[3], vt[3], st[3];
-        qRotate(q0, body[k], r0);
+        double wxr[3], pt[3], vt[3], st[3];
+        qRotate(q0, body[k], r0[k]);
         cross3(omW, rw[k], wxr);
         for (int a = 0; a < 3; a++) {
             pt[a] = p[a] + rw[k][a];
             vt[a] = v[a] + wxr[a];
-            st[a] = p0[a] + r0[a];
+            st[a] = p0[a] + r0[k][a];
         }
         const double ptIn[3] = { pt[0], pt[1], pt[2] };
         const double vtIn[3] = { vt[0], vt[1], vt[2] };
@@ -693,6 +739,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             dv[a] = vt[a] - vtIn[a];
             pushHi[a] = fmax(pushHi[a], dp[a]);
             pushLo[a] = fmin(pushLo[a], dp[a]);
+            pushAt[k][a] = dp[a];
         }
         // The contact normal: the way the point was pushed out, or failing
         // that (a touch with no push) the way its velocity was turned.
@@ -710,7 +757,10 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             target[k][a] = vt[a];
         }
         // The point's slip along the surface as it arrived: friction only
-        // ever opposes it (with no slip it holds the point, static).
+        // ever opposes it (with no slip, or under SLIP_MIN, it holds the
+        // point, static). Stepped along the direction of a slip of
+        // nanometres a second, numerical, a quad resting on a beam between
+        // its rims turned at 2e-4 rad/s and crept 2 um in 7 s.
         const double vin = dot3(vtIn, normal[k]);
         double sl[3];
         for (int a = 0; a < 3; a++) {
@@ -718,7 +768,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         }
         const double slen = sqrt(dot3(sl, sl));
         for (int a = 0; a < 3; a++) {
-            slip[k][a] = slen > 1e-9 ? sl[a] / slen : 0;
+            slip[k][a] = slen > SLIP_MIN ? sl[a] / slen : 0;
         }
         active[k] = true;
     }
@@ -726,6 +776,83 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     // footprint stays put (they cancel); a quad whose CG is inside a box (a
     // pose into the solid) leaves by the larger push.
     const bool embedded = sc_world_inside(p);
+    // The push carries every point with the CG: one it carries into the
+    // solid (wedged between boxes closer together than the footprint, the
+    // far side's push drove it in) is resolved too, from where its own
+    // resolution left it, and its push joins the others, so the two cancel
+    // this tick and the pinch below turns the quad. A tick at a time, each
+    // pushing the other way, a rim lying on the floor in a gap 2.5 mm
+    // narrower than the rims was carried into the box beside it, out of
+    // reach of the next tick's resolution, and went 8.8 mm in. Only on a
+    // tick a point met a box, and only a point carried more than CARRY_MIN
+    // (the next tick's resolution reaches that far through a face; the walk
+    // over the boxes for every point cost a quad resting on a table edge
+    // 7 us a tick with 1088 boxes in the map). Not with the CG in or on a box
+    // (a pose on a seam inside a wall: the points on both sides cancelled
+    // and it never came out).
+    int contacts = FOOTPRINT_POINTS;
+    double net[3];
+    for (int a = 0; a < 3; a++) {
+        net[a] = pushHi[a] + pushLo[a];
+    }
+    int inSolid = -1;                   // the CG in or on a box, found when first needed
+    for (int k = 0; k < FOOTPRINT_POINTS && (flags & 2) && (net[0] != 0 || net[1] != 0 || net[2] != 0); k++) {
+        double pt[3], st[3], vt[3], wxr[3], carry[3];
+        for (int a = 0; a < 3; a++) {
+            carry[a] = net[a] - pushAt[k][a];
+            st[a] = p[a] + rw[k][a] + pushAt[k][a];
+            pt[a] = p[a] + rw[k][a] + net[a];
+        }
+        if (!(dot3(carry, carry) > CARRY_MIN * CARRY_MIN)) {
+            continue;
+        }
+        if (inSolid < 0) {
+            inSolid = sc_world_in_solid(p);
+        }
+        if (inSolid) {
+            break;
+        }
+        if (!sc_world_point_in(pt)) {
+            continue;
+        }
+        cross3(omW, rw[k], wxr);
+        for (int a = 0; a < 3; a++) {
+            vt[a] = v[a] + wxr[a];
+        }
+        const double ptIn[3] = { pt[0], pt[1], pt[2] };
+        const double vtIn[3] = { vt[0], vt[1], vt[2] };
+        bool floorHit = false, scrub = false;
+        flags |= sc_world_point(pt, vt, st, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE], blk[PB_SPIN_SCALE],
+                                &floorHit, &scrub);
+        anyFloor = anyFloor || floorHit;
+        anyScrub = anyScrub || scrub;
+        double dp[3];
+        for (int a = 0; a < 3; a++) {
+            dp[a] = pt[a] - ptIn[a];
+        }
+        const double len = sqrt(dot3(dp, dp));
+        if (!(len > 0)) {
+            continue;
+        }
+        const int c = contacts++;
+        const double vin = dot3(vtIn, dp) / len;
+        double sl[3];
+        for (int a = 0; a < 3; a++) {
+            pushHi[a] = fmax(pushHi[a], dp[a]);
+            pushLo[a] = fmin(pushLo[a], dp[a]);
+            rw[c][a] = rw[k][a];
+            normal[c][a] = dp[a] / len;
+            target[c][a] = vt[a];
+            sl[a] = vtIn[a] - vin * normal[c][a];
+            pushAt[c][a] = dp[a];
+            fromAt[c][a] = net[a];
+        }
+        const double slen = sqrt(dot3(sl, sl));
+        for (int a = 0; a < 3; a++) {
+            slip[c][a] = slen > SLIP_MIN ? sl[a] / slen : 0;
+        }
+        active[c] = true;
+    }
     for (int a = 0; a < 3; a++) {
         if (embedded && pushHi[a] > 0 && pushLo[a] < 0) {
             p[a] += pushHi[a] >= -pushLo[a] ? pushHi[a] : pushLo[a];
@@ -733,16 +860,192 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             p[a] += pushHi[a] + pushLo[a];
         }
     }
-    double pushed[FOOTPRINT_POINTS] = { 0, 0, 0, 0, 0 };
-    double rubbed[FOOTPRINT_POINTS][3];
+    // The hull, on the pose the points' push left (rims round the base, then
+    // the canopy), and on the pose the tick began at.
+    static const int HULL_ORDER[SC_HULL_POINTS] = { 0, 1, 3, 2, 4 };
+    double hullEnd[SC_HULL_POINTS][3], hullStart[SC_HULL_POINTS][3];
+    for (int j = 0; j < SC_HULL_POINTS; j++) {
+        for (int a = 0; a < 3; a++) {
+            hullEnd[j][a] = p[a] + rw[HULL_ORDER[j]][a];
+            hullStart[j][a] = p0[a] + r0[HULL_ORDER[j]][a];
+        }
+    }
+    sc_hull_contact_t hull[HULL_BOXES];
+    const int hullCount = sc_world_hull(hullEnd, hullStart, hull, HULL_BOXES);
+    double hullHi[3] = { 0, 0, 0 }, hullLo[3] = { 0, 0, 0 };
+    for (int j = 0; j < hullCount; j++) {
+        for (int a = 0; a < 3; a++) {
+            hullHi[a] = fmax(hullHi[a], hull[j].push[a]);
+            hullLo[a] = fmin(hullLo[a], hull[j].push[a]);
+        }
+        for (int m = 0; m < hull[j].points; m++) {
+            const int k = contacts++;
+            double wxr[3], vt[3], vtIn[3];
+            for (int a = 0; a < 3; a++) {
+                rw[k][a] = hull[j].point[m][a] - p[a];
+            }
+            cross3(omW, rw[k], wxr);
+            for (int a = 0; a < 3; a++) {
+                vt[a] = v[a] + wxr[a];
+                vtIn[a] = vt[a];
+            }
+            bool scrub = false;
+            flags |= sc_world_hull_hit(&hull[j], vt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE],
+                                       blk[PB_SPIN_SCALE], &scrub, normal[k]);
+            anyScrub = anyScrub || scrub;
+            // What it went deeper this tick, from where the points' push
+            // left the CG: what the CG's move leaves of it is given as speed
+            // out in the sweeps. With no push allowed (wedged against a box
+            // on the far side), only stopping the hull moving into the box
+            // let the overlap each tick gained stay: a leg's edge went 30 mm
+            // into the hull, 0.035 mm a tick, between two gym bench legs.
+            const double vin = dot3(vtIn, normal[k]);
+            double sl[3];
+            for (int a = 0; a < 3; a++) {
+                target[k][a] = vt[a];
+                sl[a] = vtIn[a] - vin * normal[k][a];
+                pushAt[k][a] = hull[j].gain * hull[j].normal[a];
+                fromAt[k][a] = p[a] - pIn[a];
+            }
+            const double slen = sqrt(dot3(sl, sl));
+            for (int a = 0; a < 3; a++) {
+                slip[k][a] = slen > SLIP_MIN ? sl[a] / slen : 0;
+            }
+            active[k] = true;
+        }
+    }
+    // The pushes add up as the points' do (the largest each way per axis),
+    // but on an oblique separating axis one contact's push can leave another
+    // short of what it went deeper this tick: each contact the sum leaves
+    // short is topped up along its own push, HULL_PASSES passes. Opposite
+    // pushes on its axis (wedged) still cancel. One contact is as before.
+    // Wedged on the end of a bench plank beside a leg (a slot narrower than
+    // the footprint), each push alone was cancelled or not allowed, and the
+    // plank went 26 mm into the hull in 4 s, between two rims.
+    double hullPush[3];
+    for (int a = 0; a < 3; a++) {
+        hullPush[a] = hullHi[a] + hullLo[a];
+    }
+    for (int pass = 0; pass < HULL_PASSES && hullCount > 1; pass++) {
+        for (int j = 0; j < hullCount; j++) {
+            const double want = dot3(hull[j].push, hull[j].normal);     // what it went deeper this tick
+            int ax = 0;
+            for (int a = 1; a < 3; a++) {
+                if (fabs(hull[j].push[a]) > fabs(hull[j].push[ax])) {
+                    ax = a;
+                }
+            }
+            if (!(want > 0) || (hullHi[ax] > 0 && hullLo[ax] < 0)) {
+                continue;
+            }
+            const double got = dot3(hullPush, hull[j].normal);
+            if (got < want) {
+                for (int a = 0; a < 3; a++) {
+                    hullPush[a] += (want - got) / want * hull[j].push[a];
+                }
+            }
+        }
+    }
+    const double pHull[3] = { p[0], p[1], p[2] };
+    bool hullMoved = false;
+    for (int a = 0; a < 3; a++) {
+        p[a] += hullPush[a];
+        hullMoved = hullMoved || p[a] != pHull[a];
+    }
+    // The hull's push moves the points too: each is resolved again, from
+    // where the points' push left it to where the hull's push carried it, and
+    // what the world does to it is one more contact, the CG moving by the
+    // largest push each way as before. world.c pushes the hull only along an
+    // axis that takes no point into a solid, but a point lying on a seam
+    // plane is in none: a rim on a desk top beside a keyboard was carried
+    // 1.3 mm under the keyboard's edge, and the next tick found it deep in
+    // the solid and pushed it out through the bottom of the desk (29 mm).
+    if (hullMoved) {
+        double reHi[3] = { 0, 0, 0 }, reLo[3] = { 0, 0, 0 };
+        for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+            double wxr[3], pt[3], vt[3], st[3];
+            cross3(omW, rw[k], wxr);
+            for (int a = 0; a < 3; a++) {
+                pt[a] = p[a] + rw[k][a];
+                vt[a] = v[a] + wxr[a];
+                st[a] = pHull[a] + rw[k][a];
+            }
+            const double ptIn[3] = { pt[0], pt[1], pt[2] };
+            const double vtIn[3] = { vt[0], vt[1], vt[2] };
+            bool floorHit = false, scrub = false;
+            flags |= sc_world_point(pt, vt, st, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE], blk[PB_SPIN_SCALE],
+                                    &floorHit, &scrub);
+            anyFloor = anyFloor || floorHit;
+            anyScrub = anyScrub || scrub;
+            double dp[3];
+            for (int a = 0; a < 3; a++) {
+                dp[a] = pt[a] - ptIn[a];
+                reHi[a] = fmax(reHi[a], dp[a]);
+                reLo[a] = fmin(reLo[a], dp[a]);
+            }
+            const double len = sqrt(dot3(dp, dp));
+            if (!(len > 0)) {
+                continue;
+            }
+            const int c = contacts++;
+            const double vin = dot3(vtIn, dp) / len;
+            double sl[3];
+            for (int a = 0; a < 3; a++) {
+                rw[c][a] = rw[k][a];
+                normal[c][a] = dp[a] / len;
+                target[c][a] = vt[a];
+                sl[a] = vtIn[a] - vin * normal[c][a];
+            }
+            const double slen = sqrt(dot3(sl, sl));
+            for (int a = 0; a < 3; a++) {
+                slip[c][a] = slen > SLIP_MIN ? sl[a] / slen : 0;
+            }
+            active[c] = true;
+        }
+        for (int a = 0; a < 3; a++) {
+            p[a] += reHi[a] + reLo[a];
+        }
+    }
+    // A pinch: points pushed out of boxes on opposite sides, their pushes
+    // cancelled in the CG's, so each kept the part of its push the CG did
+    // not take and stayed in. That much is moved out through the sweeps (at
+    // most PINCH_BIAS_MAX), where the lever arms turn the quad out of both
+    // boxes; so is what a hull contact went deeper and the CG's move left
+    // undone. Two rims creeping into a slab's underside and a step's side
+    // 21 mm apart took the CG into the slab; a point whose push the CG took
+    // whole is as before.
+    if (!embedded) {
+        double moved[3];
+        for (int a = 0; a < 3; a++) {
+            moved[a] = p[a] - pIn[a];
+        }
+        for (int c = 0; c < contacts; c++) {
+            const double len = sqrt(dot3(pushAt[c], pushAt[c]));
+            if (!active[c] || !(len > 0)) {
+                continue;
+            }
+            double rel[3];
+            for (int a = 0; a < 3; a++) {
+                rel[a] = moved[a] - fromAt[c][a];
+            }
+            const double left = len - dot3(rel, pushAt[c]) / len;
+            if (left > 0) {
+                bias[c] = fmin(left / dt, PINCH_BIAS_MAX);
+            }
+        }
+    }
+    double pushed[CONTACTS];
+    double rubbed[CONTACTS][3];
+    memset(pushed, 0, sizeof(pushed));
     memset(rubbed, 0, sizeof(rubbed));
     for (int sweep = 0; sweep < CONTACT_SWEEPS; sweep++) {
-        for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+        for (int k = 0; k < contacts; k++) {
             if (!active[k]) {
                 continue;
             }
             const double *n = normal[k];
             const double tn = dot3(target[k], n);
+            const double tnOut = fmax(tn, bias[k]);
             double wxr[3], vp[3], kn[3], j[3], rj[3], dw[3], e[3];
             // Across the normal first: the tangential target, by an impulse in
             // the tangent plane.
@@ -755,24 +1058,30 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
                 e[a] = (target[k][a] - tn * n[a]) - (vp[a] - vn * n[a]);
             }
             if (dot3(e, e) > 0) {
-                contactImpulse(q, rw[k], e, j);
-                const double jn = dot3(j, n);
-                for (int a = 0; a < 3; a++) {
-                    j[a] -= jn * n[a];
-                }
-                // Accumulated friction, kept opposing the arrival slip: it
-                // never pushes the point along its own slip (that would add
-                // energy through the lever arm).
                 if (dot3(slip[k], slip[k]) > 0) {
-                    double total[3];
+                    // Sliding: one row along the slip, stepped exactly, its
+                    // accumulated friction kept opposing the arrival slip (it
+                    // never pushes the point along its own slip, which would
+                    // add energy through the lever arm). Solving the whole
+                    // tangential error (K j = e) and keeping the part along
+                    // the slip moved the slip by (s.K s)(s.K^-1 s) times its
+                    // error, about 2 for a rim on the floor at a lean, and a
+                    // row stepped twice its error grows: rims on the floor
+                    // and one on a deck side, motors off, went from 0.07 m/s
+                    // and 1.8 rad/s to 2.6 m/s and 117 rad/s in one tick.
+                    double ks[3];
+                    contactResponse(q, rw[k], slip[k], ks);
+                    const double before = dot3(rubbed[k], slip[k]);
+                    const double along = fmin(0, before + dot3(e, slip[k]) / dot3(ks, slip[k]));
                     for (int a = 0; a < 3; a++) {
-                        total[a] = rubbed[k][a] + j[a];
+                        j[a] = (along - before) * slip[k][a];
+                        rubbed[k][a] = along * slip[k][a];
                     }
-                    const double along = fmin(0, dot3(total, slip[k]));
+                } else {
+                    contactImpulse(q, rw[k], e, j);
+                    const double jn = dot3(j, n);
                     for (int a = 0; a < 3; a++) {
-                        total[a] = along * slip[k][a];
-                        j[a] = total[a] - rubbed[k][a];
-                        rubbed[k][a] = total[a];
+                        j[a] -= jn * n[a];
                     }
                 }
                 cross3(rw[k], j, rj);
@@ -789,7 +1098,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             }
             vn = dot3(vp, n);
             contactResponse(q, rw[k], n, kn);
-            const double total = fmax(0, pushed[k] + (tn - vn) / dot3(kn, n));
+            const double total = fmax(0, pushed[k] + (tnOut - vn) / dot3(kn, n));
             const double dl = total - pushed[k];
             pushed[k] = total;
             for (int a = 0; a < 3; a++) {

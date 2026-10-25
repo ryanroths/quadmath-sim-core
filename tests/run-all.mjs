@@ -11,7 +11,9 @@
 // needs Chrome. gate-plant fails on an X3 band miss the owner has not signed
 // off or put under investigation in tests/x3-signoff.json; plant-world fails
 // on an open check unless it is under investigation there.
-// A test that runs past its time limit is stopped and counts as failed.
+// A test that runs past its time limit is stopped and counts as failed. A
+// test marked skip names its issue and is not run; SC_RUN_KNOWN_FAILING=1
+// runs it with the rest.
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import { spawn } from 'node:child_process';
@@ -33,6 +35,8 @@ const TESTS = [
   ['D4 reset vs fresh load', 'tests/node/reset-vs-fresh.test.mjs'],
   ['X1 black box vs WebFPV (F1 F2 F4)', 'tests/node/blackbox-webfpv.test.mjs'],
   ['M4 plant and world API: contact, triggers, pose, pack, argument checks', 'tests/node/plant-world.test.mjs'],
+  ['M4 world: quad wedged in a slot comes to rest (round 3 high)', 'tests/node/world-slot-wedge.test.mjs', [],
+    { skip: 'known failing, issue #5 https://github.com/ryanroths/quadmath-sim-core/issues/5' }],
   ['M4 bench hover from a blackbox log (tools/hover-from-log.mjs, synthetic frames)', 'tests/node/hover-from-log.test.mjs'],
   ['M4 plant: P1-P8, F6, F9, X2/F3, X3 feel bands (log, bench, WebFPV)', 'tests/gate-plant.mjs'],
   ['D2 Node vs headless Chrome, console clean', 'tests/browser/node-vs-chrome.test.mjs'],
@@ -58,16 +62,25 @@ function run(file, args, limitMs) {
 }
 
 const results = [];
-for (const [name, file, args = []] of TESTS) {
+const runKnownFailing = process.env.SC_RUN_KNOWN_FAILING === '1';
+for (const [name, file, args = [], { skip } = {}] of TESTS) {
+  if (skip && !runKnownFailing) {
+    console.log(`\n######## ${name}  (node ${file}): SKIP, ${skip}`);
+    results.push({ name, file, code: 'skip', ms: 0, skip });
+    continue;
+  }
   console.log(`\n######## ${name}  (node ${file}${args.length ? ` ${args.join(' ')}` : ''})`);
   results.push({ name, file, ...(await run(file, args, args.includes('--build') ? LIMIT_MS.build : LIMIT_MS.other)) });
 }
 
 console.log('\n######## summary');
 for (const r of results) {
-  const verdict = r.code === 0 ? 'PASS' : r.code === 'timeout' ? 'FAIL (time limit)' : 'FAIL';
-  console.log(`${verdict}  ${(r.ms / 1000).toFixed(1).padStart(6)} s  ${r.name}`);
+  const verdict = r.code === 0 ? 'PASS' : r.code === 'skip' ? 'SKIP' : r.code === 'timeout' ? 'FAIL (time limit)' : 'FAIL';
+  console.log(`${verdict}  ${(r.ms / 1000).toFixed(1).padStart(6)} s  ${r.name}${r.skip ? ` (${r.skip})` : ''}`);
 }
-const failed = results.filter((r) => r.code !== 0);
-console.log(failed.length ? `${failed.length} of ${results.length} failed` : `all ${results.length} passed${quick ? ' (builds skipped: --quick)' : ''}`);
+const skipped = results.filter((r) => r.code === 'skip');
+const ran = results.length - skipped.length;
+const failed = results.filter((r) => r.code !== 0 && r.code !== 'skip');
+const skipNote = skipped.length ? `, ${skipped.length} skipped` : '';
+console.log(failed.length ? `${failed.length} of ${ran} failed${skipNote}` : `all ${ran} passed${skipNote}${quick ? ' (builds skipped: --quick)' : ''}`);
 process.exitCode = failed.length ? 1 : 0;
