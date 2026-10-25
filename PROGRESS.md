@@ -5165,3 +5165,41 @@ the entries in this file (the PR #3 entry now follows round 5). The
 pre-rebase history is kept locally as `backup/m4-world-contact-merged`.
 PR #3 now targets `main`; its CI stays red on the slot-wedge test alone, on
 purpose.
+
+---
+
+## 2026-10-24 | Phase 1 M4 | PR #4 merged; PR #3 rebased again, slot-wedge test skipped (issue #5)
+
+PR #4 (the actuator delay stage, rounds 6 to 8) was merged into `main` by
+the owner as 4837d48. Owner: "PR #4 merged. Rebase PR #3 onto main, mark
+the slot-wedge test skip with a reference to issue #N (open the issue),
+rebuild dist, push."
+
+- Issue #5 opened: "World contact: a motors-off quad wedged across a ~40 mm
+  slot never comes to rest"
+  (https://github.com/ryanroths/quadmath-sim-core/issues/5), with the repro,
+  the bounds and today's numbers.
+- `phase1/m4-world-contact` rebased onto 4837d48. The world commits replayed
+  without conflicts in code; this file conflicted where the world entries
+  met `main`'s rounds 6 to 8 (resolved by keeping `main`'s entries and the
+  world's after them), and the dist commit "Rebuild dist with world contact
+  on main" fell away empty once `main`'s dist was kept. The pre-rebase
+  branch is kept locally as `backup/m4-world-contact-pre-4` (99ce373).
+- The slot-wedge test is skipped in `npm test`: `tests/run-all.mjs` takes a
+  skip marker naming the issue; a skipped test is not run, shows as SKIP in
+  the summary, and is not counted as passed ("all 14 passed, 1 skipped").
+  `SC_RUN_KNOWN_FAILING=1 npm test` runs it with the rest. Run directly it
+  is still the repro and still fails, with the same numbers as before the
+  actuator stage (which is off by default): 307 CONTACT events after 2 s,
+  |omega| up to 13.918 rad/s, a point 0.275 mm into the crate. It comes out
+  of the skip list when issue #5 is fixed.
+- dist rebuilt with world contact on `main`'s plant: 212,807 B, sha256
+  `624bde935f8a4b5ec7ef5b16dbf991a8cad51e8ed940e973e3a6319e85dbf169`
+  (SC_LOOP_HZ=1000).
+- Full `npm test` on the committed tree (24ad8b4), builds included,
+  QUADMATH_DIR set: all 14 passed, 1 skipped (B1 B2 byte-exact against the
+  new hash). `gate-plant` without QUADMATH_DIR (as CI runs it): PASS.
+
+What went wrong: the first version of the skip line in `run-all.mjs` came
+out of a patch script with a raw line break where `\n` was meant (same
+output, wrong form); fixed before the commit left this machine.
