@@ -278,7 +278,7 @@ function parityModel(quadCfg, { battery }) {
       ocv: v([3.30, 3.50, 3.60, 3.75, 3.87, 4.05, 4.20]),
       sagDrop: v(pack.sagDrop), hoverSeconds: v(battery ? pack.hoverS : 0), sagScale: v(1),
       bounceScale: v(1), crashScale: v(1), spinScale: v(1),
-      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0), iQuiescent: v(0),
+      ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0), iQuiescent: v(0), motorDelay: v(0), electricalTau: v(0),
     },
   };
 }
@@ -665,8 +665,12 @@ console.log('\n== X3 feel bands: (log) rows: sim-core on the Air65 config replay
   for (const ax of ['roll', 'pitch']) {
     add(`${ax} stop bounce (%)`, '+-2 points', o[ax].bouncePct, r[ax].bouncePct, abs(2));
   }
+  // Settle is reported, not banded, until a log has at least 10 clean
+  // windows per axis (owner decision 2026-10-24): on the owner's freestyle
+  // log one window carries the roll settle (PROGRESS.md, round 7).
   for (const ax of ['roll', 'pitch', 'yaw']) {
-    add(`${ax} settle 5% (ms)`, '<= 1.5x', o[ax].settle5, r[ax].settle5, ratio(1.5));
+    add(`${ax} settle 5% (ms)`, 'reported', o[ax].settle5, r[ax].settle5, () => true);
+    rows.at(-1).reported = true;
   }
   add('chirp lag (ms)', '+-3 ms', o.chirp.lagMs, r.chirp.lagMs, abs(3));
   add('yaw steady error (%)', '+-3 points', o.yaw.ssErrPct, r.yaw.ssErrPct, abs(3));
@@ -688,6 +692,7 @@ console.log('\n== X3 feel bands: (log) rows: sim-core on the Air65 config replay
     const probe = measured && signoff.underInvestigation && signoff.underInvestigation[row.key];
     const verdict = row.notRun ? 'not run here: needs QUADMATH_DIR and the freestyle log in SIM_CORE_LOGS'
       : !measured ? 'NOT MEASURED (a sign-off covers a measured miss only)'
+      : row.reported ? 'reported, not banded until a log has >= 10 clean windows per axis'
       : row.pass ? 'pass'
       : probe ? `MISS, ${probe.reason} (${probe.by})`
       : signed ? `MISS, signed off by the owner (${signed.by}, ${signed.date}${signed.reason ? `: ${signed.reason}` : ''})` : 'MISS';

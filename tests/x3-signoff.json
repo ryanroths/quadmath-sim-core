@@ -45,6 +45,12 @@
       "date": "2026-10-24",
       "reason": "under investigation, PROGRESS 2026-10-24",
       "entered": "by Claude on the owner's instruction of 2026-10-24 (PR #2: every red row either green or signed 'under investigation, PROGRESS <date>'; #33 is red on the owner's envelope check, the last 500 ms at 27.35 to 39.79 mm against 1 to 31 mm)"
+    },
+    "pitch rise to 90% ms (log)": {
+      "by": "owner (RyFly)",
+      "date": "2026-10-24",
+      "reason": "under investigation, PROGRESS 2026-10-24",
+      "entered": "by Claude on the owner's instruction of 2026-10-24 (pitch rise (log), red on the corrected step metric; the model not to be touched for it yet)"
     }
   }
 }

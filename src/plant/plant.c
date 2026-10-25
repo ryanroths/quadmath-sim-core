@@ -63,6 +63,14 @@ static const double SPIN_PROPS_IN[SC_MOTOR_COUNT] = { -1, 1, 1, -1 };
 static double omegaMotor[SC_MOTOR_COUNT];   // physical: rotor speed, rad/s, signed
 static double motorAccel[SC_MOTOR_COUNT];   // physical: rotor dw/dt this tick, rad/s^2
 static double spoolOut[SC_MOTOR_COUNT];     // parity: quadmath motor output, signed
+// Physical: the actuator stage (PB_MOTOR_DELAY, PB_ELEC_TAU). The delay line
+// holds the last delayTicks commanded duties per motor; dutyElec is the duty
+// after the electrical lag.
+#define SC_DELAY_TICKS_MAX 64
+static double dutyLine[SC_DELAY_TICKS_MAX][SC_MOTOR_COUNT];
+static int dutyLineAt;
+static int delayTicks;
+static double dutyElec[SC_MOTOR_COUNT];
 static double thrust[SC_MOTOR_COUNT];       // N, before ground effect
 static double battCharge;                   // parity battery state
 static double battVoltage;
@@ -170,6 +178,7 @@ static void derive(void)
     const double vHover = wHover / kv + r * kqProp * wHover * wHover / ktMotor;
     derived[PD_DUTY_HOVER] = vHover / vRef;
     derived[PD_AMPS_FULL] = blk[PB_I_QUIESCENT] + blk[PB_I_HOVER] * pow(wFull * RPM_PER_RAD_S / blk[PB_RPM_HOVER], blk[PB_CURRENT_EXP]);
+    delayTicks = (int)lround(blk[PB_MOTOR_DELAY] * SC_LOOP_HZ);
 }
 
 static void publishSensors(void)
@@ -201,6 +210,9 @@ static void restState(void)
     memset(motorAccel, 0, sizeof(motorAccel));
     memset(spoolOut, 0, sizeof(spoolOut));
     memset(thrust, 0, sizeof(thrust));
+    memset(dutyLine, 0, sizeof(dutyLine));
+    dutyLineAt = 0;
+    memset(dutyElec, 0, sizeof(dutyElec));
     // The physical model stands on its duct bottoms; quadmath's CG point
     // stands FLOOR_PAD_M up (QP:90), the same 10 mm for the Air65.
     static const double level[4] = { 1, 0, 0, 0 };
@@ -276,7 +288,10 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_CAPACITY_MAH] > 0 && block[PB_I_HOVER] >= 0 && block[PB_CELL_IR] >= 0
                                         && block[PB_DUCT_RADIUS] > 0 && block[PB_HULL_BELOW] > 0
                                         && block[PB_HULL_ABOVE] > 0 && block[PB_RPM_HOVER] > 0
-                                        && block[PB_CURRENT_EXP] > 0 && block[PB_I_QUIESCENT] >= 0)) {
+                                        && block[PB_CURRENT_EXP] > 0 && block[PB_I_QUIESCENT] >= 0
+                                        && block[PB_MOTOR_DELAY] >= 0
+                                        && block[PB_MOTOR_DELAY] * SC_LOOP_HZ < SC_DELAY_TICKS_MAX + 0.5
+                                        && block[PB_ELEC_TAU] >= 0)) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -388,9 +403,46 @@ static void dragForce(const double vWorld[3], const double q[4], double meanOut,
     qRotate(q, fb, fWorld);
 }
 
-// Physical motors and pack for one tick. Returns nothing; fills thrust[].
-static void stepPhysical(const double duty[SC_MOTOR_COUNT], double dt)
+// The actuator: the duty Betaflight commands this tick in; out, the duty the
+// ESC switches (after a delay of delayTicks whole ticks: a ring of commanded
+// duties, zero after a reset) and the drive the winding sees (after the
+// electrical lag, backward Euler as the parity spool, stepParity). Either
+// stage at 0 passes its input through untouched.
+static void actuate(const double cmd[SC_MOTOR_COUNT], double esc[SC_MOTOR_COUNT], double out[SC_MOTOR_COUNT],
+                    double dt)
 {
+    for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+        esc[i] = cmd[i];
+    }
+    if (delayTicks > 0) {
+        for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+            const double late = dutyLine[dutyLineAt][i];
+            dutyLine[dutyLineAt][i] = cmd[i];
+            esc[i] = late;
+        }
+        dutyLineAt = (dutyLineAt + 1) % delayTicks;
+    }
+    const double tau = blk[PB_ELEC_TAU];
+    for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+        out[i] = esc[i];
+    }
+    if (tau > 0) {
+        for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+            dutyElec[i] += (esc[i] - dutyElec[i]) * (dt / (tau + dt));
+            out[i] = dutyElec[i];
+        }
+    }
+}
+
+// Physical motors and pack for one tick. Returns nothing; fills thrust[].
+static void stepPhysical(const double cmd[SC_MOTOR_COUNT], double dt)
+{
+    // The actuator stage (off by default): esc, the duty each ESC switches
+    // this tick, which decides whether the pack supplies its motor; duty, the
+    // drive its winding sees.
+    double esc[SC_MOTOR_COUNT];
+    double duty[SC_MOTOR_COUNT];
+    actuate(cmd, esc, duty, dt);
     const double cells = blk[PB_CELLS];
     // Pack current (owner decisions 2026-10-23, from the hover and punch logs):
     // the quiescent current (the electronics, motors or not), plus each rotor's
@@ -404,7 +456,7 @@ static void stepPhysical(const double duty[SC_MOTOR_COUNT], double dt)
     // up, the power law applies in full.
     double amps = blk[PB_I_QUIESCENT];
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
-        if (duty[i] == 0) continue;
+        if (esc[i] == 0) continue;
         const double rpm = fabs(omegaMotor[i]) * RPM_PER_RAD_S;
         amps += 0.25 * blk[PB_I_HOVER] * pow(rpm / blk[PB_RPM_HOVER], blk[PB_CURRENT_EXP]);
     }

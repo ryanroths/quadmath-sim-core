@@ -34,6 +34,11 @@
     ],
     "contact_ticks": 0
   },
+  "rx": {
+    "headerHz": 249,
+    "measuredHz": 250,
+    "simHz": 250
+  },
   "log_mode_mask": 1,
   "log_mode_changes": [
     {
@@ -57,7 +62,13 @@
       "gyroErrRms": 2.36,
       "setpointErrRms": 0.263,
       "stepLog": null,
-      "stepSim": null
+      "stepSim": null,
+      "replayDelayMs": 2.55,
+      "stepSimLoop": null,
+      "ownSetpoint": {
+        "stepLog": null,
+        "stepSim": null
+      }
     },
     {
       "name": "pitch",
@@ -66,7 +77,13 @@
       "gyroErrRms": 1.63,
       "setpointErrRms": 0.221,
       "stepLog": null,
-      "stepSim": null
+      "stepSim": null,
+      "replayDelayMs": 2.7,
+      "stepSimLoop": null,
+      "ownSetpoint": {
+        "stepLog": null,
+        "stepSim": null
+      }
     },
     {
       "name": "yaw",
@@ -75,7 +92,13 @@
       "gyroErrRms": 1.79,
       "setpointErrRms": 0.143,
       "stepLog": null,
-      "stepSim": null
+      "stepSim": null,
+      "replayDelayMs": 2.15,
+      "stepSimLoop": null,
+      "ownSetpoint": {
+        "stepLog": null,
+        "stepSim": null
+      }
     }
   ],
   "log_current_vs_rpm": [
