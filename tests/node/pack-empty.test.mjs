@@ -19,8 +19,9 @@
 //   far earlier; that is reported, not tested.
 // - Then full throttle, level, held on to 380 mAh: the last 250 ms before
 //   380 mAh give less thrust than the weight. It cannot hover by 380 mAh.
-// - Run on, the pack stays bounded: SoC at the floor, the OCV at its last
-//   point, and a respawn (reinit, pack carried) still boots.
+// - Run on past 391 mAh, the pack stays bounded: SoC exactly at the floor,
+//   the OCV at its last point, and a respawn (reinit, pack carried) still
+//   boots.
 //
 //   node tests/node/pack-empty.test.mjs
 //
@@ -55,6 +56,10 @@ for (const soc of [0, -0.05, -0.1, SOC_FLOOR]) {
 }
 assert.throws(() => core.reinit({ battery: { soc: SOC_FLOOR - 0.01, vbatFiltered: 0 } }), /battery carry/, 'a carry below the floor is refused');
 console.log(`OCV per cell: ${minCellV} V at ${cap} mAh, ${v.ocvOverDischarge.value.join(', ')} V at ${[0.05, 0.1, 0.15].map((x) => Math.round(cap * (1 + x))).join(', ')} mAh`);
+
+// A physical airframe whose over-discharge OCV rises is refused.
+const rising = { ...air65, values: { ...v, ocvOverDischarge: { value: [2.8, 3.0, 0.5] } } };
+assert.throws(() => core.configure({ diff, plant: rising, world: { floorZ: 0 } }), /plant block refused/);
 
 // ---- The scripted 2 min flight ----
 core.configure({ diff, plant: air65, world: { floorZ: 0 } });
@@ -143,12 +148,21 @@ assert.ok(twr !== null, 'reaches 380 mAh');
 console.log(`full throttle, level, from ${fromMah.toFixed(0)} mAh: thrust below the weight from ${stallMah === null ? 'never' : stallMah.toFixed(1) + ' mAh'}; at 380 mAh thrust/weight ${twr.toFixed(3)}, z ${core.state.pos[2].toFixed(2)} m, OSD ${core.fc.vbat.toFixed(2)} V`);
 assert.ok(twr < 1, 'cannot hover at 380 mAh');
 
-// ---- Bounded: run on, then respawn with the pack carried ----
-run(30_000);
+// ---- Bounded: run on past the floor, then respawn with the pack carried ----
+// Past -0.15 (391 mAh) the SoC stops at the floor though current still flows
+// (the electronics' quiescent draw), and the OCV holds its last point.
+const floorMah = cap * (1 - SOC_FLOOR);
+let floorAt = null;
+for (let k = 0; k < 120 && floorAt === null; k++) {
+  run(1000);
+  if (core.state.mah > floorMah + 2) floorAt = core.state.mah;
+}
+assert.ok(floorAt !== null, `drew past ${floorMah.toFixed(0)} mAh (${core.state.mah.toFixed(1)})`);
 const s = core.state;
-assert.ok(Number.isFinite(s.soc) && s.soc >= SOC_FLOOR, `SoC bounded (${s.soc})`);
+assert.equal(s.soc, SOC_FLOOR, `SoC at the floor with ${s.mah.toFixed(1)} mAh drawn`);
+assert.ok(Math.abs(ocvNow() - v.ocvOverDischarge.value[2]) < 1e-9, `the OCV at its last point (${ocvNow()} V)`);
 assert.ok(Number.isFinite(s.vbatLoaded) && s.vbatLoaded >= 0, `pack voltage finite (${s.vbatLoaded})`);
-console.log(`run on to ${s.mah.toFixed(0)} mAh: SoC ${s.soc.toFixed(3)}, pack ${s.vbatLoaded.toFixed(2)} V`);
+console.log(`run on to ${s.mah.toFixed(0)} mAh: SoC ${s.soc.toFixed(3)} (the floor), OCV ${ocvNow().toFixed(2)} V, pack ${s.vbatLoaded.toFixed(2)} V`);
 const soc = core.battery.soc;
 assert.doesNotThrow(() => core.reinit());
 // The boot after a respawn draws its quiescent current (D4's relation).

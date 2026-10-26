@@ -6211,3 +6211,347 @@ a punch draws 17.7-19.5 A.
 - **Test count.** PR #273's description said "All 24 `tools/test_*.mjs`
   files plus `sim-tracks-test.mjs`". There are 23 `tools/test_*.mjs`
   files; 24 counted `sim-tracks-test.mjs`. The description is corrected.
+
+---
+
+## 2026-10-26 | Phase 2 step 2, round 3 | the owner's diff on bf, the pack past empty, radio aux, the flip toast
+
+Owner: "Turtle works. Three fixes before merge:
+1. bf loads the full Air65 diff (configs/air65-ryfly-2026-10-23.txt, vendor
+   it into quadmath), not cliFor() from the card. The card stays as the
+   displayed tune. Assert the loaded config has vbat_sag_compensation 70,
+   thrust_linear 20, dynamic idle on. This is likely a big part of why bf and
+   js felt close.
+2. Pack SoC: bound it. OCV(SoC) must hit the Betaflight min cell voltage
+   (3.30 per header) at 340 mAh drawn and fall steeply after, so a punch at
+   3.2 V stalls instead of giving 90%. Test: scripted 2 min flight, pack
+   reaches LAND NOW before 340 mAh and can't hover by 380.
+3. On bf, real radio AUX channels pass through to Betaflight unchanged.
+   Page-driven aux only for keyboard and js. Turtle gesture stays as a
+   fallback for keyboard.
+Then fix the R-TO-RESPAWN toast. Stop when all four land. I fly a pack to
+empty on bf."
+
+Commits:
+- **sim-core** `phase2/quadmath-wiring`: 562d575 (pack and release) and the
+  test commit after it.
+- **quadmath** `feat/sim-bf-core`: one commit (vendor, adapter, page,
+  toast, tests).
+- **Vendored release:** `release.sh` at 562d575, VERSION
+  `v0.2.0-3-g562d575`. I tagged nothing; v0.3.0 is the owner's to tag at
+  merge.
+
+### 1. bf flies the owner's full diff
+
+- **Shipping the diff.** `scripts/release.sh` now also ships
+  `configs/air65-ryfly-2026-10-23.txt`. quadmath vendors it as
+  `vendor/sim-core/configs/` and fetches it alongside the module and the
+  airframe (`?v=` the version). `bfDiff()` is that text, loaded as it is.
+- **Displayed tune.** The OSD TUNE line still names
+  `65-betafpv-ryfly-1219s`, and still says CLI IMPORT after a paste.
+- **The diff through configure:** 99 lines applied, 22 refused (board
+  identity, OSD feature, beacon, VTX table, calibration,
+  `pid_process_denom`) and 39 not in the sim target (OSD positions, VTX,
+  blackbox, `dshot_bitbang`).
+- **Read back from Betaflight** (`SimCore.get`, profile 0), logged on the
+  console at load and asserted in `tools/test_sim_core.mjs`:
+  - `vbat_sag_compensation 70`;
+  - `thrust_linear 20`;
+  - `dyn_idle_min_rpm 55`;
+  - `dshot_bidir ON`;
+  - RPM filter on.
+- **Dynamic idle at work.** Armed at zero throttle, the motors hold about
+  5,400-5,500 rpm, within 5% of its 5,500 floor. The same diff with
+  `dyn_idle_min_rpm = 0` idles about 600 rpm lower; the test asserts both.
+- **The named card and the flown diff differ** (read back through the
+  adapter):
+
+  | | card (cliFor) | owner diff |
+  |---|---|---|
+  | roll P/I/D | 54/77/38 | 61/66/44 |
+  | pitch P/I/D | 62/89/52 | 71/76/60 |
+  | yaw P/I | 54/77 | 61/68 |
+  | rc_rate | 4/4/4 | 2/2/2 |
+  | feedforward | BF default 120/125/120 | 80/80/80 |
+  | angle_p_gain | 50 | 100 |
+  | thrust_linear | 0 | 20 |
+  | sag compensation | 0 | 70 |
+  | dynamic idle | off | 55 |
+  | small_angle | 25 | 180 |
+
+  srate and expo match. The OSD names the card while the diff flies, as the
+  owner asked; these are the numbers behind that name.
+- **Soft centre.** With rc_rate 2 and expo 56, angle mode at 30% stick asks
+  for about 2.8° (setpoint 34.8°/s against a 740°/s full stick). The stick
+  centre is soft.
+
+### 2. The pack past empty (sim-core 562d575)
+
+**Model.**
+- **SoC past 0.** The physical pack's SoC no longer floors at 0. Past the
+  capacity it falls to `SC_SOC_FLOOR` (-0.15), and `ocvCell` follows a new
+  airframe value, `ocvOverDischarge`: V per cell at SoC -0.05, -0.10 and
+  -0.15 (plant block 48-50, `PB_LEN` 51).
+- **Air65 values.** The Air65 gets 2.80, 1.50 and 0.50 V, at 357, 374 and
+  391 mAh drawn. This shape is chosen to meet the owner's bounds; it is not
+  measured.
+- **Unchanged parts.** OCV for SoC 0..1 and the parity battery are as they
+  were, and P3 stays bit-identical.
+- **Carry and validation.** A battery carry accepts SoC down to the floor;
+  a respawn of a pack past empty used to throw. The physical model refuses a
+  table that rises.
+- **Build.** dist rebuilt (sha256 43acef76). B1 builds it byte-exact twice.
+
+**Test: `tests/node/pack-empty.test.mjs`, on the owner's diff.**
+- **At capacity.** The OCV at SoC 0 is Betaflight's `vbat_min_cell_voltage`,
+  read back as 330 (the header default; the diff has no line). The flight
+  reaches SoC 0 at 340.00 mAh, with OCV 3.3000 V there.
+- **The scripted 2 min flight**, flown as a pilot might, in angle mode:
+  1. race: full-throttle climbs to 25 m with the stick forward, and
+     zero-throttle drops to 8 m;
+  2. at 315 mAh (past the diff's `bat_capacity` 300), ease into a 6 m
+     cruise;
+  3. once LAND NOW shows, race on.
+- **LAND NOW** is the quadmath OSD's: Betaflight's vbat at or below the
+  min cell voltage. In the cruise it shows at 105.2 s and 329.7 mAh (OSD
+  3.30 V at 3.8 A). The first punch dips the OSD to 3.30 V at 76 mAh; that
+  is reported, not tested.
+- **No hover by 380.** At 2 min, 372 mAh are drawn. Full throttle, level,
+  held on from there: thrust falls below the weight from 374.6 mAh, and is
+  0.675 of the weight at 380 mAh.
+- **Bounded.** Run on to 393 mAh, the SoC is exactly -0.150 and the OCV
+  0.50 V; a respawn carries the pack.
+
+**Punch.** A 1 s full-throttle punch from the ground, at a carried pack.
+"Idle OSD" is the armed reading at zero throttle.
+
+| mAh drawn | OCV | idle OSD | punch OSD low | punch T/W | vs fresh |
+|---|---|---|---|---|---|
+| 0 | 4.20 | 4.17 | 3.59 | 4.27 | 100% |
+| 170 | 3.79 | 3.76 | 3.26 | 3.88 | 91% |
+| 221 | 3.72 | 3.69 | 3.20 | 3.78 | 88% |
+| 289 | 3.60 | 3.56 | 3.10 | 3.61 | 85% |
+| 323 | 3.49 | 3.47 | 3.01 | 3.43 | 80% |
+| 340 | 3.27 | 3.25 | 2.81 | 3.08 | 72% |
+| 350 | 2.97 | 2.95 | 2.57 | 2.71 | 63% |
+| 360 | 2.47 | 2.46 | 2.13 | 2.00 | 47% |
+| 371 | 1.69 | 1.68 | 1.51 | 1.16 | 27% |
+| 380 | 1.10 | 1.07 | 1.00 | 0.60 | 14% |
+
+**"A punch at 3.2 V stalls" is not met, and cannot be by a knee below
+SoC 0.**
+- The punch that dips the OSD to 3.2 V is mid-pack (about 220 mAh, the pack
+  resting at 3.72 V). It still gives 88%: a 32 mΩ pack sags about 0.5 V at
+  17 A.
+- Making that punch stall needs far more sag mid-pack: IR rising with
+  discharge (the owner's Phase 3 item) or a different measured IR.
+- Past capacity, the knee does what was asked: 72% at 340 mAh, 47% at 360,
+  no hover from 375.
+- Open for the owner.
+
+**Battery Simulation off on bf.** On bf the plant's pack always drains; the
+switch never reached it. With the knee, a hidden pack now dies, so the bf
+core shows BATT and LAND NOW whatever the switch says. Turning it off on bf
+toasts "BATTERY SIM OFF — NOT ON THE BF CORE (ITS PACK DRAINS)".
+
+**Below 3.0 V Betaflight sees no battery.** Below its
+`vbat_not_present` (3.00 V/cell, stable) Betaflight takes the battery as
+absent (`battery.c`), and its own LAND NOW stops. The quadmath OSD's LAND
+NOW, from the vbat, stays on.
+
+### 3. A radio's AUX pass through on bf
+
+**Radio channels.**
+- **What counts as a radio.** On the bf core, a pad is a radio if its name
+  says so (`isKnownRadio`) or the pilot picked a radio preset for it
+  (`padIsRadio`), and its stick map has no spring throttle. Anything else
+  (keyboard, touch, a gamepad, calibrated or not) is page-driven.
+- **What passes through** (`radioAux`): every axis the stick map leaves
+  free, in axis order, as AUX1, AUX2, ..., at 1500 + 500 × the axis, with
+  no sign, deadzone or calibration. A TX16S gives CH5..CH8 on AUX1..AUX4.
+  Buttons are not passed.
+- **Who decides arm and mode.** The diff's own aux lines decide what the
+  switches do. The page's arm, mode, auto-arm and turtle controls stand
+  aside:
+  - Space toasts "ARM ON THE RADIO (AUX1)";
+  - 1/2/3/F toast "FLIGHT MODE IS ON THE RADIO";
+  - the HUD hint says to arm on the radio.
+- **The arm guard.** When a radio takes over (the bf core loading with the
+  pad present, a pad showing up mid-session, a replug), and at every boot,
+  the link drops and comes back. An ARM switch already on then meets
+  Betaflight's guard (NOT_DISARMED, ARM_SWITCH) until it is cycled.
+
+**Page-driven aux.**
+- **Ranges from Betaflight.** The page reads Betaflight's own aux slots
+  back after each configure (`SimCore.diff('all')`, `auxRanges`), using
+  Betaflight's range rule (25 µs steps, the value clamped to 900..2099,
+  lo ≤ v < hi).
+- **Choosing values.** For the wanted modes, `pageAux` picks each
+  channel's value in 1000..2000:
+  - a wanted box's first range on (an AND box: all its ranges);
+  - unwanted boxes off;
+  - PREARM goes with ARM;
+  - other boxes (BEEPER) land where the switch does.
+- **Owner diff.** ARM AUX1, ANGLE AUX2, FLIP (with BEEPER) AUX3, no
+  HORIZON. On bf, horizon is refused with "NO HORIZON SWITCH IN THE DIFF",
+  and a saved horizon falls back to angle on a load, a respawn or a return
+  to the bf core.
+- **Removed.** `withPageAux`/`BF_AUX_LINES` (round 2's fixed layout) are
+  gone.
+
+**Turtle.**
+- **With a radio:** Betaflight's own crash flip. AUX3 on, arm, roll.
+  Disarm to leave it, as on the real quad.
+- **Without one:** round 2's page sequence as the fallback (the js gesture,
+  or an arm while flipped). Its re-arm now also waits for:
+  - centred sticks (with the owner's `small_angle 180` it re-armed with the
+    roll stick still over and flew back onto its back);
+  - Betaflight's filtered gyro quiet for 500 ms;
+  - its attitude estimate within 0.1° of the quad's tilt.
+
+### 4. The flip toast
+
+`sim-feel.js` `flipHintText` names the way out that works there:
+
+| case | toast |
+|---|---|
+| js or bf page-driven, armed | FLIPPED — FULL THROTTLE + HARD ROLL · R RESPAWNS |
+| js, disarmed | FLIPPED — ARM, THEN FULL THROTTLE + HARD ROLL · … |
+| bf page-driven, disarmed | FLIPPED — ARM, THEN ROLL · … |
+| bf radio, disarmed | FLIPPED — AUX3 ON, ARM, ROLL · … |
+| bf radio, armed | FLIPPED — DISARM, AUX3 ON, ARM, ROLL · … |
+| no FLIP switch in the diff | FLIPPED — NO TURTLE SWITCH IN THE DIFF · … |
+| 3D (no turtle) | FLIPPED — R TO RESPAWN |
+
+The suffix is "· OR RESPAWN" on touch. No hint shows while a turtle is
+under way. `tools/test_sim_qa.mjs` checks every case.
+
+### Checks
+
+- **sim-core:**
+  - `run-all` with byte-exact builds on 562d575: 18 pass, 1 skipped (#5).
+    Both builds equal the committed sha256 43acef76.
+  - P3 and D4 unchanged.
+  - The pack test was tightened after the review; see below.
+- **quadmath:**
+  - All 23 `tools/test_*.mjs` files and `sim-tracks-test.mjs` pass, with
+    the Chrome case of `test_sim_map_boot` skipped as before.
+  - `test_sim_core.mjs`: 16 pass, 1 `todo` (see Open).
+  - Stamps current; `node --check` clean.
+- **Headless Chrome, `?core=bf&map=room`, zero console errors:**
+  - **Keyboard:**
+    - the console logs the readback;
+    - key 2 gives "NO HORIZON SWITCH IN THE DIFF";
+    - Space arms, W climbs;
+    - flipped and disarmed, the toast reads "FLIPPED — ARM, THEN ROLL";
+      Space gives TURTLE, ArrowRight UPRIGHT, then ARMED, and it rests
+      upright;
+    - a pack carried to SoC -0.065 shows OSD 2.38 V with LAND NOW on.
+  - **A fake TX16S** (`navigator.getGamepads`):
+    - Space gives "ARM ON THE RADIO (AUX1)";
+    - CH5 arms, CH6 angle/acro;
+    - flipped, the toast reads "FLIPPED — AUX3 ON, ARM, ROLL";
+    - CH7 plus arm enters crash flip and a full roll rights it;
+    - disarm and re-arm work;
+    - R with the switch on leaves it disarmed (NOT_DISARMED, ARM_SWITCH)
+      until it is cycled.
+  - **A TX16S with ARM up at load:** not armed (NOT_DISARMED, ARM_SWITCH)
+    until it is cycled.
+  - **Regression:** both cores still arm, climb, pitch forward, respawn and
+    re-arm on the keyboard.
+
+### Review
+
+Four lenses, each finding checked by a skeptic: 12 confirmed, 5 refuted.
+
+**Fixed:**
+- **Radio arm guard.** A radio taking over with ARM already on armed at
+  once. Found three times, by three lenses. Now the link drops.
+- **Battery Simulation off on bf** hid the warnings of a pack that now
+  dies.
+- **pageAux:**
+  - it could pick values outside 1000..2000, which sim-core refuses, so
+    every sample was dropped;
+  - it ignored AND logic.
+- **Mode sync.** Returning to a loaded bf core skipped the mode fallback,
+  and `?mode=horizon` forced the page mode.
+- **Turtle re-arm.** The page turtle's re-arm on the owner's diff rolled
+  the quad over about 2 s later, and the tests sampled too early to see
+  it. Fixed for the arm-while-flipped path; the gesture path is under Open.
+- **HUD hint.** It said auto-arm on a bf radio.
+- **Gamepad as radio.** A wizard-calibrated gamepad was taken for a radio.
+- **Floor check.** pack-empty's floor assertion was vacuous: the run
+  stopped short of the floor. It now runs past it and asserts SoC exactly
+  at the floor and the OCV at its last point. A test that a rising knee is
+  refused was added too.
+
+**Not fixed, for the owner:**
+- "A punch at 3.2 V stalls" (above).
+
+**Refuted:**
+- Drill, tutorial and last-gate respawns carrying a dead pack: by design.
+- Button switches dropped: buttons are not passed, as documented.
+- The stick test change: argued below.
+- Two coverage gaps: the rising knee refusal (since covered) and the toast
+  suppression while turtling.
+
+### Test changes, argued
+
+- **`test_sim_core` stick forward**: 30% stick became 60%; the bar of
+  0.1 m in 600 ms is unchanged. The test's point is the sign (stick forward
+  gives +X). The owner's rates give 2.8° at 30% in angle mode, and 0.08 m
+  in 600 ms. The card used to give 0.10 m.
+- **`bfChannels` and `auxRanges`**: the expectations follow the diff's own
+  layout, not round 2's fixed one. They are layouts, not thresholds.
+- **Respawn test modes:** angle and acro only. The diff has no HORIZON
+  switch, and that is asserted.
+- **Turtle tests:**
+  - the quad is flipped while disarmed. A teleport is invisible to the
+    gyro, so Betaflight's estimate stayed level while the quad lay
+    inverted, which never happens in flight;
+  - the arm-while-flipped path is now checked for 4 s, not once;
+  - the gesture path's 4 s check is a `todo` (Open).
+- **`test_sim_whoop` and `test_sim_retention`**: unchanged this round.
+
+### Open, for the owner
+
+- **The 3.2 V punch.** Needs IR against discharge, or a decision that 88%
+  at a mid-pack 3.2 V dip is right.
+- **Crash flip outruns the gyro (sim-core plant).** The plant's crash flip
+  peaks at about 2,950°/s. The gyro saturates at 2,000, so Betaflight's
+  attitude ends 20-40° off after a flip, and settles in about 1 s
+  disarmed. Roll and pitch pidSum read NaN while crash flip is active.
+  Disabling the RPM filter, dynamic idle or the dynamic notch changes
+  neither.
+- **Floor contact feeds the gyro (sim-core plant).** Armed on the floor
+  with uneven motors, the contact puts rate spikes (up to about 11°/s, no
+  net rotation) into the gyro, and Betaflight's estimate walks. On the
+  owner's diff, the page's gesture turtle re-arms with a sub-0.1° residual
+  and rolls onto its side about 2.5 s later. This is the `todo` test. The
+  radio flow and the arm-while-flipped fallback re-arm clean; a plain arm
+  holds 0.0° indefinitely.
+- **No tag.** The vendored release is `v0.2.0-3-g562d575`. Tag v0.3.0 when
+  the sim-core branch merges, then re-vendor.
+- **sim-core PR.** The branch `phase2/quadmath-wiring` now carries plant
+  code and has no PR. quadmath #273 vendors from it.
+
+### What went wrong
+
+- **The first LAND NOW check.** It looked at the cruise only every 10 s,
+  and every climb drew more than the 10 mAh window between hover LAND NOW
+  (330 mAh) and 340. The flight was rescripted as a pilot easing off at
+  315 mAh.
+- **The first flight was too gentle.** It drew 194 mAh in 2 min. It is now
+  hard flying.
+- **The first hover check was at 372 mAh**, where the 2 min ended. It now
+  holds full throttle on to 380.
+- **`fc.attitude` units.** I took them for decidegrees and gated the
+  re-arm at "10°", which was really 100°. They are degrees.
+- **Re-arm gate, three tries.** The tilt-only gate (3°, then 1°) still
+  rolled the quad over. The cause took a run with the stick held off-centre
+  for 3 s to find: the gyro rings after the flip, and settles disarmed.
+- **The first turtle tests teleported the quad inverted while armed.** The
+  gyro never saw it, Betaflight thought it was level, and the failure
+  looked worse than any flight could make it.
+- **Shell quoting** broke several sed and heredoc edits; Python patch files
+  replaced them.
