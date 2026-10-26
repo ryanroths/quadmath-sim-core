@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- quadmath-sim-core fly harness (Phase 2, step 1): the Air65 on its own
+     config, flown from a radio in USB joystick mode. A bare page: ground,
+     horizon, the quad as a box, an FPV camera, and one status line under the
+     view. Serve it with `npm run fly`.
+     This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>sim-core fly</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd; }
+  body { display: flex; flex-direction: column; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+  #bar { display: flex; gap: 12px; align-items: center; padding: 4px 8px; background: #1b1b1b; white-space: nowrap; overflow: hidden; }
+  #status { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #status.calib { color: #f5a623; }
+  button { font: inherit; background: #2a2a2a; color: #ddd; border: 1px solid #444; padding: 1px 8px; cursor: pointer; }
+  button[hidden] { display: none; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="bar">
+  <span id="status">loading...</span>
+  <button id="calibrate">Calibrate</button>
+  <button id="skipAux" hidden>Skip aux</button>
+  <button id="cancel" hidden>Cancel</button>
+  <button id="clear">Clear calibration</button>
+  <span>R reset, V view</span>
+</div>
+<script>
+  // Set before the module loads, so a module that fails to load is reported.
+  window.__fly = { ready: false, started: false, error: null };
+  window.addEventListener('error', (ev) => {
+    if (!window.__fly.started) window.__fly.error = `load: ${ev.message || ev.type}`;
+  });
+</script>
+<script type="module" src="fly.mjs" onerror="window.__fly.error = 'load: fly.mjs or a module it imports did not load'"></script>
+</body>
+</html>

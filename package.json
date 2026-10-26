@@ -11,6 +11,7 @@
     "test": "node tests/run-all.mjs",
     "test:quick": "node tests/run-all.mjs --quick",
     "gate": "node tests/gate-arm-motor.mjs --build",
-    "gate:plant": "node tests/gate-plant.mjs"
+    "gate:plant": "node tests/gate-plant.mjs",
+    "fly": "node tests/browser/fly-serve.mjs"
   }
 }

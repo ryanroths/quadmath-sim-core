@@ -5203,3 +5203,532 @@ rebuild dist, push."
 What went wrong: the first version of the skip line in `run-all.mjs` came
 out of a patch script with a raw line break where `\n` was meant (same
 output, wrong form); fixed before the commit left this machine.
+
+---
+
+## 2026-10-26 | Phase 1 closed, Phase 2 step 1 | v0.1.0, scripts/release.sh, the fly harness
+
+Owner (2026-10-24): "PR #3 merged, Phase 1 complete. Tag main v0.1.0. Add
+scripts/release.sh that writes release/ (sim-core.wasm, sim-core.js, VERSION
+from git describe, NOTICE, airframes/air65.json) and run it. Phase 2, step 1
+only: tests/browser/fly.html, a bare harness page. Grey ground, horizon, box
+for the quad, FPV camera at the Air65 preset's camera angle, Gamepad API
+polled at 4 ms setInterval into the ring buffer, stick calibration ported
+from quadmath's existing gamepad code, Air65 preset with
+configs/air65-ryfly-2026-10-23.txt, arm on AUX1. Nothing else: no OSD, no
+map, no audio, no menus. npm run fly serves it. Stop when I can arm and fly
+it with the TX16S."
+
+### v0.1.0
+
+Annotated tag `v0.1.0` on `main` at 789b2b1 (the PR #3 merge), pushed. The
+committed dist is sha256
+`624bde935f8a4b5ec7ef5b16dbf991a8cad51e8ed940e973e3a6319e85dbf169`.
+
+### scripts/release.sh
+
+`scripts/release.sh [ref]` (default HEAD) writes `release/` from the ref's
+tree with `git show`, not from the working tree, and checks the module
+against the ref's committed `dist/sim-core.wasm.sha256`. Nothing is built.
+`release/` is in `.gitignore`.
+
+Contents:
+- `sim-core.wasm`
+- `sim-core.js`
+- `airframes/air65.json`
+- `NOTICE`
+- `VERSION` (`git describe --tags --always <ref>`)
+- two files beyond the owner's list:
+  - `cli-policy.js`, because `sim-core.js` imports it and does not load without it;
+  - `LICENSE`, because NOTICE refers to it and GPL-3.0 copies carry the licence.
+
+Run: `scripts/release.sh v0.1.0` wrote `release/` at VERSION `v0.1.0`
+(789b2b1), with the sha above. A Node script that loads only from
+`release/` boots and configures the Air65.
+
+### The fly harness
+
+`npm run fly` serves the repo root on 127.0.0.1:8642 (`PORT` changes it) and
+prints `http://127.0.0.1:8642/tests/browser/fly.html`. 127.0.0.1 counts as a
+secure context, which the Gamepad API needs. The server is `chrome.mjs`'s
+`serve()`, which now takes a port and serves `.txt` as text.
+
+Files:
+- `tests/browser/fly.html` and `fly.mjs`: the page.
+- `fly-radio.mjs`: the port of quadmath's radio code.
+- `fly-input.mjs`: channels, the input clock and the radio link.
+- `fly-render.mjs`: WebGL2 with no library.
+- `fly-serve.mjs`.
+- Tests: `tests/node/fly-radio.test.mjs` and `tests/browser/fly.test.mjs` (headless Chrome).
+
+**Air65 preset.** `airframes/air65.json` and
+`configs/air65-ryfly-2026-10-23.txt`. `configure()` reports 99 lines
+applied, 22 refused and 39 not in the sim target (OSD, VTX, board
+identity), as in round 3; the page logs the counts and carries on.
+
+**Camera.** No camera angle exists for the Air65 in either repo:
+`air65.json` has no camera field, and neither does quadmath's
+`BUILD_PRESETS.air65`. The harness uses quadmath's 65 mm whoop class
+(`sim.html:4318`): 15 degrees up, and the default vertical FOV of 90
+degrees (`sim-feel.js` `VFOV_DEFAULT`). The camera sits at the CG, as in
+quadmath, tilted about body Y.
+
+**View.**
+- One full-screen pass casts each pixel's ray at z = 0 from the camera.
+  The horizon is exact, and the ground keeps its precision 10 mm off the
+  floor. The first version drew a 4 km ground quad, and its interpolated
+  coordinates shimmered under the quad.
+- The ground is grey with a faint 1 m / 10 m grid. Without the grid there
+  is no cue for speed or height. The grid is a choice beyond the owner's
+  list; a one-line change removes it.
+- The quad is a box the size of its footprint: rims at (wheelbase/2 + duct
+  radius) / sqrt 2, from 10 mm below to 18 mm above the CG. From the FPV
+  camera, which sits inside it, the box cannot be seen. **V** switches to a
+  fixed line-of-sight view from beside the start, where it can.
+
+**Also on the page, beyond the list, for the owner to cut:**
+- one status line under the view: radio, map source, armed or Betaflight's
+  arming-disable flags by name, link down, and the calibration prompt;
+- buttons: Calibrate, Skip aux, Cancel, Clear calibration;
+- keys: R (reset, a reinit with a fresh pack; also done on a plant fault)
+  and V.
+
+There is no OSD on the view, and no map, audio or menus.
+
+**Input.**
+- `setInterval(poll, 4)` reads the pad. The pad is never assumed to be
+  index 0; it is picked as described under "Pad choice".
+- Each sample goes into the ring with the sim time its wall time maps to:
+  after each frame's `advance()`, the frame's wall time is
+  `simTimeUs + alpha x tickUs`. A stamp may run at most 100 ms ahead of the
+  sim; past that (a hidden tab) the poll is dropped.
+- Over a 2 s roll sweep, 474 of 500 RX frames carried a new sample. Stamped
+  at the sim clock instead, it was 122 (once a frame).
+- Headless Chrome polled at 249-250 a second. The rate fell to 160-200 a
+  second only while screenshots were being captured.
+
+**Channels: the radio's, 1:1.**
+- Sticks are 1500 + 500 x stick and throttle is 1000 + 1000 x throttle.
+- AUX1, AUX2 and so on are the axes the sticks don't use, in order. On a
+  TX16S, CH5..CH8 are axes 4..7.
+- A calibrated arm switch swaps into AUX1 and a mode switch into AUX2.
+  Every other channel keeps its place.
+
+**Calibration** ports quadmath's wizard: the same 8 steps, thresholds and
+timers. Four deliberate differences, each documented in `fly-radio.mjs`:
+- No 0.02 deadzone. Betaflight owns stick shaping.
+- No quadmath arming. Betaflight arms from AUX1.
+- The arm and mode answers carry no sign. Each switch goes to Betaflight as
+  the radio sends it, which is what the config's aux ranges are set for.
+- A bare "joystick" in a pad's id does not score as a radio, because generic
+  USB pads are named that too.
+
+NOTICE now records the port.
+
+**Radio link** (`RadioLink`). The link to Betaflight is down while there is
+no radio, while the wizard runs, and after every boot (configure, R, fault).
+Every boot runs on sim-core's neutral frame with the aux channels low.
+
+The link comes back only once Betaflight reads `rxSignal` false and a real
+radio sample has reached the ring's RX frame. Betaflight's own guard then
+sees the arm switch where it really is: if it is on, the quad needs a cycle
+(flags `0x2000008`, NOT_DISARMED | ARM_SWITCH), as on the real quad. Nothing
+in the harness arms or refuses to.
+
+Measured from the moment the radio is seen:
+- link up at 99 ms;
+- RX_FAILSAFE cleared at 612 ms (Betaflight's `failsafe_recovery_delay`, 500 ms).
+
+The pilot can arm about 0.6 s after the radio appears. Flipping the switch
+earlier gives ARM_SWITCH, and the switch must then be cycled.
+
+**Pad choice.**
+- The likeliest radio is flown; on a tie, the pad in use, then the
+  remembered one.
+- If the pad in use is lost, only that pad is taken back until Clear or a
+  reload. Any stand-in would send its own AUX1, and a quad in the air would
+  disarm.
+- Switching to a different pad, or a Clear that moves an aux source, drops
+  the link first. Betaflight's guard then sees the new source's switches.
+- No samples go in while the pad is missing. The ring's sample-and-hold
+  carries the last real frame, like a receiver's hold.
+
+**Tests**, both added to `run-all.mjs`:
+- `fly-radio.test.mjs` (Node, real dist), whose cases are:
+  - the TX16S preset map and channels;
+  - the wizard on a scripted TX16S, including one with its switches up at
+    centre;
+  - a TAER radio with its arm on CH7;
+  - pad buttons and the input clock;
+  - the whole path on the Air65: arm on AUX1, a climb to 3.32 m at throttle
+    0.45, disarm;
+  - an arm switch left on at load, after R, and when a disconnected radio
+    comes back: each holds until the switch is cycled;
+  - a 60 ms USB blip in flight: the quad stays armed and keeps climbing.
+- `fly.test.mjs` (headless Chrome with a stand-in `getGamepads`), whose
+  cases are:
+  - WebGL2 renders;
+  - arm, climb to 3 m and disarm;
+  - the calibration wizard through the page; an arm switch left on after it
+    needs a cycle;
+  - a 300 ms TX16S drop in the air with a generic USB pad plugged in: no
+    stand-in, link down, still armed, flies on;
+  - a console pad alone, then a TX16S plugged in with its switch on: it
+    takes over and needs a cycle;
+  - 0 console errors.
+
+Full `npm test` with QUADMATH_DIR, builds included, before the last pad
+fixes: all 16 passed, 1 skipped (the slot wedge, issue #5). B1 and B2 stayed
+byte-exact.
+
+**Review.** Two adversarial review rounds, each finding checked by a
+separate skeptic.
+
+Round 1 lenses: port, timing, render, real radio. Render found nothing.
+Confirmed and fixed:
+- The wizard's sign reached Betaflight's aux channels, inverting a switch
+  that sat high at centre.
+- A synthetic AUX1-low frame on a live link armed the quad, with no cycle,
+  at page load, after R, and at the end of calibration.
+- Low frames queued during a USB drop disarmed the quad in the air after
+  reconnect.
+- A mode button, with arm skipped, landed on AUX1.
+- A remembered console pad beat the TX16S.
+
+Round 2 lenses: fixes, regressions. Confirmed and fixed:
+- A pad switch, or Clear, on a live link skipped the guard.
+- A generic "USB Joystick" scored as a radio, took over after a drop and
+  disarmed in the air.
+- A stand-in became the remembered pad.
+- A lost console pad was scored without its mapping.
+
+Not exercised in a test: Clear moving an aux source on a live link. That
+needs a calibrated arm switch away from CH5.
+
+### Not verified
+
+No real TX16S has flown it. Every radio here is a script; the owner's flight
+is the check. Things to know when flying:
+- After plugging in and moving a stick, wait about half a second before
+  flipping the arm switch (the status line shows RX_FAILSAFE until then).
+- A switch left on needs a cycle.
+- AUX3 high arms into crash flip (the config's FLIP OVER AFTER CRASH), so
+  keep it low.
+- Hover is near 40 % throttle.
+
+### What went wrong
+
+- The browser pane was hidden, so its animation frames stalled and the
+  first pane check could not arm: Betaflight saw AUX1 rise only with the
+  throttle already up (THROTTLE, ARM_SWITCH). Visual checks moved to
+  headless Chrome screenshots.
+- Two patch scripts passed through shell heredocs failed on quoting. Two
+  more were run before the file they read had been written. All were
+  redone with files.
+- A test assumed a 0.5 s unplug would disarm an armed quad. Betaflight's
+  1.5 s failsafe delay correctly keeps it armed; the case was rewritten as
+  a disarmed quad whose radio comes back with its switch on.
+- The scripted arm in the first test came at 0.5 s, inside Betaflight's
+  500 ms RX recovery, and correctly got ARM_SWITCH. It was moved to 1 s.
+- The Chrome test's second page load first changed only the URL hash, which
+  does not reload the page. It now uses a query string.
+- The v0.1.0 tag message reads "(PRs #1-#4 and #3 merged)", which is
+  redundant. The tag is pushed and was left as is.
+- The first review round's workflow hit the weekly usage limit after one
+  lens. It was resumed once the limit reset.
+
+---
+
+## 2026-10-26 | Phase 2 step 1 | pitch inverted on the real TX16S; reference scenery
+
+Owner, after the first flight: "Pitch is inverted on the real TX16S. Trace
+stick-forward through every hop: gamepad axis raw value, after calibration,
+setRc, Betaflight rcData[1], setpoint[1], plant pitch rate sign, render.
+Report the sign at each hop. Fix at the ONE hop that's wrong, not at the
+render. Add a test: stick forward -> rcData[1] > 1500 -> nose-down pitch
+rate -> quad moves +x in world. Also: the fly page has no reference to
+judge motion. Add 8 one-metre cubes at random positions within 10 m, one 2 m
+square gate at 5 m ahead, a visible horizon line. Nothing else. Keep the
+grid, status line, calibrate, R, V."
+
+### The trace
+
+Stick forward at 0.3 on the TX16S's preset map, hovering on the Air65,
+using the real modules and the real dist. The input() channel is what the
+owner called setRc.
+
+| Hop | As shipped (map pitch sign -1) | Fixed (map pitch sign +1) |
+|---|---|---|
+| Gamepad axis 1, raw | +0.3 | +0.3 |
+| After the map (`applyAxisMap` p) | **-0.30** | +0.30 |
+| `input()` channel 2 | 1350 (-) | 1650 (+) |
+| Betaflight `rcData[1]` | 1350 (-) | 1650 (+) |
+| `setpoint[1]` | -34.8 deg/s (-) | +34.8 deg/s (+) |
+| Plant body pitch rate `omega[1]` (+ is nose down) | -0.625 rad/s (nose up) | +0.625 rad/s (nose down) |
+| Render: FPV camera forward z | 0.259 to 0.612 (nose up) | 0.259 to -0.134 (nose down) |
+| Render: world x | 0.00 to -0.28 m (backwards) | 0.00 to +0.28 m |
+
+Every hop after the map carries its input's sign faithfully. The sign flips
+at one hop: the radio preset's pitch sign.
+
+On an EdgeTX joystick each axis is the radio's channel output, the same
+channel the real quad flies on, so stick forward reads +1, like roll right
+and yaw right. quadmath's `AETR_MAP` had pitch sign -1 (its tests model
+stick forward as -1 on axis 1); the port carried it over, and
+`fly-radio.mjs`'s own contract (p positive = stick forward) made it show.
+The calibration wizard was never wrong: it takes the sign from the stick.
+So the owner flew the preset, and a TX16S calibrated in the page would have
+flown right.
+
+### The fix
+
+`fly-radio.mjs`: pitch sign +1 in `AETR_MAP` (TX16S, Zorro, Boxer, Pocket,
+FrSky, Jumper, LiteRadio AETR, FlySky) and in the TAER map. Both are the
+same hop, radio channel outputs read through a preset. The console-pad map
+keeps -1, because a standard gamepad's stick up is -1.
+
+The tests' TX16S fixtures modelled stick forward as -1, as quadmath's do.
+They now read +1, matching the real radio.
+
+### The test
+
+`tests/node/fly-radio.test.mjs`, "Pitch, every hop", through the real
+fly-input path and dist:
+- arm;
+- climb, then hold near hover;
+- stick forward +0.3 on axis 1.
+
+It asserts `rcData[1]` > 1500 (1650), `setpoint[1]` > 0 (+34.8 deg/s), body
+pitch rate > 0 (nose down, +0.630 rad/s), and world x increasing (0.00 to
+0.35 m in 0.8 s).
+
+With the old sign the file fails first at the preset channel check
+(channel 2 for stick forward). `tests/browser/fly.test.mjs` also checks,
+through the page, that stick forward moves the quad +x.
+
+### The scenery
+
+All in `fly.mjs`. The objects are world boxes, solid to the quad as on a
+real field. That makes them physical and not just drawn, which is a choice
+beyond the request's wording; say if they should be drawn only.
+
+- **Eight 1 m cubes,** each standing on the floor, wholly within 10 m of the
+  start. Places come from a fixed seed (mulberry32), so the scene is the
+  same on every load. They keep at least 2.5 m from the start, out of the
+  line to the gate and on through it (|y| < 2.5 m for x > -1 m), 2 m from
+  the line-of-sight eye, and 2 m from each other.
+- **The gate,** 5 m ahead (+x): a 2 m by 2 m opening between two posts and a
+  top bar, each 0.1 m thick.
+- **The horizon line:** in the ground and sky pass, rays level with the
+  ground draw a dark line about two pixels wide.
+
+Grid, status line, Calibrate, R and V are unchanged.
+
+Screenshots from headless Chrome confirm all three:
+- at rest: the gate and cubes with the horizon line;
+- at 1.8 m: the gate centred ahead, cubes left and right;
+- the line-of-sight view: gate, cubes and the quad's box.
+
+### The headless poll rate
+
+`fly.test.mjs` asserts the 4 ms poll ran above 120 a second. That check is
+not frame-locked; it would catch a timer running at the frame rate of 60.
+
+On this machine today it read 112 to 126 a second after the first 2 s. It
+read 250 in the first 2 s, and 249 in the runs two days ago. The same
+happens:
+- with the scenery switched off;
+- with Chrome's occlusion backgrounding switched off;
+- across a second page load.
+
+Each page's frames cost 0.5 ms, so the page is not busy. The system holds a
+1 ms timer, but Windows 11 (build 26200) does not grant fine timer
+resolution to a process with no visible window, and headless Chrome has
+none. What the check measures here is the operating system, not the page.
+
+A real Chrome window in front of the pilot is visible, so it gets the
+resolution. If the window is covered or minimised, polls slow down; their
+stamps stay correct, but fewer RX frames carry a new sample.
+
+The threshold stays at 120 (standing rule). I argue it should be 90, which
+is 1.5 times the frame rate. That still catches what the check is for, and
+clears the operating system's granularity for windowless processes. The
+owner decides.
+
+Until then this one assertion passes or fails locally on Windows depending
+on what else holds the timer. In the full `npm test` below it read 250 and
+passed; in standalone runs the same morning it read 112-126 and failed. CI
+runs on Linux.
+
+### Tests
+
+Full `npm test` with QUADMATH_DIR, builds included: all 16 passed, 1
+skipped (the slot wedge, issue #5). B1 and B2 stayed byte-exact.
+
+### What went wrong
+
+- **The inversion was visible in my own screenshots and I misread it.**
+  The scripted pitch of +0.35 on axis 1 sent the quad backwards, and I read
+  that as stick back, by quadmath's convention, instead of checking what a
+  real radio sends.
+- **The tests modelled the same wrong radio,** so they could not catch it.
+- The first scene had a cube 3 m behind the gate in the line through it.
+  The keep-clear corridor now runs the full 10 m.
+- I tried Chrome's occlusion flag as a fix for the poll rate. It appeared to
+  work in a 6 s run and failed over 24 s, so it was dropped.
+- Piping a screenshot script into `head` killed it mid-run. No Chrome was
+  left behind.
+
+---
+
+## 2026-10-26 | Phase 2 step 1 | the poll-rate check fixed in the test; PR #6; quadmath's pitch sign
+
+Owner:
+- "Poll floor stays 120. Fix the test, not the number: headless asserts the
+  poll runs and every sample is sim-time stamped; the 240/s rate assertion
+  runs only when the page is visible (document.visibilityState) and is
+  marked skip with reason otherwise. Log the Windows coarse-timer finding."
+- "Open PR #6 for phase2/fly-harness."
+- "Note in PROGRESS: quadmath's 65 mm radio preset has pitch sign -1 and
+  sim.html compensates downstream; Phase 2 wiring must fix both or it
+  double-flips."
+
+### The Windows coarse-timer finding
+
+On this machine (Windows 11 Pro, build 26200), the 4 ms `setInterval` in
+fly.html behaves as follows:
+- **In headless Chrome:** 249-250 a second for the first 2 s, then 94-126 a
+  second, which is a timer of about 8 ms.
+- **In a visible Chrome window:** 250 a second throughout. The headed test
+  run below read 250 at the end.
+
+What ruled out the page:
+- It is the same with the scenery off, across a second page load, and with
+  Chrome's occlusion backgrounding off (`--disable-backgrounding-occluded-windows`).
+- The page's frames cost 0.5 ms each.
+- The system timer is held at 1 ms (`NtQueryTimerResolution`: current 1 ms).
+
+Windows 11 does not grant a fine timer to a process with no visible window,
+and headless Chrome has none. So headless measures the operating system,
+not the page. Earlier runs read 250 throughout. A full `npm test` the same
+day also read 250, so it depends on what else is running.
+
+Headless Chrome reports `document.visibilityState` as `"visible"` (and
+`hasFocus()` false) while its timer is coarse. `visibilityState` on its own
+therefore cannot tell a page no one sees from one someone does.
+
+For the pilot: a covered or minimised window may get the coarse timer too.
+Its samples are still stamped at their own sim time, but fewer RX frames
+carry a new one.
+
+### The test (tests/browser/fly.test.mjs)
+
+The number is unchanged: over 120 a second.
+
+**Headless, always:**
+- **The poll runs.** The poll count grows between every two looks at the
+  page: eleven looks on the first load, three on the second.
+- **Every sample is sim-time stamped.** fly.mjs counts each sample's stamp
+  against the sim clock at the moment it goes in:
+  - ahead of it: a poll between frames, stamped at its own wall time's sim time;
+  - at it;
+  - behind it;
+  - equal to the stamp before.
+
+  The test asserts every sample counted, none repeated, and more than 99%
+  ahead. Only a poll landing exactly on a frame's sim time can be at it,
+  while a frame-locked stamp puts every sample there. None can be behind,
+  because `InputClock.stamp()` clamps to the sim clock, so that count is
+  bookkeeping, not evidence.
+- Measured headless: 1576 of 1576 samples ahead on the first load and 468
+  of 468 on the second, none at, behind or repeated, at 122 polls a second.
+
+**The rate (over 120 a second)** is asserted only when the page is visible:
+`visibilityState` is `"visible"` and the page is not HeadlessChrome. The
+second part is there because headless reports `"visible"`. Otherwise the
+test prints `SKIP poll rate > 120 a second: the page is not visible (...)`
+with the reason and the rate it saw, and ends `PASS (poll rate skipped:
+page not visible)`.
+
+So every headless run skips the rate check, CI (ubuntu, headless) included.
+Whether Linux headless has the coarse timer was not measured; the owner can
+choose to assert the rate there.
+
+What headless cannot catch: a poll held to the frame rate. A review copy that
+polled once per frame passed headless at 75 a second. It is caught by the
+rate check in a visible window.
+
+`FLY_HEADED=1 node tests/browser/fly.test.mjs` runs the test in a visible
+window, through `chrome.mjs` `launch({ headless: false })`. Run that way:
+- all assertions pass;
+- the rate is asserted at 250 a second;
+- 2615 of 2615 and 966 of 966 samples were stamped ahead.
+
+The owner's words say "the 240/s rate assertion". The number asserted is
+120, as the same message says ("Poll floor stays 120").
+
+This supersedes "The headless poll rate" in the entry above:
+- the owner declined the proposal to lower the floor to 90;
+- the assertion no longer passes or fails locally by chance. Headless it is
+  skipped with its reason, and visible it is asserted.
+
+The fly test also launches Chrome with `--enable-unsafe-swiftshader`.
+PR #6 is the fly tests' first CI run, on an ubuntu runner with no GPU, and
+recent Chrome falls back to software WebGL only when asked. The page serves
+local files only. Whether CI needs the flag is unverified until that run.
+
+Quick `npm test` (builds skipped) on the final tree: all 16 passed, 1
+skipped. The fly test printed the SKIP line at 120 a second. D2, which also
+uses `chrome.mjs` `launch()`, passed.
+
+### quadmath's pitch sign (for the Phase 2 wiring)
+
+quadmath's radio preset for EdgeTX radios, `AETR_MAP` (sim-touch.js:472-477,
+used for the 65 mm class and every other class), has pitch sign -1. sim.html
+compensates downstream:
+- `physics()` turns `stick.p` into a three.js body rate,
+  `wx = degToRad(axisRate('pitch', stick.p))`;
+- it then sends `SGN_PITCH * wx` with `SGN_PITCH = -1` (sim.html:3381-3393).
+
+The two signs cancel. sim-core's fly harness now reads the radio with pitch
+sign +1 and sends the channel 1:1, so Betaflight sees stick forward as
+above 1500 (2026-10-26 entry above).
+
+**Phase 2 wiring, when quadmath's sim.html drives sim-core, must fix both
+quadmath signs together** (owner): the preset's -1 and sim.html's
+downstream compensation. Fixing one without the other double-flips pitch.
+
+### PR #6
+
+PR #6 opened for `phase2/fly-harness` (v0.1.0's release.sh, the fly
+harness, the pitch fix, the scenery, this test).
+
+---
+
+## 2026-10-26 | Phase 2 step 1 | PR #6's first CI run; the SKIP line names its platform
+
+Owner: "No auto-fix. If CI fails on PR #6, report the failure and the
+proposed fix, don't apply it. 120 stands." Then: "Reword the SKIP to name
+the platform and rate seen. Then stop."
+
+PR #6's CI (run 40370514394, ubuntu-24.04, Chrome 155) passed: all 16
+passed, 1 skipped (slot wedge, issue #5). The fly test there:
+- rendered with WebGL2. It launches with `--enable-unsafe-swiftshader`;
+  whether the runner needs the flag is still untested;
+- went from a pitch-forward stick to +x (0.11 m in 0.6 s);
+- stamped 1443 of 1443 and 519 of 519 samples at their own sim time, none
+  repeated;
+- polled 138 a second at the end. Linux headless Chrome has a coarse timer
+  too, so the headless skip of the rate check held there as well.
+
+The SKIP line blamed Windows 11 on that Linux run. It now names the platform
+and the rate the run saw, then gives the coarse-timer finding as measured on
+Windows 11, for example:
+
+> SKIP poll rate > 120 a second: headless Chrome shows no window (its
+> visibilityState reads 'visible' all the same); on Windows it polled 250 a
+> second here.
+
+The skip, its gate and the 120 floor are unchanged. Local headless run:
+PASS, with the rate skipped; that run polled 250 a second on Windows, so
+the coarse timer comes and goes.

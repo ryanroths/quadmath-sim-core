@@ -21,10 +21,12 @@ const TYPES = {
   '.wasm': 'application/wasm',
   '.json': 'application/json',
   '.diff': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
-// Serves files under root to 127.0.0.1 only; nothing outside root.
-export async function serve(root) {
+// Serves files under root to 127.0.0.1 only; nothing outside root. Port 0
+// takes any free port.
+export async function serve(root, { port = 0 } = {}) {
   const base = normalize(root.endsWith(sep) ? root : root + sep);
   const server = createServer(async (req, res) => {
     try {
@@ -39,7 +41,10 @@ export async function serve(root) {
       res.end(String(err.message));
     }
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
   return { url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise((r) => server.close(r)) };
 }
 
@@ -148,9 +153,10 @@ function exited(proc, ms) {
 }
 
 // Starts headless Chrome and returns a session on its first page, recording
-// console output. Call close() when done. If starting fails, Chrome is
-// stopped and its profile removed before the error is thrown.
-export async function launch() {
+// console output; headless false opens a visible window instead, and args
+// are extra switches. Call close() when done. If starting fails, Chrome is stopped and its profile removed
+// before the error is thrown.
+export async function launch({ headless = true, args = [] } = {}) {
   const binary = findChrome();
   const profile = await mkdtemp(join(tmpdir(), 'sim-core-chrome-'));
   const console = [];
@@ -160,9 +166,9 @@ export async function launch() {
   let version;
   try {
     proc = spawn(binary, [
-      '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      ...(headless ? ['--headless=new'] : ['--window-size=1280,800']), '--remote-debugging-port=0', `--user-data-dir=${profile}`,
       '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking',
-      '--disable-component-update', '--disable-sync', '--metrics-recording-only', 'about:blank',
+      '--disable-component-update', '--disable-sync', '--metrics-recording-only', ...args, 'about:blank',
     ], { stdio: ['ignore', 'ignore', 'pipe'] });
     proc.on('error', () => {});   // a spawn failure is reported by the start-up promise below
     wsUrl = await new Promise((resolve, reject) => {
