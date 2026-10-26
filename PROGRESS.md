@@ -5702,3 +5702,33 @@ downstream compensation. Fixing one without the other double-flips pitch.
 
 PR #6 opened for `phase2/fly-harness` (v0.1.0's release.sh, the fly
 harness, the pitch fix, the scenery, this test).
+
+---
+
+## 2026-10-26 | Phase 2 step 1 | PR #6's first CI run; the SKIP line names its platform
+
+Owner: "No auto-fix. If CI fails on PR #6, report the failure and the
+proposed fix, don't apply it. 120 stands." Then: "Reword the SKIP to name
+the platform and rate seen. Then stop."
+
+PR #6's CI (run 40370514394, ubuntu-24.04, Chrome 155) passed: all 16
+passed, 1 skipped (slot wedge, issue #5). The fly test there:
+- rendered with WebGL2. It launches with `--enable-unsafe-swiftshader`;
+  whether the runner needs the flag is still untested;
+- went from a pitch-forward stick to +x (0.11 m in 0.6 s);
+- stamped 1443 of 1443 and 519 of 519 samples at their own sim time, none
+  repeated;
+- polled 138 a second at the end. Linux headless Chrome has a coarse timer
+  too, so the headless skip of the rate check held there as well.
+
+The SKIP line blamed Windows 11 on that Linux run. It now names the platform
+and the rate the run saw, then gives the coarse-timer finding as measured on
+Windows 11, for example:
+
+> SKIP poll rate > 120 a second: headless Chrome shows no window (its
+> visibilityState reads 'visible' all the same); on Windows it polled 250 a
+> second here.
+
+The skip, its gate and the 120 floor are unchanged. Local headless run:
+PASS, with the rate skipped; that run polled 250 a second on Windows, so
+the coarse timer comes and goes.
