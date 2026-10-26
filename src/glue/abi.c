@@ -274,8 +274,9 @@ EMSCRIPTEN_KEEPALIVE int sc_battery_carry(const double *soc2)
     if (sc_time_us != SC_BOOT_EPOCH_US) {
         return SC_ERR_BAD_STATE;
     }
-    // A flat physical pack publishes 0 V; its carry uses only the charge.
-    if (!soc2 || !(soc2[0] >= 0.0 && soc2[0] <= 1.0) || !(soc2[1] >= 0.0 && soc2[1] < 100.0)) {
+    // A flat physical pack publishes 0 V; its carry uses only the charge,
+    // which can be below 0 (over-discharged, down to SC_SOC_FLOOR).
+    if (!soc2 || !(soc2[0] >= SC_SOC_FLOOR && soc2[0] <= 1.0) || !(soc2[1] >= 0.0 && soc2[1] < 100.0)) {
         return SC_ERR_BAD_ARG;
     }
     sc_plant_battery_carry(soc2[0], soc2[1]);

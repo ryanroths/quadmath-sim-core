@@ -138,9 +138,24 @@ static void qIntegrate(double q[4], const double om[3], double dt)
 }
 
 // Open-circuit voltage per cell, linear between the seven SoC points (W:160-176).
+// Below SoC 0 (a physical pack past its capacity; the parity battery stops at
+// 0) it follows the over-discharge points down to SC_SOC_FLOOR.
 static double ocvCell(double soc)
 {
     static const double SOC[7] = { 0.00, 0.05, 0.15, 0.40, 0.70, 0.90, 1.00 };
+    static const double OVER[4] = { 0.00, -0.05, -0.10, -0.15 };
+    if (soc < 0) {
+        const double u = fmax(soc, SC_SOC_FLOOR);
+        double hi = blk[PB_OCV];
+        for (int i = 0; i < 3; i++) {
+            const double lo = blk[PB_OCV_OVER + i];
+            if (u >= OVER[i + 1]) {
+                return hi + (lo - hi) * ((OVER[i] - u) / (OVER[i] - OVER[i + 1]));
+            }
+            hi = lo;
+        }
+        return blk[PB_OCV_OVER + 2];
+    }
     const double u = clampd(soc, 0, 1);
     for (int i = 0; i < 6; i++) {
         if (u >= SOC[i] && u <= SOC[i + 1]) {
@@ -300,7 +315,10 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_CURRENT_EXP] > 0 && block[PB_I_QUIESCENT] >= 0
                                         && block[PB_MOTOR_DELAY] >= 0
                                         && block[PB_MOTOR_DELAY] * SC_LOOP_HZ < SC_DELAY_TICKS_MAX + 0.5
-                                        && block[PB_ELEC_TAU] >= 0)) {
+                                        && block[PB_ELEC_TAU] >= 0
+                                        && block[PB_OCV_OVER] >= 0 && block[PB_OCV_OVER] <= block[PB_OCV]
+                                        && block[PB_OCV_OVER + 1] >= 0 && block[PB_OCV_OVER + 1] <= block[PB_OCV_OVER]
+                                        && block[PB_OCV_OVER + 2] >= 0 && block[PB_OCV_OVER + 2] <= block[PB_OCV_OVER + 1])) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -474,7 +492,7 @@ static void stepPhysical(const double cmd[SC_MOTOR_COUNT], double dt)
     sc_plant.vbatLoaded = volts;
     sc_plant.vbatFiltered = volts;
     sc_plant.mah += amps * dt / 3.6;
-    sc_plant.soc = fmax(0, sc_plant.soc - amps * dt / (blk[PB_CAPACITY_MAH] * 3.6));
+    sc_plant.soc = fmax(SC_SOC_FLOOR, sc_plant.soc - amps * dt / (blk[PB_CAPACITY_MAH] * 3.6));
 
     const double kv = derived[PD_KV_RAD], kt = derived[PD_KT_MOTOR], r = derived[PD_R_WINDING];
     const double j = derived[PD_J_ROTOR], ktProp = derived[PD_KT_PROP], kqProp = derived[PD_KQ_PROP];

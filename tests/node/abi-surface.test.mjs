@@ -52,6 +52,7 @@ const PB_NAME = {
   sagDrop: 'SAG_DROP', hoverSeconds: 'HOVER_SECONDS', sagScale: 'SAG_SCALE', bounceScale: 'BOUNCE_SCALE',
   crashScale: 'CRASH_SCALE', spinScale: 'SPIN_SCALE', ductOuterRadius: 'DUCT_RADIUS', hullBelow: 'HULL_BELOW',
   hullAbove: 'HULL_ABOVE', rpmHover: 'RPM_HOVER', currentExponent: 'CURRENT_EXP', iQuiescent: 'I_QUIESCENT', motorDelay: 'MOTOR_DELAY', electricalTau: 'ELEC_TAU',
+  ocvOverDischarge: 'OCV_OVER',
 };
 assert.deepEqual([...PLANT_FIELDS].sort(), Object.keys(PB_NAME).sort(), 'every airframe field has a PB_ name');
 assert.equal(Object.keys(PB).length, PLANT_FIELDS.length + 1, 'plant.h has a PB_ entry per field, plus PB_LEN');
@@ -60,7 +61,8 @@ for (const name of PLANT_FIELDS) {
   if (name === 'model') continue;
   const at = PB[PB_NAME[name]];
   assert.ok(Number.isInteger(at), `PB_${PB_NAME[name]} in plant.h`);
-  probe.values[name] = { value: name === 'ocv' ? [0, 1, 2, 3, 4, 5, 6].map((k) => at + k) : at };
+  const n = { ocv: 7, ocvOverDischarge: 3 }[name] || 1;
+  probe.values[name] = { value: n > 1 ? Array.from({ length: n }, (_, k) => at + k) : at };
 }
 const block = plantBlock(probe);
 assert.equal(block.length, PB.LEN, 'block length is PB_LEN');
@@ -69,6 +71,7 @@ block.forEach((v, k) => {
 });
 assert.equal(block[PB.MODEL], 2, 'model slot');
 assert.equal(PB.OCV + 7, PB.SAG_DROP, 'ocv fills seven slots');
+assert.equal(PB.OCV_OVER + 3, PB.LEN, 'ocvOverDischarge fills the last three slots');
 
 const core = await SimCore.load(module);
 core.configure('');
