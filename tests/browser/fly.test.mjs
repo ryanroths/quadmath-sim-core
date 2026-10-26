@@ -208,7 +208,8 @@ if (visible) {
   console.log(`poll rate: ${fly.pollHz} a second (visible page)`);
 } else {
   rateNote = ' (poll rate skipped: no visible window)';
-  console.log(`SKIP poll rate > 120 a second: ${fly.headless ? `headless Chrome shows no window (its visibilityState reads '${fly.visibility}' all the same)` : `visibilityState '${fly.visibility}'`}; Windows 11 gives a process no one can see a coarse timer, ${fly.pollHz} a second here (PROGRESS.md, 2026-10-26). FLY_HEADED=1 runs it in a visible window.`);
+  const platform = { win32: 'Windows', linux: 'Linux', darwin: 'macOS' }[process.platform] || process.platform;
+  console.log(`SKIP poll rate > 120 a second: ${fly.headless ? `headless Chrome shows no window (its visibilityState reads '${fly.visibility}' all the same)` : `visibilityState '${fly.visibility}'`}; on ${platform} it polled ${fly.pollHz} a second here. A process no one can see may get a coarse timer (measured on Windows 11, PROGRESS.md, 2026-10-26). FLY_HEADED=1 runs it in a visible window.`);
 }
 assert.equal(chrome.console.filter((m) => m.level === 'error').length, 0, 'zero console errors');
 console.log(`fly: arms, climbs, disarms, calibrates and keeps the TX16S in Chrome, 0 console errors: PASS${rateNote}`);
