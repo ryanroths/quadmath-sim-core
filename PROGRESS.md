@@ -5732,3 +5732,222 @@ Windows 11, for example:
 The skip, its gate and the 120 floor are unchanged. Local headless run:
 PASS, with the rate skipped; that run polled 250 a second on Windows, so
 the coarse timer comes and goes.
+
+---
+
+## 2026-10-26 | Phase 2 step 2 | sim-core wired into quadmath's sim.html (?core=bf)
+
+Owner: "Phase 2 step 2: wire sim-core into quadmath sim.html. Branch
+feat/sim-bf-core in the quadmath clone, explicit git add only." Then nine
+points; the record follows them. "Stop when the PR is open. I A/B fly."
+
+### 1. Release
+
+- `v0.2.0` is tagged on sim-core `main` at 9e9310f (the PR #6 merge) and
+  pushed.
+- `scripts/release.sh v0.2.0` wrote `release/`: VERSION `v0.2.0`, module
+  sha256 `624bde93…85dbf169`, unchanged since v0.1.0.
+- That release is copied byte for byte into quadmath `vendor/sim-core/`
+  (commit 83055c8). quadmath's `.gitattributes` keeps `vendor/**` binary.
+- No sim-core code changed for the wiring.
+
+### 2. Core selection and the adapter
+
+quadmath `sim-core-adapter.js` puts two cores behind one interface:
+- **js core:** quadphysics.js, still the default.
+- **bf core:** sim-core, chosen with `?core=bf`.
+
+Both step at a fixed 1 kHz on an accumulator fed by frame time; a frame
+longer than 250 ms is a pause. The page draws an interpolated state.
+Everything that reads flight state does so through `getState()` and
+`events()`, whichever core flies:
+- the OSD (BATT and arming flags on bf);
+- ghosts and the run timers;
+- crashes (contact events on bf);
+- audio;
+- portals.
+
+`getState()` uses quadphysics.js's field names, so module-frame readers
+(tricks, flip, coach) read either core unchanged.
+
+### 3. Pitch signs: not flipped
+
+Both quadmath pitch signs were already +1 on origin/main:
+- quadmath #233 (7ed6057) set `SGN_PITCH` to 1;
+- #251 (7a7a2e2) set the AETR and TAER presets' pitch sign to 1, migrated
+  saved maps, and added lock tests.
+
+Flipping both again would have inverted pitch, so nothing was flipped.
+
+The note in the entry above ("quadmath's 65 mm radio preset has pitch sign
+-1 and sim.html compensates downstream") was wrong about quadmath's
+current code. It came from a local quadmath clone 74 commits behind
+origin, which predated both fixes. The double-flip warning stands only as
+history.
+
+What step 3 still asked for is done:
+- the bf stick-forward test is in quadmath `tools/test_sim_core.mjs`. A
+  TX16S stick forward, read through quadmath's own `applyAxisMap`,
+  produces `rcData[1]` above 1500, a nose-down rate and +X, and the scene
+  velocity points toward -Z;
+- the js core's stick-forward to +X tests (`test_sim_radio`,
+  `test_quadphysics_review`) still pass;
+- in Chrome, ArrowUp moved +X on both cores.
+
+### 4. Render boundary, 1 kHz, frame-time leaks
+
+`toScene()` is the one Z-up to Y-up function. `toModule()` is its inverse,
+for spawns, teleports, the world export and the js core's own contact
+hooks. `mod2world`, `world2mod` and the inline quaternion permutation are
+gone.
+
+The js core's `physics(dt)` is now `jsTick`, one 1 ms tick. The leaks
+(PROGRESS "Frame-time leaks (9)"), by letter:
+
+| Leak | What changed |
+|---|---|
+| (a) FF window | Per tick. quadphysics.js carries the undelivered impulse; see the review below. |
+| (b) Input interpolation | Gone at 1 ms steps. |
+| (c) Physics rate | Fixed at 1 kHz; `adaptPhysicsHz` removed. |
+| (d) Battery | Per tick, with that tick's load (on bf, Betaflight's vbat). |
+| (e) Turtle | Per tick on the js core; not wired to bf (R respawns). |
+| (f) Draft noise | Reads sim time. |
+| (g) Run, lap, split, ghost and FLT clocks | Read one monotonic page clock: ticks run since load by whichever core flew. City ghosts sample at 30 Hz of sim time. |
+| (h) Input | A 4 ms poll, stamped in sim time. |
+| (i) Portals | Edge-triggered entry per tick (js) or sim-core triggers (bf); the wall-clock cooldown is gone. |
+
+### 5. Gamepad
+
+A 4 ms `setInterval` replaces the rAF read. It runs `readInput` (gamepad,
+touch, keyboard) and `tickArming`, and hands each sample to the core
+stamped in sim time:
+- `InputClock` is ported from the fly harness;
+- the bf core puts the sample in sim-core's ring as RC channels;
+- the js core keeps a sample-and-hold ring of its own, which each tick
+  reads.
+
+### 6. Presets and loadDiff
+
+- The 65 mm class selects the tune database's `65-betafpv-ryfly-1219s`
+  card. `cliFor()` turns it into a diff, which goes to `configure` at load
+  and to `loadDiff` on later selections.
+- A CLI import on the bf core also goes to `loadDiff`.
+- The plant is `airframes/air65.json`.
+- The other classes fly the js core, with a console note.
+- Betaflight adds its default aux lines because the card has none: ARM
+  AUX1, ANGLE AUX2, HORIZON AUX3, FLIP AUX4.
+- The page's arm intent and flight mode drive those channels, and
+  Betaflight's checks decide. A throttle-rise auto-arm holds the throttle
+  channel low until Betaflight arms.
+- 3D is refused on the bf core.
+
+### 7. Ghost keys
+
+Ghost keys carry a version prefix, `v3.`: `sim-tracks.js` exports
+`GHOST_KEY_PREFIX`. Ghosts recorded on the frame clock stay in storage
+unread. A run is stored as the ghost when it is faster than the stored v3
+ghost's own total, because the old best times predate the v3 slot.
+
+Eight tests pinned the unprefixed key:
+- seven `tools/test_*.mjs` key lists;
+- `sim-tracks-test.mjs`.
+
+They now pin the versioned key. These are key names, not thresholds.
+
+`PHYSICS_VER`/`PHYS_VER` are not bumped. Bumping them needs a Worker
+deploy, and bf and js runs currently share them.
+
+### 8. GPL
+
+- sim.html, quadphysics.js, `sim-core-adapter.js` and every `sim-*.js`
+  carry an SPDX GPL-3.0-or-later line.
+- `SIM-NOTICE.txt` gives the scope (the simulator, not the site), the
+  source and the third-party code.
+- The sim footer links the notice; on phones the link shortens to "GPL"
+  so the footer stays one row.
+
+### 9. Checks
+
+- **Syntax:** `node --check` passes on the extracted page module and every
+  sim module.
+- **Tests:** quadmath's test files all pass (24, `SKIP_CHROME_BOOT=1`),
+  including the new `test_sim_core.mjs`. The asset stamps are current.
+- **Headless Chrome (sim-core's `chrome.mjs`), `?core=bf` and `?core=js`
+  on room:**
+  - Space arms; W climbs to about 2.4 m; ArrowUp moves +X.
+  - R, then S to lower the throttle, then Space re-arms at once.
+  - Zero console errors from the page.
+- **Two kinds of console error also occur on origin/main**, checked in a
+  worktree of it:
+  - the Cloudflare analytics beacon refuses a 127.0.0.1 origin;
+  - garage logs five GLTF texture errors.
+- **More boots:**
+  - City (460 world boxes on bf) and backyard boot clean on both cores.
+  - `?core=bf&3d=1` stays 2D and arms.
+  - `garage-orbit` spawns at the pad heading.
+- **Not run locally:** quadmath's own `tools/test_sim_map_boot.mjs` (CI's
+  Chrome job). It cannot launch Chrome on Windows (a `/tmp` profile path),
+  on origin/main as on the branch.
+
+### Review
+
+The adversarial review ran in four lenses, each finding checked by a
+skeptic. Confirmed and fixed:
+- **High:** keyboard sticks went to 1e60 and then NaN after any bf
+  respawn. A reboot restarts that core's clock, and the poll's sim-time dt
+  went negative. The poll now resets on a clock restart or a core switch.
+- **Medium:**
+  - The run and ghost clocks jumped on a core switch, so a lap could be
+    saved negative. There is now one page clock.
+  - The js core's feedforward fell to about 25% (17% short mid-ramp)
+    with 4 ms samples at 1 ms ticks, and yaw FF was lost. The FF window
+    now carries; with the stock tune, the mid-ramp roll rate is within 2%
+    of 60 fps stepping.
+  - A redundant link drop refused arming for 0.5 s after every respawn.
+    The link now stays up, since the arm intent is forced low on reboot.
+  - `?3d=1` bypassed the bf 3D refusal.
+  - The bf handover lost the pad heading.
+  - `loadDiff` was never called.
+  - The v3 ghost slot kept the first run, not the best.
+- **Low:**
+  - bf portal warps landed a frame late with an interpolated attitude.
+    Events are now handled in the tick loop, and teleports take the latest
+    tick's attitude.
+  - The boot pose showed until the first tick after a respawn.
+  - A 2S Build showed LAND NOW permanently on the 1S Air65.
+  - Audio used the js thrust scale.
+  - The ghost cadence was 20 Hz at 60 fps.
+  - The vendored URLs had no version stamp.
+  - The footer wrapped on phones.
+
+Refuted:
+- bf and js runs sharing boards. This is real but a decision, not a
+  defect; it is under "Open" below.
+- A second conversion in `sim-tricks.js`. It is a dead fallback.
+- The agent gate failing without the label. It is expected; the owner
+  adds human-override.
+
+### Open, for the owner
+
+- **Boards and ghosts:** bf and js runs share best times, ghost slots and
+  `PHYS_VER`, so the weekly board would take bf runs as phys 2.
+- **Not wired to the bf core yet:**
+  - turtle;
+  - 3D;
+  - the page's rate sliders and rate presets (bf flies the tune card or
+    an imported diff);
+  - the Build's cells and mAh (the plant is the Air65).
+- **Unversioned import:** `vendor/sim-core/sim-core.js` imports
+  `./cli-policy.js` without a version stamp.
+- **CI:** the PR needs the human-override label, since `sim.html` and
+  `scripts/ci/**` are deny paths.
+
+### What went wrong
+
+- **Stale clone.** The local quadmath clone was 74 commits behind origin.
+  My earlier PROGRESS note on quadmath's pitch sign came from it, and the
+  first mapping run read a tree that changed under it when the branch was
+  cut. The mapping was re-run on origin/main's 64c32a6.
+- **Commit message.** The first header commit message missed that the
+  stamper also rewrote the modules' import stamps. It was amended before
+  pushing.
