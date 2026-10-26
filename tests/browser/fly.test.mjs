@@ -5,9 +5,18 @@
 // calibration wizard, after which an arm switch left on needs a cycle; flies
 // on through a short USB drop with a generic pad plugged in and no stand-in;
 // hands over from a console pad to a TX16S plugged in with its switch on only
-// after a cycle; and logs no console errors.
+// after a cycle; and logs no console errors. Throughout, the 4 ms poll runs
+// and every sample goes in stamped at its own sim time.
+//
+// The poll's rate (over 120 a second) is asserted only when the page is
+// visible: Windows 11 does not grant its fine timer to a process no one can
+// see, and a headless page, which reports visibilityState "visible" all the
+// same, gets about 120 a second after its first 2 s (PROGRESS.md,
+// 2026-10-26). Headless, that check is skipped with its reason; FLY_HEADED=1
+// runs the test in a visible window, where it is asserted.
 //
 //   node tests/browser/fly.test.mjs
+//   FLY_HEADED=1 node tests/browser/fly.test.mjs
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import assert from 'node:assert/strict';
@@ -30,7 +39,9 @@ const FAKE_PADS = `
   }));`;
 
 const server = await serve(fileURLToPath(new URL('../../', import.meta.url)));
-const chrome = await launch();
+// Software WebGL where there is no GPU (the CI runner): recent Chrome uses
+// SwiftShader only when asked. The page is local files only.
+const chrome = await launch({ headless: process.env.FLY_HEADED !== '1', args: ['--enable-unsafe-swiftshader'] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const page = () => chrome.evaluate('JSON.parse(JSON.stringify(window.__fly))');
 const radio = (changes = {}) => REST.map((v, i) => (i in changes ? changes[i] : v));
@@ -170,7 +181,34 @@ assert.equal(fly.armed, true, 'arms after the switch is cycled');
 assert.equal(fly.inputErrors, 0);
 assert.equal(fly.resets, 0);
 assert.ok(fly.frames > 60, 'frames ran');
-// 4 ms polls: a timer throttled to frame rate (60 a second) would show here.
-assert.ok(fly.pollHz > 120, `the 4 ms poll ran (${fly.pollHz} a second)`);
+// The poll runs: its count grows between every two looks at the page, on
+// both loads.
+const polls = [seen.rest, seen.armed, seen.climb, seen.forward, seen.disarmed, seen.afterCalib, seen.cycled, seen.twoPads, seen.txGone, seen.txBack, seen.end1];
+for (let k = 1; k < polls.length; k++) assert.ok(polls[k].polls > polls[k - 1].polls, `the poll ran between looks ${k} and ${k + 1}`);
+assert.ok(seen.padOnly.polls < seen.plugged.polls && seen.plugged.polls < fly.polls, 'the poll ran on the second load');
+// Every sample is stamped at its own sim time: a poll between frames goes in
+// ahead of the sim clock, at the sim time of its wall time, and repeats no
+// stamp before it. A stamp at the sim clock is what a frame-locked stamp
+// gives every sample; only a poll landing exactly on a frame's sim time may
+// get it. (None can be behind: InputClock.stamp() clamps to the sim clock.)
+for (const [load, f] of [['first', seen.end1], ['second', fly]]) {
+  const st = f.stamps;
+  assert.equal(st.ahead + st.atSim + st.behind, f.inputs, `${load} load: every sample counted`);
+  assert.equal(st.repeats, 0, `${load} load: no stamp repeats the one before`);
+  assert.ok(st.ahead > 0.99 * f.inputs, `${load} load: samples stamped ahead at their own sim time (${st.ahead} of ${f.inputs}, ${st.atSim} at the sim clock)`);
+}
+console.log(`stamps: first load ${seen.end1.stamps.ahead} of ${seen.end1.inputs} samples ahead of the sim clock at their own sim time, second ${fly.stamps.ahead} of ${fly.inputs}; none repeated`);
+// The rate: 4 ms polls run over 120 a second; a timer throttled to the frame
+// rate (60) would show here. Only a page someone can see gets the timer for
+// it; headless reports visibilityState "visible" without being seen.
+const visible = fly.visibility === 'visible' && !fly.headless;
+let rateNote = '';
+if (visible) {
+  assert.ok(fly.pollHz > 120, `the 4 ms poll ran at ${fly.pollHz} a second`);
+  console.log(`poll rate: ${fly.pollHz} a second (visible page)`);
+} else {
+  rateNote = ' (poll rate skipped: no visible window)';
+  console.log(`SKIP poll rate > 120 a second: ${fly.headless ? `headless Chrome shows no window (its visibilityState reads '${fly.visibility}' all the same)` : `visibilityState '${fly.visibility}'`}; Windows 11 gives a process no one can see a coarse timer, ${fly.pollHz} a second here (PROGRESS.md, 2026-10-26). FLY_HEADED=1 runs it in a visible window.`);
+}
 assert.equal(chrome.console.filter((m) => m.level === 'error').length, 0, 'zero console errors');
-console.log('fly: arms, climbs, disarms, calibrates and keeps the TX16S in Chrome, 0 console errors: PASS');
+console.log(`fly: arms, climbs, disarms, calibrates and keeps the TX16S in Chrome, 0 console errors: PASS${rateNote}`);

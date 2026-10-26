@@ -153,9 +153,10 @@ function exited(proc, ms) {
 }
 
 // Starts headless Chrome and returns a session on its first page, recording
-// console output. Call close() when done. If starting fails, Chrome is
-// stopped and its profile removed before the error is thrown.
-export async function launch() {
+// console output; headless false opens a visible window instead, and args
+// are extra switches. Call close() when done. If starting fails, Chrome is stopped and its profile removed
+// before the error is thrown.
+export async function launch({ headless = true, args = [] } = {}) {
   const binary = findChrome();
   const profile = await mkdtemp(join(tmpdir(), 'sim-core-chrome-'));
   const console = [];
@@ -165,9 +166,9 @@ export async function launch() {
   let version;
   try {
     proc = spawn(binary, [
-      '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      ...(headless ? ['--headless=new'] : ['--window-size=1280,800']), '--remote-debugging-port=0', `--user-data-dir=${profile}`,
       '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking',
-      '--disable-component-update', '--disable-sync', '--metrics-recording-only', 'about:blank',
+      '--disable-component-update', '--disable-sync', '--metrics-recording-only', ...args, 'about:blank',
     ], { stdio: ['ignore', 'ignore', 'pipe'] });
     proc.on('error', () => {});   // a spawn failure is reported by the start-up promise below
     wsUrl = await new Promise((resolve, reject) => {

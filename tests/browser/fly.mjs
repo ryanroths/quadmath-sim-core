@@ -77,6 +77,11 @@ const flagNames = (flags) => ARMING_FLAGS.filter((_, bit) => flags & (1 << bit))
 
 const fly = Object.assign(window.__fly, {
   started: true, ready: false, polls: 0, inputs: 0, dropped: 0, inputErrors: 0, lastStamp: null, resets: 0,
+  // Every sample's stamp against the sim clock when it went in: ahead of it
+  // (a poll between frames, stamped at its own wall time), at it, behind it
+  // (0: InputClock.stamp() clamps to the sim clock), and stamps equal to the
+  // one before (the clock held, not moved).
+  stamps: { ahead: 0, atSim: 0, behind: 0, repeats: 0 },
   render: null, pad: null, mapSource: null, calibrating: false, view: 'fpv', scenery: SCENERY.map(({ min, max }) => ({ min, max })),
 });
 const $ = (id) => document.getElementById(id);
@@ -218,9 +223,15 @@ function poll() {
     return;
   }
   try {
+    const sim = core.simTimeUs;
     core.input(channelsFrom(gp, pad.map), t);
     link.sample(t);
     fly.inputs++;
+    const st = fly.stamps;
+    if (t > sim) st.ahead++;
+    else if (t === sim) st.atSim++;
+    else st.behind++;
+    if (t === fly.lastStamp) st.repeats++;
     fly.lastStamp = t;
   } catch (err) {
     fly.inputErrors++;
@@ -327,6 +338,7 @@ function showStatus(s) {
   Object.assign(fly, {
     armed: fc.armed, flags: fc.armingDisableFlags, rxSignal: fc.rxSignal, simTimeUs: core.simTimeUs, pos: s.pos,
     pad: pad && pad.id, mapSource: pad && pad.mapSource, calibrating: !!calib, link: link.up,
+    visibility: document.visibilityState, focused: document.hasFocus(), headless: /HeadlessChrome/.test(navigator.userAgent),
   });
   $('skipAux').hidden = !(calib && calibUi && calibUi.skipAux);
   $('cancel').hidden = !calib;
