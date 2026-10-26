@@ -40,10 +40,15 @@ export function radioScore(gp) {
   return 1;
 }
 
-// EdgeTX/OpenTX joystick, AETR: 0 roll, 1 pitch, 2 throttle, 3 yaw.
+// EdgeTX/OpenTX joystick, AETR: 0 roll, 1 pitch, 2 throttle, 3 yaw. Each
+// axis is the radio's channel output, the one the real quad flies on, so
+// stick forward reads +1 on axis 1, as roll right and yaw right read +1.
+// quadmath's map had pitch sign -1 (its tests model stick forward as -1);
+// with it the owner's TX16S flew pitch inverted here (PROGRESS.md,
+// 2026-10-26). The calibration wizard always took the sign from the stick.
 export const AETR_MAP = Object.freeze({
   r: Object.freeze({ i: 0, sign: 1 }),
-  p: Object.freeze({ i: 1, sign: -1 }),
+  p: Object.freeze({ i: 1, sign: 1 }),
   y: Object.freeze({ i: 3, sign: 1 }),
   t: Object.freeze({ i: 2, min: -1, max: 1 }),
 });
@@ -54,10 +59,11 @@ export const PAD_MAP = Object.freeze({
   y: Object.freeze({ i: 0, sign: 1 }),
   t: Object.freeze({ i: 1, min: 0, max: -1, spring: true }),
 });
+// The same channel outputs in TAER order.
 const LITERADIO_TAER_MAP = Object.freeze({
   t: Object.freeze({ i: 0, min: -1, max: 1 }),
   r: Object.freeze({ i: 1, sign: 1 }),
-  p: Object.freeze({ i: 2, sign: -1 }),
+  p: Object.freeze({ i: 2, sign: 1 }),
   y: Object.freeze({ i: 3, sign: 1 }),
 });
 

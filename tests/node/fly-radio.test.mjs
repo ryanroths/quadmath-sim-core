@@ -16,7 +16,8 @@ import { InputClock, RadioLink, auxSources, channelsFrom } from '../browser/fly-
 const root = new URL('../../', import.meta.url);
 const TX16S_ID = 'RM TX16S Joystick (Vendor: 1209 Product: 4f54)';
 // A TX16S in USB joystick mode as Chrome on Windows reports it: 8 axes,
-// AETR on 0-3, CH5-CH8 on 4-7 resting at -1, no buttons.
+// AETR on 0-3, each the radio's channel output (stick forward, roll right
+// and yaw right +1), CH5-CH8 on 4-7 resting at -1, no buttons.
 const tx16s = (axes) => ({ id: TX16S_ID, index: 0, mapping: '', axes, buttons: [] });
 const REST = [0, 0, -1, 0, -1, -1, -1, -1];
 
@@ -28,9 +29,9 @@ assert.equal(radioScore({ id: 'Generic   USB  Joystick   (STANDARD GAMEPAD Vendo
 assert.equal(radioScore({ id: 'USB Joystick', mapping: '' }), 1);
 const preset = RADIO_PRESETS.radiomaster.map;
 assert.deepEqual(channelsFrom(tx16s(REST), preset).slice(0, 8), [1500, 1500, 1500, 1000, 1000, 1000, 1000, 1000]);
-// Roll right, pitch stick up (axis -1), yaw right, throttle full, CH5 up.
-assert.deepEqual(channelsFrom(tx16s([1, -1, 1, 1, 1, -1, -1, -1]), preset).slice(0, 8), [2000, 2000, 2000, 2000, 2000, 1000, 1000, 1000]);
-assert.deepEqual(channelsFrom(tx16s([-0.5, 0.25, -0.1, -0.5, 0, 1, -1, -1]), preset).slice(0, 8), [1250, 1375, 1250, 1450, 1500, 2000, 1000, 1000]);
+// Roll right, pitch stick forward, yaw right, throttle full, CH5 up.
+assert.deepEqual(channelsFrom(tx16s([1, 1, 1, 1, 1, -1, -1, -1]), preset).slice(0, 8), [2000, 2000, 2000, 2000, 2000, 1000, 1000, 1000]);
+assert.deepEqual(channelsFrom(tx16s([-0.5, 0.25, -0.1, -0.5, 0, 1, -1, -1]), preset).slice(0, 8), [1250, 1625, 1250, 1450, 1500, 2000, 1000, 1000]);
 assert.equal(channelsFrom(tx16s(REST), preset).length, 16);
 console.log('preset map: TX16S AETR, CH5..CH8 on AUX1..AUX4');
 
@@ -53,14 +54,14 @@ const with_ = (base, changes) => base.map((v, i) => (i in changes ? changes[i] :
 const map1 = calibrate([
   { axes: REST, secs: 1.2 },
   { axes: with_(REST, { 0: 1 }), secs: 0.8 },
-  { axes: with_(REST, { 1: -1 }), secs: 0.8 },
+  { axes: with_(REST, { 1: 1 }), secs: 0.8 },
   { axes: with_(REST, { 3: 1 }), secs: 0.8 },
   { axes: with_(REST, { 2: 1 }), secs: 0.3 },
   { axes: REST, secs: 0.3 },
   { axes: with_(REST, { 4: 1 }), secs: 0.6 },
   { axes: with_(REST, { 4: 1, 5: 1 }), secs: 0.6 },
 ]);
-assert.deepEqual(map1, { r: { i: 0, sign: 1 }, p: { i: 1, sign: -1 }, y: { i: 3, sign: 1 }, t: { i: 2, max: 1, min: -1 }, arm: { i: 4 }, mode: { i: 5 } });
+assert.deepEqual(map1, { r: { i: 0, sign: 1 }, p: { i: 1, sign: 1 }, y: { i: 3, sign: 1 }, t: { i: 2, max: 1, min: -1 }, arm: { i: 4 }, mode: { i: 5 } });
 for (const axes of [REST, [0.3, -0.7, 0.2, -0.4, 1, -1, 1, -1]]) {
   assert.deepEqual(channelsFrom(tx16s(axes), map1), channelsFrom(tx16s(axes), AETR_MAP), 'the calibrated TX16S flies as the preset');
 }
@@ -73,7 +74,7 @@ const UP = with_(REST, { 4: 1, 5: 1 });
 const map1b = calibrate([
   { axes: UP, secs: 1.2 },
   { axes: with_(UP, { 0: 1 }), secs: 0.8 },
-  { axes: with_(UP, { 1: -1 }), secs: 0.8 },
+  { axes: with_(UP, { 1: 1 }), secs: 0.8 },
   { axes: with_(UP, { 3: 1 }), secs: 0.8 },
   { axes: with_(UP, { 2: 1 }), secs: 0.3 },
   { axes: UP, secs: 0.3 },
@@ -91,14 +92,14 @@ const TAER_REST = [-1, 0, 0, 0, -1, -1, -1, -1];
 const map2 = calibrate([
   { axes: TAER_REST, secs: 1.2 },
   { axes: with_(TAER_REST, { 1: 1 }), secs: 0.8 },
-  { axes: with_(TAER_REST, { 2: -1 }), secs: 0.8 },
+  { axes: with_(TAER_REST, { 2: 1 }), secs: 0.8 },
   { axes: with_(TAER_REST, { 3: 1 }), secs: 0.8 },
   { axes: with_(TAER_REST, { 0: 1 }), secs: 0.3 },
   { axes: TAER_REST, secs: 0.3 },
   { axes: with_(TAER_REST, { 6: 1 }), secs: 0.6 },
   { skip: true },
 ]);
-assert.deepEqual(map2, { r: { i: 1, sign: 1 }, p: { i: 2, sign: -1 }, y: { i: 3, sign: 1 }, t: { i: 0, max: 1, min: -1 }, arm: { i: 6 } });
+assert.deepEqual(map2, { r: { i: 1, sign: 1 }, p: { i: 2, sign: 1 }, y: { i: 3, sign: 1 }, t: { i: 0, max: 1, min: -1 }, arm: { i: 6 } });
 assert.deepEqual(auxSources(map2, 8), [{ i: 6 }, { i: 5 }, { i: 4 }, { i: 7 }]);
 assert.deepEqual(channelsFrom(tx16s(with_(TAER_REST, { 0: 1, 6: 1 })), map2).slice(0, 8), [1500, 1500, 1500, 2000, 2000, 1000, 1000, 1000]);
 console.log('calibration, TAER radio, arm on axis 6: throttle on axis 0, arm switch swapped into AUX1, mode skipped');
@@ -185,7 +186,12 @@ async function fly(radio, ms, { stampAhead = true, resetAt = [] } = {}) {
       }
       clock.anchor({ simTimeUs: core.simTimeUs, alpha: acc, tickUs: core.tickUs }, w);
       link.update(present);
-      log.push({ w, armed: core.fc.armed, z: core.state.pos[2], flags: core.fc.armingDisableFlags, link: link.up });
+      const fc = core.fc;
+      const st = core.state;
+      log.push({
+        w, armed: fc.armed, flags: fc.armingDisableFlags, link: link.up, rc1: fc.rcData[1], sp1: fc.setpoint[1],
+        x: st.pos[0], z: st.pos[2], wy: st.omega[1],
+      });
     }
   }
   const at = (t) => log.find((f) => f.w >= t);
@@ -224,6 +230,27 @@ const climb = (w) => with_(REST, { 4: w >= 1000 && w < 3400 ? 1 : -1, 2: w >= 12
   assert.ok(at(3200).z > 0.5, `climbing at throttle 0.45 (z ${at(3200).z.toFixed(2)} m)`);
   assert.equal(at(3600).armed, false, 'disarmed when AUX1 goes low');
   console.log(`Air65: link up at ${linkAt.toFixed(0)} ms, flags clear at ${clearAt.toFixed(0)} ms, armed on AUX1 at 1 s, z ${at(3200).z.toFixed(2)} m after 2 s at throttle 0.45, disarmed at 3.4 s`);
+}
+
+// Pitch, every hop: the TX16S's stick forward (+0.3 on axis 1) is a pitch
+// channel above 1500 in Betaflight's rcData, a positive pitch setpoint, a
+// nose-down body pitch rate (plant.c: + nose down) and the quad moving +x in
+// the world. Arm at 1 s, climb, hold near hover, stick forward from 2.6 s.
+{
+  const forward = (w) => with_(REST, {
+    4: w >= 1000 ? 1 : -1,
+    2: w < 1200 ? -1 : -1 + 2 * (w < 2000 ? 0.45 : w < 2600 ? 0.405 : 0.43),
+    1: w >= 2600 ? 0.3 : 0,
+  });
+  const { at } = await fly(forward, 3400);
+  const before = at(2600);
+  const f = at(2680);
+  assert.equal(before.armed, true);
+  assert.ok(f.rc1 > 1500, `stick forward: rcData[1] ${f.rc1} > 1500`);
+  assert.ok(f.sp1 > 0, `pitch setpoint ${f.sp1.toFixed(1)} deg/s > 0`);
+  assert.ok(f.wy > 0, `body pitch rate ${f.wy.toFixed(3)} rad/s > 0, nose down`);
+  assert.ok(at(3300).x > before.x + 0.1, `moves +x in the world (${before.x.toFixed(2)} to ${at(3300).x.toFixed(2)} m)`);
+  console.log(`stick forward: rcData[1] ${f.rc1}, setpoint[1] ${f.sp1.toFixed(1)} deg/s, pitch rate +${f.wy.toFixed(3)} rad/s (nose down), x ${before.x.toFixed(2)} to ${at(3300).x.toFixed(2)} m`);
 }
 
 // The arm switch already on: when the radio first appears (the page opened
