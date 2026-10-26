@@ -58,6 +58,9 @@ try {
   await setAxes(radio({ 4: 1, 2: -1 + 2 * 0.45 }));
   await sleep(2000);
   seen.climb = await page();
+  await setAxes(radio({ 4: 1, 2: -1 + 2 * 0.43, 1: 0.3 }));   // stick forward
+  await sleep(600);
+  seen.forward = await page();
   await setAxes(REST);
   await sleep(500);
   seen.disarmed = await page();
@@ -65,7 +68,7 @@ try {
   // The calibration wizard, the arm switch left on at the end.
   await chrome.evaluate(`document.getElementById('calibrate').click()`);
   for (const [axes, ms] of [
-    [REST, 1400], [radio({ 0: 1 }), 900], [radio({ 1: -1 }), 900], [radio({ 3: 1 }), 900],
+    [REST, 1400], [radio({ 0: 1 }), 900], [radio({ 1: 1 }), 900], [radio({ 3: 1 }), 900],
     [radio({ 2: 1 }), 400], [REST, 400], [radio({ 4: 1 }), 800], [radio({ 4: 1, 5: 1 }), 800],
   ]) {
     await setAxes(axes);
@@ -129,6 +132,7 @@ for (const m of chrome.console) console.log(`   [${m.source} ${m.level}] ${m.tex
 assert.equal(fly.error, null, `page error: ${fly.error}`);
 console.log(`${chrome.version}: render ${fly.render}, ${fly.frames} frames, ${fly.polls} polls (${fly.pollHz} a second at the end), ${fly.inputs} inputs, ${fly.dropped} dropped, ${fly.inputErrors} input errors, ${fly.resets} resets`);
 console.log(`TX16S (${seen.rest.mapSource}): rest armed ${seen.rest.armed} (flags ${flags(seen.rest)}); AUX1 up: armed ${seen.armed.armed}; 2 s at throttle 0.45: z ${seen.climb.pos[2].toFixed(2)} m; AUX1 down: armed ${seen.disarmed.armed}`);
+console.log(`stick forward 0.6 s: x ${seen.climb.pos[0].toFixed(2)} to ${seen.forward.pos[0].toFixed(2)} m; scenery ${fly.scenery.length} world boxes`);
 console.log(`calibrated (${seen.afterCalib.mapSource}), arm switch left on: armed ${seen.afterCalib.armed} (flags ${flags(seen.afterCalib)}); after a cycle: armed ${seen.cycled.armed}`);
 console.log(`generic pad added in the air: flying ${seen.twoPads.pad}; TX16S unplugged 300 ms: pad ${seen.txGone.pad}, link ${seen.txGone.link}, armed ${seen.txGone.armed}; back: ${seen.txBack.pad}, link ${seen.txBack.link}, armed ${seen.txBack.armed}, z ${seen.txBack.pos[2].toFixed(2)} m`);
 console.log(`console pad only: flying ${seen.padOnly.pad}; TX16S plugged with the switch on: ${seen.plugged.pad}, armed ${seen.plugged.armed} (flags ${flags(seen.plugged)}); after a cycle: armed ${fly.armed}`);
@@ -138,6 +142,15 @@ assert.equal(seen.rest.flags, 0, 'armable after the link comes up');
 assert.equal(seen.rest.armed, false);
 assert.equal(seen.armed.armed, true, 'arms on AUX1');
 assert.ok(seen.climb.pos[2] > 0.5, 'climbs on the throttle');
+assert.ok(seen.forward.pos[0] > seen.climb.pos[0] + 0.1, 'stick forward moves the quad +X');
+// Eight 1 m cubes within 10 m of the start, and the gate's three bars at 5 m.
+const cubes = fly.scenery.filter((b) => b.max[2] === 1);
+assert.equal(cubes.length, 8);
+for (const b of cubes) {
+  assert.deepEqual(b.max.map((v, k) => +(v - b.min[k]).toFixed(9)), [1, 1, 1]);
+  for (const x of [b.min[0], b.max[0]]) for (const y of [b.min[1], b.max[1]]) assert.ok(Math.hypot(x, y) <= 10);
+}
+assert.equal(fly.scenery.filter((b) => b.min[0] === 4.95).length, 3, 'the gate');
 assert.equal(seen.disarmed.armed, false, 'disarms on AUX1 low');
 assert.equal(seen.afterCalib.mapSource, 'calibrated', 'the wizard finished');
 assert.equal(seen.afterCalib.armed, false, 'an arm switch left on through calibration does not arm');

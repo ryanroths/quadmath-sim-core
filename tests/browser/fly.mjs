@@ -29,6 +29,44 @@ const PRESET = {
 };
 const POLL_MS = 4;
 
+// Things to judge motion by (owner, 2026-10-26): eight 1 m cubes at random
+// within 10 m of the start and a 2 m square gate 5 m ahead (+X). The cubes'
+// places come from a fixed seed, so the scene is the same on every load, and
+// keep clear of the start, of the line to the gate and on through it, and of
+// the line-of-sight view's eye. All are world boxes: solid to the quad, as on
+// a real field.
+const CUBE = [0.25, 0.45, 0.75];
+const GATE = [0.95, 0.78, 0.15];
+function scenery(seed = 0x41723635) {
+  let st = seed >>> 0;
+  const rand = () => {   // mulberry32
+    st = (st + 0x6d2b79f5) >>> 0;
+    let t = st;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const cubes = [];
+  while (cubes.length < 8) {
+    const x = (rand() * 2 - 1) * 10;
+    const y = (rand() * 2 - 1) * 10;
+    const r = Math.hypot(x, y);
+    if (r > 10 - Math.SQRT1_2 || r < 2.5) continue;   // the whole cube within 10 m; clear of the start
+    if (x > -1 && Math.abs(y) < 2.5) continue;   // the line to the gate and on through it
+    if (Math.hypot(x + 3, y + 1.5) < 2) continue;   // the line-of-sight eye (fly-render.mjs)
+    if (cubes.some(([cx, cy]) => Math.hypot(x - cx, y - cy) < 2)) continue;
+    cubes.push([x, y]);
+  }
+  return [
+    ...cubes.map(([x, y]) => ({ min: [x - 0.5, y - 0.5, 0], max: [x + 0.5, y + 0.5, 1], color: CUBE })),
+    // The gate: a 2 m x 2 m opening, posts and a top bar 0.1 m thick.
+    { min: [4.95, -1.1, 0], max: [5.05, -1.0, 2.1], color: GATE },
+    { min: [4.95, 1.0, 0], max: [5.05, 1.1, 2.1], color: GATE },
+    { min: [4.95, -1.0, 2.0], max: [5.05, 1.0, 2.1], color: GATE },
+  ];
+}
+const SCENERY = scenery();
+
 // Betaflight's arming-disable flags (runtime_config.h:43-68), by bit.
 const ARMING_FLAGS = [
   'NO_GYRO', 'FAILSAFE', 'RX_FAILSAFE', 'NOT_DISARMED', 'BOXFAILSAFE', 'RUNAWAY_TAKEOFF', 'CRASH_DETECTED', 'THROTTLE',
@@ -39,7 +77,7 @@ const flagNames = (flags) => ARMING_FLAGS.filter((_, bit) => flags & (1 << bit))
 
 const fly = Object.assign(window.__fly, {
   started: true, ready: false, polls: 0, inputs: 0, dropped: 0, inputErrors: 0, lastStamp: null, resets: 0,
-  render: null, pad: null, mapSource: null, calibrating: false, view: 'fpv',
+  render: null, pad: null, mapSource: null, calibrating: false, view: 'fpv', scenery: SCENERY.map(({ min, max }) => ({ min, max })),
 });
 const $ = (id) => document.getElementById(id);
 const statusEl = $('status');
@@ -311,14 +349,19 @@ try {
   core = await SimCore.load(new URL('../../dist/sim-core.wasm', import.meta.url), { trace: false });
   // The dump carries lines the sim has no target for (OSD, VTX, board
   // identity); configure() reports them and goes on.
-  const report = core.configure({ diff: config, plant: airframe, world: { floorZ: 0 } });
+  const report = core.configure({
+    diff: config, plant: airframe, world: { floorZ: 0, boxes: SCENERY.map(({ min, max }) => ({ min, max })) },
+  });
   console.info(`fly: ${PRESET.config}: ${report.applied} applied, ${report.rejected} refused, ${report.errors} not in the sim target`);
   link = new RadioLink(core);
   // The box: the plant's footprint (its rims, plant.c) and its hull heights.
   const v = airframe.values;
   const reach = (v.wheelbase.value / 2 + v.ductOuterRadius.value) * Math.SQRT1_2;
   try {
-    renderer = createRenderer($('view'), { box: { halfX: reach, halfY: reach, bottom: -v.hullBelow.value, top: v.hullAbove.value } });
+    renderer = createRenderer($('view'), {
+      box: { halfX: reach, halfY: reach, bottom: -v.hullBelow.value, top: v.hullAbove.value },
+      scenery: SCENERY,
+    });
     fly.render = 'webgl2';
   } catch (err) {
     fly.render = `none: ${err.message}`;

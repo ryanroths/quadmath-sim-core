@@ -1,6 +1,7 @@
 // The fly harness's view, WebGL2 with no library: a grey ground with a faint
-// metre grid (the only cue for speed and height), a sky above the horizon,
-// and the quad as a box the size of its footprint. Two cameras: FPV, at the
+// metre grid, a sky above the horizon with the horizon drawn as a line, the
+// scenery as solid boxes (fly.mjs: eight 1 m cubes and a gate), and the quad
+// as a box the size of its footprint. Two cameras: FPV, at the
 // CG with the camera tilted up camDeg about the body's pitch axis (as
 // quadmath's sim mounts it, sim.html:3436-3437), and a fixed line-of-sight
 // view from beside the start, the only one the quad's box shows in.
@@ -16,6 +17,8 @@
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 
 const SKY = [0.70, 0.78, 0.86];
+const HORIZON = [0.12, 0.14, 0.17];
+const QUAD = [0.85, 0.32, 0.12];
 const NEAR = 0.005;   // m
 const FAR = 5000;
 const LOS_EYE = [-3, -1.5, 1.4];   // m, the line-of-sight pilot's eyes
@@ -108,6 +111,17 @@ function boxModel(pos, quat, box) {
   return o;
 }
 
+// A world box's model matrix: the unit cube scaled and moved to min..max.
+function aabbModel(min, max) {
+  const o = new Float32Array(16);
+  for (let k = 0; k < 3; k++) {
+    o[k * 5] = max[k] - min[k];
+    o[12 + k] = (min[k] + max[k]) / 2;
+  }
+  o[15] = 1;
+  return o;
+}
+
 // ---- GL ----
 
 // One triangle over the whole screen; each pixel's ray in the world is
@@ -122,7 +136,8 @@ void main() {
 
 // Sky above the horizon; below it the ground: grey, grid lines every 1 m and
 // darker every 10 m, faded out where they would alias, hazed toward the
-// horizon. Positions are relative to the camera; uCell1 and uCell10 carry the
+// horizon. The horizon itself (rays level with the ground) is a dark line
+// about two pixels wide. Positions are relative to the camera; uCell1 and uCell10 carry the
 // camera's place inside its 1 m and 10 m cells, computed in doubles.
 const GROUND_FS = `#version 300 es
 precision highp float;
@@ -134,6 +149,7 @@ uniform float uHeight;
 uniform vec2 uCell1;
 uniform vec2 uCell10;
 uniform vec3 uSky;
+uniform vec3 uHorizon;
 in vec2 vNdc;
 out vec4 outColor;
 float line(vec2 q) {
@@ -150,7 +166,9 @@ void main() {
   c = mix(c, vec3(0.42), line(uCell1 + rel));
   c = mix(c, vec3(0.34), line(uCell10 + rel / 10.0));
   c = mix(c, uSky, smoothstep(60.0, 1800.0, length(vec3(rel, uHeight))) * 0.85);
-  outColor = vec4(dir.z < 0.0 && uHeight > 0.0 ? c : uSky, 1.0);
+  vec3 col = dir.z < 0.0 && uHeight > 0.0 ? c : uSky;
+  float px = abs(dir.z) / max(fwidth(dir.z), 1e-7);
+  outColor = vec4(mix(uHorizon, col, smoothstep(0.5, 1.5, px)), 1.0);
 }`;
 
 const BOX_VS = `#version 300 es
@@ -166,11 +184,12 @@ void main() {
 
 const BOX_FS = `#version 300 es
 precision highp float;
+uniform vec3 uColor;
 in vec3 vNormal;
 out vec4 outColor;
 void main() {
   float light = 0.45 + 0.55 * max(dot(normalize(vNormal), normalize(vec3(-0.4, 0.3, 0.85))), 0.0);
-  outColor = vec4(vec3(0.85, 0.32, 0.12) * light, 1.0);
+  outColor = vec4(uColor * light, 1.0);
 }`;
 
 function program(gl, vs, fs) {
@@ -202,8 +221,9 @@ function cube() {
   return new Float32Array(out);
 }
 
-// box: { halfX, halfY, bottom, top } in metres about the CG.
-export function createRenderer(canvas, { box }) {
+// box: the quad's { halfX, halfY, bottom, top } in metres about the CG.
+// scenery: world boxes { min, max, color }, metres, drawn in both views.
+export function createRenderer(canvas, { box, scenery = [] }) {
   const gl = canvas.getContext('webgl2', { antialias: true });
   if (!gl) throw new Error('WebGL2 is not available in this browser');
   const ground = program(gl, GROUND_VS, GROUND_FS);
@@ -261,19 +281,23 @@ export function createRenderer(canvas, { box }) {
       gl.uniform2f(u(ground, 'uCell1'), cell(cam.eye[0], 1), cell(cam.eye[1], 1));
       gl.uniform2f(u(ground, 'uCell10'), cell(cam.eye[0], 10), cell(cam.eye[1], 10));
       gl.uniform3f(u(ground, 'uSky'), ...SKY);
+      gl.uniform3f(u(ground, 'uHorizon'), ...HORIZON);
       gl.bindVertexArray(groundVao);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-      if (!view.fpv) {
-        const viewProj = multiply(perspective(view.vfovDeg, w / h, NEAR, FAR), viewMatrix(cam));
-        gl.enable(gl.DEPTH_TEST);
-        gl.enable(gl.CULL_FACE);
-        gl.useProgram(solid);
-        gl.uniformMatrix4fv(u(solid, 'uViewProj'), false, viewProj);
-        gl.uniformMatrix4fv(u(solid, 'uModel'), false, boxModel(state.pos, state.quat, box));
-        gl.bindVertexArray(boxVao);
+      const viewProj = multiply(perspective(view.vfovDeg, w / h, NEAR, FAR), viewMatrix(cam));
+      gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.CULL_FACE);
+      gl.useProgram(solid);
+      gl.uniformMatrix4fv(u(solid, 'uViewProj'), false, viewProj);
+      gl.bindVertexArray(boxVao);
+      const solidBox = (model, color) => {
+        gl.uniformMatrix4fv(u(solid, 'uModel'), false, model);
+        gl.uniform3f(u(solid, 'uColor'), ...color);
         gl.drawArrays(gl.TRIANGLES, 0, 36);
-      }
+      };
+      for (const b of scenery) solidBox(aabbModel(b.min, b.max), b.color);
+      if (!view.fpv) solidBox(boxModel(state.pos, state.quat, box), QUAD);
       gl.bindVertexArray(null);
     },
   };
