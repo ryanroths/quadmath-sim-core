@@ -21,10 +21,12 @@ const TYPES = {
   '.wasm': 'application/wasm',
   '.json': 'application/json',
   '.diff': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
-// Serves files under root to 127.0.0.1 only; nothing outside root.
-export async function serve(root) {
+// Serves files under root to 127.0.0.1 only; nothing outside root. Port 0
+// takes any free port.
+export async function serve(root, { port = 0 } = {}) {
   const base = normalize(root.endsWith(sep) ? root : root + sep);
   const server = createServer(async (req, res) => {
     try {
@@ -39,7 +41,10 @@ export async function serve(root) {
       res.end(String(err.message));
     }
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolve);
+  });
   return { url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise((r) => server.close(r)) };
 }
 
