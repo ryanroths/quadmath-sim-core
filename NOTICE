@@ -13,6 +13,13 @@ sim-core compiles unmodified Betaflight 4.5.1 sources into its WebAssembly
 module. Any change to Betaflight is carried as a patch file in this
 repository, never as an edit to the Betaflight tree.
 
+PORTED FROM QUADMATH
+
+The fly harness's radio code (tests/browser/fly-radio.mjs: radio presets,
+the axis map and the stick calibration wizard) is ported from quadmath's
+sim (sim-touch.js, repository ryanroths/quadmath) by its owner's decision of
+2026-10-24, and is GPL-3.0-or-later here like the rest of this repository.
+
 REFERENCE, NOT SOURCE
 
 WebFPVSimulator (https://github.com/Mathew-Harvey/WebFPVSimulator), GPLv3, is

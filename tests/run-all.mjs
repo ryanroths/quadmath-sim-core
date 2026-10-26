@@ -8,7 +8,7 @@
 // committed dist/sim-core.wasm.sha256, so run the full list on a committed tree.
 // config-count, diff-passthrough, blackbox-webfpv and gate-plant read WebFPV's
 // module and diffs from a WebFPV clone (tests/lib/webfpv.mjs). node-vs-chrome
-// needs Chrome. gate-plant fails on an X3 band miss the owner has not signed
+// and the fly harness test need Chrome. gate-plant fails on an X3 band miss the owner has not signed
 // off or put under investigation in tests/x3-signoff.json; plant-world fails
 // on an open check unless it is under investigation there.
 // A test that runs past its time limit is stopped and counts as failed. A
@@ -40,6 +40,8 @@ const TESTS = [
   ['M4 bench hover from a blackbox log (tools/hover-from-log.mjs, synthetic frames)', 'tests/node/hover-from-log.test.mjs'],
   ['M4 plant: P1-P8, F6, F9, X2/F3, X3 feel bands (log, bench, WebFPV)', 'tests/gate-plant.mjs'],
   ['D2 Node vs headless Chrome, console clean', 'tests/browser/node-vs-chrome.test.mjs'],
+  ['P2 fly harness: radio map, calibration port, input clock, Air65 arms on AUX1', 'tests/node/fly-radio.test.mjs'],
+  ['P2 fly harness in headless Chrome: a TX16S arms, climbs, disarms, calibrates, keeps the link guard; console clean', 'tests/browser/fly.test.mjs'],
 ];
 
 // Two clean builds take about 2.5 minutes; everything else well under one.
