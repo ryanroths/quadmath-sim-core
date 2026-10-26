@@ -5951,3 +5951,263 @@ Refuted:
 - **Commit message.** The first header commit message missed that the
   stamper also rewrote the modules' import stamps. It was amended before
   pushing.
+
+---
+
+## 2026-10-26 | Phase 2 step 2, A/B round | turtle on bf, PHYS_VER 3, sag and propwash report
+
+Owner, after the A/B flight: "bf flies clean, difference from the fixed js
+core is smaller than expected. Flipped on bf, can't roll out, R to
+respawn." Three items:
+1. "Turtle on bf: Betaflight flip-over-after-crash is AUX3 in my diff.
+   Wire the OSD turtle key to AUX3 high on bf, same as js. The PR #3
+   contact footprint must let it roll over on a flat floor. Test: inverted
+   at rest, AUX3 high, full roll, upright by 500 ms, then AUX3 low and it
+   rests upright."
+2. "PHYS_VER bump + Worker deploy plan in the PR description. Don't deploy
+   yet."
+3. "Report, don't change": sag at 3.6 V and propwash on a vertical drop on
+   the City map, active on bf or not, and the OSD vbat over a 2 min flight.
+
+"Stop when 1 lands. I fly turtle."
+
+quadmath commits on feat/sim-bf-core, pushed: cff0494 (turtle), 0ef838f
+(PHYS_VER 3). PR ryanroths/quadmath#273's description has the deploy plan.
+
+### 1. Turtle on the bf core
+
+**What was there.**
+- quadmath has no turtle key. The js core's turtle is a stick gesture
+  (`sim-feel.js` `wantsTurtle`): armed, flipped (body up Z below -0.35),
+  on the floor (clearance up to 4 cm), throttle at least 0.9, roll stick
+  at least 0.82. Each tick it adds roll rate (`sim.html` jsTick). The
+  "FLIPPED — R TO RESPAWN" toast fires on both cores after 1.5 s stuck.
+- On bf the page sent the aux layout sim-core adds to a diff with no ARM
+  line, with FLIP on AUX4, and never raised it.
+- Betaflight 4.5.1 (`fc/core.c`):
+  - crash flip starts only at an arm with the FLIP OVER AFTER CRASH
+    switch on (tryArm, :525-533);
+  - it ends only on a disarm (:474; :288 clears it while disarmed);
+  - with the switch on, the ANGLE arming check is skipped (:320);
+  - an arm switch raised while any arming flag is set latches ARM_SWITCH
+    until the switch drops (:415-422).
+
+**The footprint rolls over.** The sim-core probe used the owner's diff
+(FLIP on AUX3) on a flat floor. The Air65 rests inverted on the PR #3
+footprint (up Z -1.000, z 0.018 m). AUX3 high and an arm give armed and in
+crash flip. A full roll stick has it upright (up Z above 0.9) at 99 ms.
+With AUX3 low and the sticks centred it rests upright (up Z 1.000, omega 0)
+with crash flip still on, the motors off. No sim-core change was needed.
+
+**sim-core:** `tests/node/crash-flip.test.mjs` is the owner's test on
+the owner's diff, added to `run-all`:
+- inverted at rest;
+- AUX3 high, then arm with the throttle low: armed in crash flip;
+- full roll: upright at 100 ms (the bound is 500 ms);
+- AUX3 low, sticks centred: rests upright for 1.5 s (lowest up Z above
+  0.95 over the last second, at rest, motors off);
+- a disarm ends crash flip.
+
+**quadmath (cff0494):**
+- **Aux layout.** `sim-core-adapter.js` `BF_AUX_LINES` is the owner's
+  radio:
+  - ARM AUX1, ANGLE AUX2, BEEPER and FLIP OVER AFTER CRASH AUX3 (the
+    owner's four lines);
+  - plus HORIZON on AUX4, which that layout leaves free.
+
+  `withPageAux()` drops a diff's own aux lines and appends these, for the
+  card and for a CLI import. The page drives the aux channels from its own
+  controls, so an imported diff's PREARM or moved ARM would otherwise never
+  see its channel. `bfChannels` sends AUX3 = turtle and AUX4 = horizon.
+- **Turtle steps.** The adapter runs them (`startTurtle`, `stepTurtle`,
+  `turtlePhase`):
+  - `disarm`: AUX1 low with AUX3 high, if it was armed;
+  - `arm`: AUX1 high with the throttle held low, until Betaflight is armed
+    in crash flip. After 400 ms it gives up as `refused`, with the flags on
+    the OSD;
+  - `flip`: the sticks drive crash flip until up Z has stayed above 0.9
+    for 150 ms;
+  - `rearm`: AUX3 and AUX1 low (that disarm ends crash flip). AUX1 goes
+    high again once the pilot's throttle is low and Betaflight shows no
+    arming flag besides ARM_SWITCH.
+
+  A disarm (Space, the arm switch, the connect gate, R) ends a turtle at
+  any step.
+- **Page.** `sim.html` `bfTurtleTick()` runs every 4 ms before `input()`:
+  - the js gesture, while armed, starts a turtle;
+  - so does `tryArm` when the quad is flipped on the floor. That is
+    Betaflight's own procedure: flip switch on, arm. The card's
+    `small_angle` 25 would otherwise refuse with ANGLE.
+  - Toasts: TURTLE, UPRIGHT (or UPRIGHT — THROTTLE DOWN TO ARM), then
+    ARMED from the usual arm watch. The turtle's own disarms and arms are
+    not toasted.
+  - `coreArmed()` counts a turtle as armed intent, so the arm switch,
+    auto-arm and diff loads leave it alone.
+- **Debug handle.** `bfCore` joins `core`, `coreState` and `bfReport` on
+  `window._sim`.
+
+**Tests (quadmath `tools/test_sim_core.mjs`, 12 pass):**
+- **Owner's test** on the card plus page aux, through the adapter at the
+  page's 4 ms polls and 60 Hz frames:
+  - inverted at rest;
+  - AUX3 high, arm, full roll: upright within 500 ms;
+  - AUX3 low: rests upright.
+- **Page sequence**, from the gesture while armed (`flip`, `upright`,
+  `rearm`, armed again and upright after throttle down) and from an arm
+  while flipped. A disarm ends it.
+- **Modes:** angle, horizon and acro all reach Betaflight (fc.mode).
+- **Aux layout:** `bfChannels` and `withPageAux`.
+
+**Headless Chrome, `?core=bf&map=room`, keyboard, zero console errors:**
+- **Armed, teleported inverted onto the floor:**
+  - hold W to full throttle, then ArrowRight;
+  - TURTLE at +189 ms (the keyboard roll ramp reaching 0.82);
+  - upright 376 ms after ArrowRight;
+  - UPRIGHT — THROTTLE DOWN TO ARM;
+  - S: ARMED, up Z 1.0.
+- **Disarmed and flipped:**
+  - Space: TURTLE;
+  - ArrowLeft: upright at 278 ms, UPRIGHT, ARMED at +879 ms.
+- **Regression:** both cores still arm, climb, pitch forward, respawn and
+  re-arm (the step 2 script).
+- **Load line:** the bf core logs "24 lines applied; ARM AUX1, ANGLE AUX2,
+  FLIP AUX3, HORIZON AUX4".
+
+**How bf differs from js after a turtle.** The js core stays armed through
+the roll and flies off at the throttle the gesture left (full). The bf core
+disarms to leave crash flip, then waits for the throttle to come down
+before it arms again, as Betaflight requires. It rests upright until then.
+
+### 2. PHYSICS_VER and PHYS_VER 3 (0ef838f)
+
+- `sim-whoop.js` `PHYSICS_VER` and `sim-retention.js` `PHYS_VER` are 3.
+  The comments say why: both cores now step at a fixed 1 kHz on sim-time
+  input, where 2 ran on frame time.
+- `makePaceGhost` defaults to 3. sim-tracks.js has no imports, so the
+  number is written there.
+- `test_sim_whoop` now ties the page tag, the pace ghost and `PHYS_VER` to
+  `PHYSICS_VER`. Before, it pinned the literal 2.
+- `test_sim_retention`: a phys 2 ghost gets PHYS MISMATCH on the weekly
+  submit.
+- Hosted ghosts (`ghosts/*.json`, phys 2 or untagged) still replay, since
+  playback never checks phys. `test_quadphysics_modes`' `phys: 2` is an
+  old tag that must still replay, so it stays.
+- `DEPLOY.md` names the version.
+
+The deploy plan is in PR #273's description. In short:
+- **Order.** Merge, wait for Pages to serve the new `sim.html`, then
+  `wrangler deploy` from main at once.
+- **Daily is strict too.** Daily submits also refuse a phys tag that
+  differs, not just a missing one. So in the gap a new page's submits get
+  PHYS MISMATCH on both boards, and after it so do cached phys 2 pages.
+- **No D1 migration.** The current week's and day's phys 2 rows stay on
+  their boards until the week or day rolls. Clearing them is the owner's
+  call.
+
+Nothing was deployed.
+
+### 3. Report: sag, propwash, the OSD vbat (no change made)
+
+"The spot I flew" is not something the page records. Neither effect
+depends on where on the City map the quad is: the bf plant has no
+altitude, temperature or location term, and the world only adds
+contacts. The numbers below are from a flat floor.
+
+**Sag: active on bf, always.**
+- **Pack.** The Air65 plant is the physical model. Pack voltage is
+  OCV(SoC) minus current × 32 mΩ (the cell IR from the owner's punch log).
+  Motor speed follows duty × pack voltage, and thrust goes as speed
+  squared, so a sagging pack gives less thrust at the same command.
+- **Compensation off.** Betaflight reads that voltage. The flown config is
+  the tune card, which has no `vbat_sag_compensation`, so Betaflight's
+  default of 0 applies and nothing compensates. The owner's own diff has
+  `vbat_sag_compensation = 70`, but the page flies the card.
+- **The battery toggle.** The page's "battery sim" switch only hides the
+  OSD BATT line on bf; the plant sags regardless.
+
+**Propwash: not active on bf.** sim-core's plant has no propwash, draft
+or other disturbance (Decision 5, Phase 1). A vertical drop through its
+own wash is a clean plant under Betaflight's PID. What the drop does show
+is motor lag at low throttle and airmode. The js core's wash and drafts
+default to off too (`WHOOP_FEEL_VER` 3).
+
+**The OSD vbat over 2 minutes.** OSD BATT on bf is Betaflight's vbat
+(`fc.vbat`), printed to 0.01 V each frame.
+
+The run: the page's adapter, the card, a fresh 340 mAh 1S, angle mode, a
+1.5 m hold with a slow forward cruise, and from 20 s a 1 s full-throttle
+punch then a 1.2 s zero-throttle drop every 20 s. Hover draws about 3.8 A;
+a punch draws 17.7-19.5 A.
+
+| Window | OSD min / mean / max (V) | Mean thrust in the 1 s punch (N) |
+|---|---|---|
+| 0-10 s | 4.02 / 4.05 / 4.17 | – |
+| 20-30 s | 3.48 / 3.91 / 4.04 | 1.003 |
+| 40-50 s | 3.42 / 3.84 / 3.97 | 0.978 |
+| 60-70 s | 3.38 / 3.78 / 3.91 | 0.959 |
+| 80-90 s | 3.32 / 3.72 / 3.85 | 0.940 |
+| 100-110 s | 3.30 / 3.69 / 3.81 | 0.929 |
+| 110-120 s | 3.71 / 3.71 / 3.71 | – |
+
+- **In hover** the OSD falls from 4.02 to 3.71 V over the 2 minutes
+  (140 mAh used, SoC 0.59). It never reaches 3.6 V in hover within 2
+  minutes.
+- **In punches** it dips to 3.48 V at the first punch (20.6 s), below the
+  page's 1S BATT warning of 3.5 V. It reaches 3.30 V, the LAND NOW
+  threshold, at 101 s, in the drop just after a punch, through
+  Betaflight's vbat filter lag.
+- **At 3.6 V.** Flown on, hover reads 3.60 V at 184 s (SoC about 0.35).
+  There, hover sag is about 0.12 V (3.6 A × 32 mΩ). A punch dips the OSD
+  to about 3.2 V, and its mean thrust is 0.898 N, 10% under the
+  fresh-pack punch.
+
+### Findings beyond the three items
+
+- **No empty pack.** The plant floors SoC at 0 and keeps supplying
+  OCV(0) = 3.30 V. A 6 minute run drew 414 mAh from the 340 mAh pack and
+  still held 1.5 m, with the OSD at about 3.17 V in hover.
+- **small_angle.** The owner's diff has `small_angle = 180`, so it arms at
+  any attitude; the card has 25. The bf core flies the card, so a plain
+  arm while flipped gets ANGLE, and the page turns that arm into a turtle.
+- **No turtle switch from the radio.** The page drives the aux channels,
+  so the TX16S's own AUX3 switch never reaches Betaflight. The turtle comes
+  from the stick gesture or an arm while flipped.
+
+### Open, for the owner
+
+- **No turtle key.** quadmath has no OSD turtle key, so "the OSD turtle
+  key" was wired as the js core's turtle gesture plus an arm while
+  flipped. If a dedicated key or button is wanted, it can drive the same
+  `startTurtle`.
+- **Toast wording.** The "FLIPPED — R TO RESPAWN" toast still says R on
+  both cores, though both can now turtle.
+- **Shared boards.** bf and js runs still share boards, now at phys 3.
+- **CI and deploy.** The PR still needs the human-override label. The
+  Worker is not deployed.
+- **sim-core PR.** sim-core `phase2/quadmath-wiring` (PROGRESS and the
+  crash-flip test) is pushed, with no PR.
+
+### What went wrong
+
+- **First upright disarmed too early.** The first turtle disarmed at the
+  first tick above up Z 0.9. With the roll still going, it rolled on over
+  and settled at up Z -0.79 in both entry paths. It now waits for 150 ms
+  upright, and while crash flip holds the roll stick the quad stays down.
+- **Re-arm latched ARM_SWITCH.** The first re-arm went high 32 ms after the
+  disarm. Betaflight's attitude estimate still read the quad as tilted
+  (ANGLE), so AUX1 high latched ARM_SWITCH and it never armed. The re-arm
+  now waits for no flags.
+- **Chrome script.** My first Chrome script held W while pressing S. The
+  two cancel, so the throttle never came down, and the arm-while-flipped
+  leg that followed failed on that. The script was fixed and both legs
+  re-run. The js leg's flip hook did not take, so js turtle was not
+  checked in Chrome; its code is unchanged.
+- **Pronoun.** The turtle commit message and an adapter comment called
+  the owner "his". Both were fixed and the commit amended before pushing.
+- **Commit message wording.** 0ef838f's message says the restamped
+  modules "import the three changed files". Several import them only
+  through another module (for example sim-feel.js through sim-art.js). It
+  is pushed and left as is.
+- **Test count.** PR #273's description said "All 24 `tools/test_*.mjs`
+  files plus `sim-tracks-test.mjs`". There are 23 `tools/test_*.mjs`
+  files; 24 counted `sim-tracks-test.mjs`. The description is corrected.
