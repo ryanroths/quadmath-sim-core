@@ -5578,3 +5578,127 @@ skipped (the slot wedge, issue #5). B1 and B2 stayed byte-exact.
   work in a 6 s run and failed over 24 s, so it was dropped.
 - Piping a screenshot script into `head` killed it mid-run. No Chrome was
   left behind.
+
+---
+
+## 2026-10-26 | Phase 2 step 1 | the poll-rate check fixed in the test; PR #6; quadmath's pitch sign
+
+Owner:
+- "Poll floor stays 120. Fix the test, not the number: headless asserts the
+  poll runs and every sample is sim-time stamped; the 240/s rate assertion
+  runs only when the page is visible (document.visibilityState) and is
+  marked skip with reason otherwise. Log the Windows coarse-timer finding."
+- "Open PR #6 for phase2/fly-harness."
+- "Note in PROGRESS: quadmath's 65 mm radio preset has pitch sign -1 and
+  sim.html compensates downstream; Phase 2 wiring must fix both or it
+  double-flips."
+
+### The Windows coarse-timer finding
+
+On this machine (Windows 11 Pro, build 26200), the 4 ms `setInterval` in
+fly.html behaves as follows:
+- **In headless Chrome:** 249-250 a second for the first 2 s, then 94-126 a
+  second, which is a timer of about 8 ms.
+- **In a visible Chrome window:** 250 a second throughout. The headed test
+  run below read 250 at the end.
+
+What ruled out the page:
+- It is the same with the scenery off, across a second page load, and with
+  Chrome's occlusion backgrounding off (`--disable-backgrounding-occluded-windows`).
+- The page's frames cost 0.5 ms each.
+- The system timer is held at 1 ms (`NtQueryTimerResolution`: current 1 ms).
+
+Windows 11 does not grant a fine timer to a process with no visible window,
+and headless Chrome has none. So headless measures the operating system,
+not the page. Earlier runs read 250 throughout. A full `npm test` the same
+day also read 250, so it depends on what else is running.
+
+Headless Chrome reports `document.visibilityState` as `"visible"` (and
+`hasFocus()` false) while its timer is coarse. `visibilityState` on its own
+therefore cannot tell a page no one sees from one someone does.
+
+For the pilot: a covered or minimised window may get the coarse timer too.
+Its samples are still stamped at their own sim time, but fewer RX frames
+carry a new one.
+
+### The test (tests/browser/fly.test.mjs)
+
+The number is unchanged: over 120 a second.
+
+**Headless, always:**
+- **The poll runs.** The poll count grows between every two looks at the
+  page: eleven looks on the first load, three on the second.
+- **Every sample is sim-time stamped.** fly.mjs counts each sample's stamp
+  against the sim clock at the moment it goes in:
+  - ahead of it: a poll between frames, stamped at its own wall time's sim time;
+  - at it;
+  - behind it;
+  - equal to the stamp before.
+
+  The test asserts every sample counted, none repeated, and more than 99%
+  ahead. Only a poll landing exactly on a frame's sim time can be at it,
+  while a frame-locked stamp puts every sample there. None can be behind,
+  because `InputClock.stamp()` clamps to the sim clock, so that count is
+  bookkeeping, not evidence.
+- Measured headless: 1576 of 1576 samples ahead on the first load and 468
+  of 468 on the second, none at, behind or repeated, at 122 polls a second.
+
+**The rate (over 120 a second)** is asserted only when the page is visible:
+`visibilityState` is `"visible"` and the page is not HeadlessChrome. The
+second part is there because headless reports `"visible"`. Otherwise the
+test prints `SKIP poll rate > 120 a second: the page is not visible (...)`
+with the reason and the rate it saw, and ends `PASS (poll rate skipped:
+page not visible)`.
+
+So every headless run skips the rate check, CI (ubuntu, headless) included.
+Whether Linux headless has the coarse timer was not measured; the owner can
+choose to assert the rate there.
+
+What headless cannot catch: a poll held to the frame rate. A review copy that
+polled once per frame passed headless at 75 a second. It is caught by the
+rate check in a visible window.
+
+`FLY_HEADED=1 node tests/browser/fly.test.mjs` runs the test in a visible
+window, through `chrome.mjs` `launch({ headless: false })`. Run that way:
+- all assertions pass;
+- the rate is asserted at 250 a second;
+- 2615 of 2615 and 966 of 966 samples were stamped ahead.
+
+The owner's words say "the 240/s rate assertion". The number asserted is
+120, as the same message says ("Poll floor stays 120").
+
+This supersedes "The headless poll rate" in the entry above:
+- the owner declined the proposal to lower the floor to 90;
+- the assertion no longer passes or fails locally by chance. Headless it is
+  skipped with its reason, and visible it is asserted.
+
+The fly test also launches Chrome with `--enable-unsafe-swiftshader`.
+PR #6 is the fly tests' first CI run, on an ubuntu runner with no GPU, and
+recent Chrome falls back to software WebGL only when asked. The page serves
+local files only. Whether CI needs the flag is unverified until that run.
+
+Quick `npm test` (builds skipped) on the final tree: all 16 passed, 1
+skipped. The fly test printed the SKIP line at 120 a second. D2, which also
+uses `chrome.mjs` `launch()`, passed.
+
+### quadmath's pitch sign (for the Phase 2 wiring)
+
+quadmath's radio preset for EdgeTX radios, `AETR_MAP` (sim-touch.js:472-477,
+used for the 65 mm class and every other class), has pitch sign -1. sim.html
+compensates downstream:
+- `physics()` turns `stick.p` into a three.js body rate,
+  `wx = degToRad(axisRate('pitch', stick.p))`;
+- it then sends `SGN_PITCH * wx` with `SGN_PITCH = -1` (sim.html:3381-3393).
+
+The two signs cancel. sim-core's fly harness now reads the radio with pitch
+sign +1 and sends the channel 1:1, so Betaflight sees stick forward as
+above 1500 (2026-10-26 entry above).
+
+**Phase 2 wiring, when quadmath's sim.html drives sim-core, must fix both
+quadmath signs together** (owner): the preset's -1 and sim.html's
+downstream compensation. Fixing one without the other double-flips pitch.
+
+### PR #6
+
+PR #6 opened for `phase2/fly-harness` (v0.1.0's release.sh, the fly
+harness, the pitch fix, the scenery, this test).
