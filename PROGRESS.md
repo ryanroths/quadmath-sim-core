@@ -5436,3 +5436,145 @@ is the check. Things to know when flying:
   redundant. The tag is pushed and was left as is.
 - The first review round's workflow hit the weekly usage limit after one
   lens. It was resumed once the limit reset.
+
+---
+
+## 2026-10-26 | Phase 2 step 1 | pitch inverted on the real TX16S; reference scenery
+
+Owner, after the first flight: "Pitch is inverted on the real TX16S. Trace
+stick-forward through every hop: gamepad axis raw value, after calibration,
+setRc, Betaflight rcData[1], setpoint[1], plant pitch rate sign, render.
+Report the sign at each hop. Fix at the ONE hop that's wrong, not at the
+render. Add a test: stick forward -> rcData[1] > 1500 -> nose-down pitch
+rate -> quad moves +x in world. Also: the fly page has no reference to
+judge motion. Add 8 one-metre cubes at random positions within 10 m, one 2 m
+square gate at 5 m ahead, a visible horizon line. Nothing else. Keep the
+grid, status line, calibrate, R, V."
+
+### The trace
+
+Stick forward at 0.3 on the TX16S's preset map, hovering on the Air65,
+using the real modules and the real dist. The input() channel is what the
+owner called setRc.
+
+| Hop | As shipped (map pitch sign -1) | Fixed (map pitch sign +1) |
+|---|---|---|
+| Gamepad axis 1, raw | +0.3 | +0.3 |
+| After the map (`applyAxisMap` p) | **-0.30** | +0.30 |
+| `input()` channel 2 | 1350 (-) | 1650 (+) |
+| Betaflight `rcData[1]` | 1350 (-) | 1650 (+) |
+| `setpoint[1]` | -34.8 deg/s (-) | +34.8 deg/s (+) |
+| Plant body pitch rate `omega[1]` (+ is nose down) | -0.625 rad/s (nose up) | +0.625 rad/s (nose down) |
+| Render: FPV camera forward z | 0.259 to 0.612 (nose up) | 0.259 to -0.134 (nose down) |
+| Render: world x | 0.00 to -0.28 m (backwards) | 0.00 to +0.28 m |
+
+Every hop after the map carries its input's sign faithfully. The sign flips
+at one hop: the radio preset's pitch sign.
+
+On an EdgeTX joystick each axis is the radio's channel output, the same
+channel the real quad flies on, so stick forward reads +1, like roll right
+and yaw right. quadmath's `AETR_MAP` had pitch sign -1 (its tests model
+stick forward as -1 on axis 1); the port carried it over, and
+`fly-radio.mjs`'s own contract (p positive = stick forward) made it show.
+The calibration wizard was never wrong: it takes the sign from the stick.
+So the owner flew the preset, and a TX16S calibrated in the page would have
+flown right.
+
+### The fix
+
+`fly-radio.mjs`: pitch sign +1 in `AETR_MAP` (TX16S, Zorro, Boxer, Pocket,
+FrSky, Jumper, LiteRadio AETR, FlySky) and in the TAER map. Both are the
+same hop, radio channel outputs read through a preset. The console-pad map
+keeps -1, because a standard gamepad's stick up is -1.
+
+The tests' TX16S fixtures modelled stick forward as -1, as quadmath's do.
+They now read +1, matching the real radio.
+
+### The test
+
+`tests/node/fly-radio.test.mjs`, "Pitch, every hop", through the real
+fly-input path and dist:
+- arm;
+- climb, then hold near hover;
+- stick forward +0.3 on axis 1.
+
+It asserts `rcData[1]` > 1500 (1650), `setpoint[1]` > 0 (+34.8 deg/s), body
+pitch rate > 0 (nose down, +0.630 rad/s), and world x increasing (0.00 to
+0.35 m in 0.8 s).
+
+With the old sign the file fails first at the preset channel check
+(channel 2 for stick forward). `tests/browser/fly.test.mjs` also checks,
+through the page, that stick forward moves the quad +x.
+
+### The scenery
+
+All in `fly.mjs`. The objects are world boxes, solid to the quad as on a
+real field. That makes them physical and not just drawn, which is a choice
+beyond the request's wording; say if they should be drawn only.
+
+- **Eight 1 m cubes,** each standing on the floor, wholly within 10 m of the
+  start. Places come from a fixed seed (mulberry32), so the scene is the
+  same on every load. They keep at least 2.5 m from the start, out of the
+  line to the gate and on through it (|y| < 2.5 m for x > -1 m), 2 m from
+  the line-of-sight eye, and 2 m from each other.
+- **The gate,** 5 m ahead (+x): a 2 m by 2 m opening between two posts and a
+  top bar, each 0.1 m thick.
+- **The horizon line:** in the ground and sky pass, rays level with the
+  ground draw a dark line about two pixels wide.
+
+Grid, status line, Calibrate, R and V are unchanged.
+
+Screenshots from headless Chrome confirm all three:
+- at rest: the gate and cubes with the horizon line;
+- at 1.8 m: the gate centred ahead, cubes left and right;
+- the line-of-sight view: gate, cubes and the quad's box.
+
+### The headless poll rate
+
+`fly.test.mjs` asserts the 4 ms poll ran above 120 a second. That check is
+not frame-locked; it would catch a timer running at the frame rate of 60.
+
+On this machine today it read 112 to 126 a second after the first 2 s. It
+read 250 in the first 2 s, and 249 in the runs two days ago. The same
+happens:
+- with the scenery switched off;
+- with Chrome's occlusion backgrounding switched off;
+- across a second page load.
+
+Each page's frames cost 0.5 ms, so the page is not busy. The system holds a
+1 ms timer, but Windows 11 (build 26200) does not grant fine timer
+resolution to a process with no visible window, and headless Chrome has
+none. What the check measures here is the operating system, not the page.
+
+A real Chrome window in front of the pilot is visible, so it gets the
+resolution. If the window is covered or minimised, polls slow down; their
+stamps stay correct, but fewer RX frames carry a new sample.
+
+The threshold stays at 120 (standing rule). I argue it should be 90, which
+is 1.5 times the frame rate. That still catches what the check is for, and
+clears the operating system's granularity for windowless processes. The
+owner decides.
+
+Until then this one assertion passes or fails locally on Windows depending
+on what else holds the timer. In the full `npm test` below it read 250 and
+passed; in standalone runs the same morning it read 112-126 and failed. CI
+runs on Linux.
+
+### Tests
+
+Full `npm test` with QUADMATH_DIR, builds included: all 16 passed, 1
+skipped (the slot wedge, issue #5). B1 and B2 stayed byte-exact.
+
+### What went wrong
+
+- **The inversion was visible in my own screenshots and I misread it.**
+  The scripted pitch of +0.35 on axis 1 sent the quad backwards, and I read
+  that as stick back, by quadmath's convention, instead of checking what a
+  real radio sends.
+- **The tests modelled the same wrong radio,** so they could not catch it.
+- The first scene had a cube 3 m behind the gate in the line through it.
+  The keep-clear corridor now runs the full 10 m.
+- I tried Chrome's occlusion flag as a fix for the poll rate. It appeared to
+  work in a 6 s run and failed over 24 s, so it was dropped.
+- Piping a screenshot script into `head` killed it mid-run. No Chrome was
+  left behind.
