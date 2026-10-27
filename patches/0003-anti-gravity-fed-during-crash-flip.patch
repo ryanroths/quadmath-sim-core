@@ -1,0 +1,15 @@
+--- a/src/main/flight/mixer.c
++++ b/src/main/flight/mixer.c
+@@ -605,6 +605,12 @@
+     calculateThrottleAndCurrentMotorEndpoints(currentTimeUs);
+ 
+     if (isFlipOverAfterCrashActive()) {
++        // quadmath-sim-core: keep anti-gravity's throttle derivative fed during
++        // crash flip. pid.c scales pidRuntime.antiGravityThrottleD in place on
++        // every PID loop (*= antiGravityGain); with this update skipped, a
++        // non-zero value left from before crash flip compounds to inf and the
++        // P and I terms go NaN.
++        pidUpdateAntiGravityThrottleFilter(throttle);
+         applyFlipOverAfterCrashModeToMotors();
+         return;
+     }

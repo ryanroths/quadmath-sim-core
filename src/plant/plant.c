@@ -138,9 +138,24 @@ static void qIntegrate(double q[4], const double om[3], double dt)
 }
 
 // Open-circuit voltage per cell, linear between the seven SoC points (W:160-176).
+// Below SoC 0 (a physical pack past its capacity; the parity battery stops at
+// 0) it follows the over-discharge points down to SC_SOC_FLOOR.
 static double ocvCell(double soc)
 {
     static const double SOC[7] = { 0.00, 0.05, 0.15, 0.40, 0.70, 0.90, 1.00 };
+    static const double OVER[4] = { 0.00, -0.05, -0.10, -0.15 };
+    if (soc < 0) {
+        const double u = fmax(soc, SC_SOC_FLOOR);
+        double hi = blk[PB_OCV];
+        for (int i = 0; i < 3; i++) {
+            const double lo = blk[PB_OCV_OVER + i];
+            if (u >= OVER[i + 1]) {
+                return hi + (lo - hi) * ((OVER[i] - u) / (OVER[i] - OVER[i + 1]));
+            }
+            hi = lo;
+        }
+        return blk[PB_OCV_OVER + 2];
+    }
     const double u = clampd(soc, 0, 1);
     for (int i = 0; i < 6; i++) {
         if (u >= SOC[i] && u <= SOC[i + 1]) {
@@ -190,11 +205,13 @@ static void derive(void)
     delayTicks = (int)lround(blk[PB_MOTOR_DELAY] * SC_LOOP_HZ);
 }
 
-static void publishSensors(void)
+// rate: what the gyro reads, rad/s, body frame. A tick passes the rate the
+// attitude turned with (sc_plant_step); everything else, the body rate.
+static void publishSensors(const double rate[3])
 {
     const double g = model == SC_MODEL_REST ? 9.81 : blk[PB_GRAVITY];
     for (int axis = 0; axis < 3; axis++) {
-        sc_sensors.gyro_dps[axis] = sc_plant.omega[axis] * (360.0 / TWO_PI);
+        sc_sensors.gyro_dps[axis] = rate[axis] * (360.0 / TWO_PI);
         sc_sensors.acc_g[axis] = sc_plant.specificForce[axis] / g;
     }
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
@@ -270,7 +287,7 @@ void sc_plant_init(void)
     posePending = false;
     sc_world_reset();
     restState();
-    publishSensors();
+    publishSensors(sc_plant.omega);
 }
 
 int sc_plant_configure(const double *block, int count)
@@ -300,7 +317,10 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_CURRENT_EXP] > 0 && block[PB_I_QUIESCENT] >= 0
                                         && block[PB_MOTOR_DELAY] >= 0
                                         && block[PB_MOTOR_DELAY] * SC_LOOP_HZ < SC_DELAY_TICKS_MAX + 0.5
-                                        && block[PB_ELEC_TAU] >= 0)) {
+                                        && block[PB_ELEC_TAU] >= 0
+                                        && block[PB_OCV_OVER] >= 0 && block[PB_OCV_OVER] <= block[PB_OCV]
+                                        && block[PB_OCV_OVER + 1] >= 0 && block[PB_OCV_OVER + 1] <= block[PB_OCV_OVER]
+                                        && block[PB_OCV_OVER + 2] >= 0 && block[PB_OCV_OVER + 2] <= block[PB_OCV_OVER + 1])) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -324,7 +344,7 @@ int sc_plant_configure(const double *block, int count)
         return SC_ERR_BAD_ARG;
     }
     restState();
-    publishSensors();
+    publishSensors(sc_plant.omega);
     return SC_OK;
 }
 
@@ -356,7 +376,7 @@ void sc_plant_battery_carry(double soc, double vbat_filtered)
     }
     battVoltage = sc_plant.vbatLoaded;
     sc_plant.vbatFiltered = sc_plant.vbatLoaded;
-    publishSensors();
+    publishSensors(sc_plant.omega);
 }
 
 void sc_plant_floor_moved(void)
@@ -474,7 +494,7 @@ static void stepPhysical(const double cmd[SC_MOTOR_COUNT], double dt)
     sc_plant.vbatLoaded = volts;
     sc_plant.vbatFiltered = volts;
     sc_plant.mah += amps * dt / 3.6;
-    sc_plant.soc = fmax(0, sc_plant.soc - amps * dt / (blk[PB_CAPACITY_MAH] * 3.6));
+    sc_plant.soc = fmax(SC_SOC_FLOOR, sc_plant.soc - amps * dt / (blk[PB_CAPACITY_MAH] * 3.6));
 
     const double kv = derived[PD_KV_RAD], kt = derived[PD_KT_MOTOR], r = derived[PD_R_WINDING];
     const double j = derived[PD_J_ROTOR], ktProp = derived[PD_KT_PROP], kqProp = derived[PD_KQ_PROP];
@@ -1226,6 +1246,13 @@ void sc_plant_step(double dt)
         }
     }
     qIntegrate(q, om, dt);
+    // The gyro reads the rate the attitude turned with this tick. The contact
+    // solve below then changes the body rate for the next tick without turning
+    // the attitude; reporting that rate instead gave Betaflight rotation that
+    // never happened (up to 2800 deg/s apart from the attitude's on a floor
+    // strike), and its estimate walked off the attitude on the floor. In the
+    // air, with no contact, the two are the same rate.
+    const double omAttitude[3] = { om[0], om[1], om[2] };
 
     // Forces, world frame (QP:753-768).
     const double vBefore[3] = { v[0], v[1], v[2] };
@@ -1276,5 +1303,5 @@ void sc_plant_step(double dt)
         || fabs(om[1]) > DIVERGED_RAD_S || fabs(om[2]) > DIVERGED_RAD_S) {
         sc_set_fault(SC_FAULT_PLANT_DIVERGED);      // the tick stops here
     }
-    publishSensors();
+    publishSensors(omAttitude);
 }

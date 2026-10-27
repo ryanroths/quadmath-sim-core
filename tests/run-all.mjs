@@ -41,6 +41,8 @@ const TESTS = [
   ['M4 plant: P1-P8, F6, F9, X2/F3, X3 feel bands (log, bench, WebFPV)', 'tests/gate-plant.mjs'],
   ['D2 Node vs headless Chrome, console clean', 'tests/browser/node-vs-chrome.test.mjs'],
   ['P2 fly harness: radio map, calibration port, input clock, Air65 arms on AUX1', 'tests/node/fly-radio.test.mjs'],
+  ['P2 turtle: crash flip on AUX3 (owner diff), inverted to upright within 500 ms of full roll, rests upright', 'tests/node/crash-flip.test.mjs'],
+  ['P2 pack to empty (owner diff): OCV at capacity is Betaflight\'s min cell, LAND NOW before 340 mAh, no hover by 380, SoC bounded', 'tests/node/pack-empty.test.mjs'],
   ['P2 fly harness in headless Chrome: a TX16S arms, climbs, disarms, calibrates, keeps the link guard; console clean', 'tests/browser/fly.test.mjs'],
 ];
 

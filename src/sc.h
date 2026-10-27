@@ -108,7 +108,7 @@ typedef struct {
     double vbatFiltered;            // V, what a reinit carries (not in the state block)
     double amps;
     double mah;
-    double soc;                     // 0..1
+    double soc;                     // 1 full, 0 at the capacity, down to SC_SOC_FLOOR (physical)
     double groundClearance;         // m
     bool airborne;
     uint32_t contactFlags;

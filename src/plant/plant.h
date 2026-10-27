@@ -91,8 +91,17 @@ enum {
     // 0 is off for either, and leaves the plant as it was bit for bit.
     PB_MOTOR_DELAY = 46,        // s, at most SC_DELAY_TICKS_MAX ticks
     PB_ELEC_TAU = 47,           // s
-    PB_LEN = 48,
+    // Over-discharge (physical model): the pack past its capacity. SoC goes
+    // below 0 (each 0.01 is 1% of PB_CAPACITY_MAH drawn beyond it) down to
+    // SC_SOC_FLOOR, and the OCV falls from PB_OCV's SoC 0 value through
+    // these three, linear between them
+    PB_OCV_OVER = 48,           // 3 values: V per cell at SoC -0.05, -0.10, -0.15
+    PB_LEN = 51,
 };
+
+// The lowest state of charge a physical pack reaches (the last
+// PB_OCV_OVER point), and the lowest a battery carry accepts.
+#define SC_SOC_FLOOR (-0.15)
 
 // Derived constants, computed from the block when it is set (readout only).
 enum {

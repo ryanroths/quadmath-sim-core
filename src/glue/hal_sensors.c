@@ -43,17 +43,32 @@ static int16_t clampInt16(double v)
     return (int16_t)lrint(v);
 }
 
+// The gyro's registers, as an ICM-42688-P at +-2000 deg/s fills them: int16
+// counts at Betaflight's 32768 / 2000 per deg/s (GYRO_SCALE_2000DPS) that
+// saturate at full scale, 32767 and -32768, never wrapping (Betaflight takes
+// both sensors as overflow-protected, sensors/gyro_init.c). Betaflight then
+// reads +1999.94 / -2000.00 deg/s at most.
+static int16_t gyroCounts(double dps)
+{
+    const double v = dps * (32768.0 / 2000.0);
+    if (!(v > -32768.0)) {
+        return -32768;
+    }
+    if (v > 32767.0) {
+        return 32767;
+    }
+    return (int16_t)lrint(v);
+}
+
 // Called by the tick at the start of every tick: the latest plant state
 // arrives in the sensor registers, as an interrupt-driven read would.
 void sc_sensors_to_betaflight(void)
 {
     if (virtualGyroDev) {
-        // GYRO_SCALE_2000DPS is 2000 / 32768 deg/s per count.
-        const double countsPerDps = 32768.0 / 2000.0;
         virtualGyroSet(virtualGyroDev,
-                       clampInt16(sc_sensors.gyro_dps[0] * countsPerDps),
-                       clampInt16(sc_sensors.gyro_dps[1] * countsPerDps),
-                       clampInt16(sc_sensors.gyro_dps[2] * countsPerDps));
+                       gyroCounts(sc_sensors.gyro_dps[0]),
+                       gyroCounts(sc_sensors.gyro_dps[1]),
+                       gyroCounts(sc_sensors.gyro_dps[2]));
     }
     if (virtualAccDev) {
         const double counts1G = acc.dev.acc_1G;
