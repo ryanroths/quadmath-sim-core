@@ -48,6 +48,7 @@ import * as feel from './lib/feel.mjs';
 import { loadWebfpvModule } from './lib/webfpv.mjs';
 import { existsSync } from 'node:fs';
 import { logPath } from '../tools/logs.mjs';
+import { analyseTurtle } from '../tools/hover-from-log.mjs';
 import { QuadPhysics, aeroCoeffs } from './reference/quadmath-de9b15d/quadphysics.js';
 import { stepBattery, DEFAULT_WHOOP } from './reference/quadmath-de9b15d/sim-whoop.js';
 import { batteryFromBuild, BUILD_PRESETS } from './reference/quadmath-de9b15d/sim-build.js';
@@ -701,6 +702,50 @@ console.log('\n== X3 feel bands: (log) rows: sim-core on the Air65 config replay
   }
   console.log(`   hover stick, Air65 bench row: on the Air65 config; channel ${f(b.quantum, 3)}, rcCommand ${f(b.rc, 3)}, vz residual ${f(b.vzResidual, 3)} m/s; measured rcCommand ${f(bench.measured.hover_stick, 3)} (${bench.source})`);
   console.log(`   not banded: yaw overshoot sim-core ${f(o.yaw.overshootPct, 2)} % vs WebFPV ${f(r.yaw.overshootPct, 2)} %; yaw bounce ${f(o.yaw.bouncePct, 2)} % vs ${f(r.yaw.bouncePct, 2)} %; hover residual vz ${f(o.hover.vzResidual, 3)} vs ${f(r.hover.vzResidual, 3)} m/s; hover stick on the class diff alone: sim-core channel ${f(o.hover.quantum, 3)} (rcCommand ${f(o.hover.rc, 3)}), WebFPV whoop65 channel ${f(r.hover.quantum, 3)} (the band's reference until 2026-10-23)`);
+}
+
+// ---------------------------------------------------------------------------
+// X4 the crash flip against the owner's turtle log (tests/reference/
+// air65-turtle.json, from tools/hover-from-log.mjs --turtle): reverse thrust
+// (airframe reverseScale) is unmeasured, and the turtle is what measures it.
+// The sim flips on the owner's diff (inverted at rest, AUX3 and an arm, full
+// roll held 1 s) and its flip is read by the tool's own rule from Betaflight's
+// filtered gyro, as the log's is. Reported; banded once the reference has a
+// band (the owner's).
+const turtleRef = JSON.parse(await readFile(new URL('tests/reference/air65-turtle.json', root), 'utf8'));
+console.log('\n== X4 turtle: the crash flip from the gyro, against the owner\'s turtle log');
+{
+  const core = await SimCore.load(module, { trace: false });
+  core.configure({ diff, plant: air65, world: { floorZ: 0 } });
+  const chans = [1500, 1500, 1500, 1000, 1000, 1000, 1000, 1000];
+  const rows = [];
+  const run = (ms, log) => {
+    for (let k = 0; k < ms; k++) {
+      if (k % 4 === 0) core.input(chans, core.simTimeUs);
+      core.step(1);
+      if (log) rows.push({ t: core.simTimeUs / 1e6, gyro: Array.from(core.fc.gyroFiltered) });
+    }
+  };
+  core.teleport({ pos: [0, 0, 0.05], quat: [0, 1, 0, 0] });
+  run(1500);
+  chans[6] = 2000;   // AUX3: FLIP OVER AFTER CRASH
+  run(100);
+  chans[4] = 2000;   // AUX1: arm, into crash flip
+  run(300);
+  chans[0] = 2000;   // full roll
+  run(1000, true);
+  const sim = analyseTurtle(rows).measured;
+  const log = turtleRef.measured;
+  const line = (m) => (m ? `180 deg at ${f(m.time_to_180_ms, 1)} ms, peak ${f(m.peak_rate_dps, 0)} deg/s${m.clipped ? ' (clipped)' : ''}, mean ${f(m.mean_rate_dps, 0)} deg/s` : 'none');
+  console.log(`   sim-core (reverseScale ${air65.values.reverseScale.value}, unmeasured): ${line(sim)}`);
+  if (!log) console.log(`   owner's log: ${turtleRef.status}; not compared`);
+  else {
+    console.log(`   owner's log (${turtleRef.source}, ${log.flips} flips): ${line(log)}`);
+    if (turtleRef.band && turtleRef.band.time_to_180_rel != null) {
+      const ok = Math.abs(sim.time_to_180_ms / log.time_to_180_ms - 1) <= turtleRef.band.time_to_180_rel;
+      console.log(`   time to 180 deg within ${turtleRef.band.time_to_180_rel * 100} % -> ${check(ok, 'X4 turtle time to 180 deg')}`);
+    } else console.log('   no band yet: reported only');
+  }
 }
 
 console.log(`\n${failures.length ? `gate-plant: FAIL (${failures.length}): ${failures.join('; ')}` : 'gate-plant: PASS'}`);
