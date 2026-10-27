@@ -6555,3 +6555,222 @@ Four lenses, each finding checked by a skeptic: 12 confirmed, 5 refuted.
   looked worse than any flight could make it.
 - **Shell quoting** broke several sed and heredoc edits; Python patch files
   replaced them.
+
+---
+
+## 2026-10-26 | Phase 2 step 2, round 4 | the card, the gyro, NaN, the turtle, v0.3.0
+
+Owner:
+1. "Mid-pack punch at 88% is correct, it matches my punch log. IR stays 32.
+   IR-vs-SoC is a measurement item: I will fly a punch at end of pack
+   later."
+2. "Update the 65-betafpv-ryfly-1219s card from
+   configs/air65-ryfly-2026-10-23.txt so the OSD shows the tune that flies.
+   Add a test: card == diff on every field the card carries."
+3. "Gyro clamp: the bridge must saturate the simulated gyro at the
+   ICM42688's +-2000 deg/s before Betaflight reads it, like real hardware.
+   No NaN anywhere in PID output, add that as a test. Report why the sim's
+   crash flip hits 2950 deg/s: crash_flip_motor_percent from the diff, or
+   footprint not resisting."
+4. "Keyboard turtle tip-over: floor contact feeding rate spikes is the
+   same root as 3. Fix together, or mark the todo with the issue and move
+   on."
+5. "Tag sim-core v0.3.0, release, re-vendor, open the sim-core PR."
+
+"Stop when PR #273 is ready to merge."
+
+Commits and release:
+- **sim-core:** 8577adb (gyro, NaN), tagged **v0.3.0** and released.
+- **quadmath:** f4ac87e (the card, vendored v0.3.0) on `feat/sim-bf-core`.
+
+### 1. The pack
+
+Recorded: IR stays 32 mΩ, and the mid-pack punch at 88% is right. IR
+against SoC waits for the owner's end-of-pack punch log. Nothing changed.
+
+### 2. The 1219s card is the flown diff (quadmath f4ac87e)
+
+- **Card values.** `65-betafpv-ryfly-1219s` now holds profile 0 ('1219S')
+  and rateprofile 0 of the diff:
+  - P/I/D 61/66/44, 71/76/60, 61/68/0;
+  - ACTUAL rates 2/74/56, 2/74/56, 2/70/56.
+- **Notes.** In the repo parser's wording: D-min R36/P49, TPA 60, FF
+  R80/P80/Y80, thrust linear 20, vbat sag comp 70, dyn idle 55, RPM filter
+  ON with bidir DSHOT300, gyro LPF1 off, dyn notch 1×Q500 120–500 Hz,
+  board AIR65 RYFLY, and the diff's date. "Crash recovery ON" and "FF off"
+  are gone; neither was true of the diff.
+- **The test** (`tools/test_sim_core.mjs`). Betaflight reads the vendored
+  diff back (profile 0, rateprofile 0), so an unset value such as `d_yaw`
+  reads as Betaflight's own default. The card must equal it on every field
+  it carries: P/I/D, rates, rate type, and every number in its notes. The
+  `?rates=card.` alias must equal the card.
+- **Copies updated:**
+  - the alias (`sim-rates.js`) and its test;
+  - SIM-LINKS.md;
+  - the PID guide's row and rates sentence;
+  - the parser round-trip fixture (`scripts/agent/test_parse_tune_diff.py`,
+    a required check that failed until it was updated: review below).
+- **Stamps.** The asset stamps of `tune-database.js` and `sim-rates.js`
+  were refreshed.
+- **The HQ 31mm card.** I left it alone: you named only 1219s. Its P/I/D
+  are profile 1 of this same diff, but it lists rc_rate 4 while the diff's
+  only rate profile is rc_rate 2. The guide now states each card's rc_rate.
+  Open for the owner.
+- **The repo's parser is wrong on multi-profile diffs.**
+  `scripts/parse_tune_diff.py` keeps the last `set` of each key across
+  profiles.
+  - On this diff it gives profile 1's PIDs (the HQ 31mm tune), with
+    profile 0's thrust linear.
+  - Its test `test_last_profile_block_wins` encodes that, on a shape no
+    real `diff all` has.
+  - A community submission of this diff would publish the HQ31 PIDs under
+    the 1219S name.
+  - Pre-existing; proposed as a follow-up.
+
+### 3. Gyro saturation, NaN, and the crash-flip rate (sim-core 8577adb)
+
+**Gyro saturation.**
+- **Already in place.** The bridge already saturated the gyro before
+  Betaflight read it: int16 counts at Betaflight's 32768/2000 per deg/s,
+  clamped at ±32767, never wrapping.
+- **Now exact.** It now saturates exactly as the ICM-42688-P's registers do:
+  32767 and -32768, which Betaflight reads as +1999.94 / -2000.00 deg/s.
+- **Betaflight's own handling.** Betaflight treats both the virtual gyro and
+  the ICM-42688-P as overflow-protected, so it runs no overflow check on
+  either. The clamp is the only limit, as on the real board.
+- **Filtered gyro can read past 2,000.** `gyroFiltered` peaks near 2013
+  while the input is clipped. That is Betaflight's RPM filter ringing on the
+  flat top, which a real board would show too.
+
+**The NaN: a Betaflight 4.5.1 bug, now patched (`patches/0003`).**
+- **Cause.** `pid.c` scales `antiGravityThrottleD` in place on every PID
+  loop (`*= antiGravityGain`). `mixTable` returns before
+  `pidUpdateAntiGravityThrottleFilter` while crash flip is active. So a
+  derivative left from a throttle move just before crash flip compounds to
+  inf, and the roll and pitch P and I terms go NaN.
+- **Real hardware too.** Crash flip bypasses the PID mix, so the motors
+  never see it.
+- **Fix.** The crash-flip branch now feeds the filter. Normal flight is
+  untouched.
+- **Isolated** by bisecting: only `anti_gravity_gain = 0` removed it.
+- **Why the investigators missed it.** They tried about 20 direct
+  sequences and saw none, because none moved the throttle just before
+  crash flip. The quadmath page's turtle does, and so does a pilot punching
+  on their back before flipping the switch.
+
+**The gyro reads the rotation the attitude makes** (`plant.c`).
+- **The bug.** The plant turned the attitude with the body rate before the
+  contact solve, and published the rate after it to the gyro. On the floor
+  those were up to 2800 deg/s apart. Betaflight integrated rotation that
+  never happened: after a turtle re-arm with uneven motors, its estimate
+  walked off and the angle loop rolled the quad onto its side.
+- **The fix.** The gyro reads the rate the attitude turned with. In the
+  air, with no contact, the two rates are identical, and open-air flight is
+  bit-identical (checked against the old build).
+- **Under a ceiling.** With the quad pinned at near-full throttle and the
+  stick forward:
+  - **Old build:** the plant's pitch ran 20° ahead of Betaflight's estimate
+    (62.8° against 42.8°), it over-rotated off the ceiling and flew 5 m.
+  - **New build:** the estimate tracks the plant (47.5° against 47.2°), it
+    pitches about 40°/s against the contact's friction, and it moves
+    0.23 m.
+  - On the quadmath room map, holding W into the ceiling and pushing
+    forward now mostly stays pinned. That follows from the contact model;
+    reported.
+
+**Tests (`tests/node/crash-flip.test.mjs`).** Crash flip is entered after
+a throttle move and rolled both ways, 6020 ticks:
+- every PID, setpoint, gyro, attitude, motor and RC value is finite;
+- the gyro counts stay within int16 and saturate at 32767 and -32768,
+  with the quad at up to 2929 deg/s;
+- on every tick, 5031 of them on the floor, the counts Betaflight read
+  are the attitude's own rotation over the tick before. The attitude's step
+  is first order, so its rate inverts exactly.
+
+Both new checks fail on the previous build: NaN at 7045 ms; and, with
+anti-gravity off to get past that, gyro 64 counts against the attitude's
+4.21 deg/s on the floor.
+
+**The 2950 deg/s crash flip: neither candidate.**
+- **Not crashflip_motor_percent.** The diff leaves it at 0 (the default),
+  so Betaflight runs the two flipping motors at DShot 2027 and the other
+  pair off. At full stick, no value of `crashflip_motor_percent` or
+  `crashflip_expo` raises that.
+- **Not the footprint.** The quad leaves the floor 10 ms in, having turned
+  0.4°. Inverted it rests on the canopy point, and the footprint has no
+  duct tops.
+- **The cause: reverse thrust plus a held stick.**
+  - The airframe's `reverseScale` 0.85 (confidence low, from quadmath
+    QP:130, unmeasured) makes the reversed pair lift 2.1× the weight.
+  - The quad launches and spins in free air while the stick is held, until
+    the two-motor torque meets quadmath's rotational damping
+    (`aeroB`/`aeroC`, also unmeasured).
+  - Predicted terminal rate 3022 deg/s; measured 2936. A mid-air flip with
+    no floor peaks at 3022.
+- **Sweeps:**
+  - `crashflip_motor_percent 50`: 2341 deg/s.
+  - Damping ×2: 2033 deg/s.
+  - `reverseScale` 0.70 / 0.50 / 0.30: 2546 / 2062 / 1456 deg/s.
+  - Below about 0.41 the quad stays on its rim and pivots over at
+    1460-1780 deg/s. At 0.20 it no longer flips.
+- **What would decide it:** a bench reverse-thrust number, or video of a
+  full-stick turtle. A blackbox can't show it, since the real gyro clips at
+  2000 too.
+
+### 4. Keyboard turtle tip-over: same root, fixed
+
+The tip-over was the gyro reading rates the attitude never turned at. With
+v0.3.0 vendored, the gesture-path turtle stays upright armed at idle on
+the floor (Betaflight 0.0°, plant up-Z 1.000, 5 s). The quadmath `todo`
+test is now a test and passes. Headless Chrome shows the page turtle armed
+and upright 4 s after the re-arm.
+
+### 5. v0.3.0
+
+- **Full suite on 8577adb:** `run-all` with two byte-exact builds of the
+  committed hash (82533105) passes, 18 tests plus the known #5 skip. #5
+  still fails with these changes.
+- **Release.** Tag v0.3.0 pushed; `release.sh v0.3.0` vendored into
+  quadmath byte for byte (VERSION, wasm; the JS and configs are unchanged).
+  `SIM_CORE_VERSION` is `v0.3.0`.
+- **PR.** The sim-core PR for `phase2/quadmath-wiring` is opened with this
+  entry.
+
+### Checks (quadmath f4ac87e)
+
+- **Tests:** all 23 `tools/test_*.mjs` files and `sim-tracks-test.mjs`
+  pass; `test_sim_core` has 18 pass, 0 todo. Both Python jobs pass (180 and
+  64 tests). Stamps are current, and `node --check` is clean.
+- **Headless Chrome on v0.3.0**, zero console errors: keyboard, a fake
+  TX16S, and a TX16S with ARM up at load all behave as in round 3. The js
+  and bf cores still arm, climb, pitch, respawn and re-arm.
+
+### Review
+
+Three lenses over the round. The gyro and NaN lenses found nothing.
+
+**Confirmed and fixed:**
+- **Parser fixture.** The round-trip fixture still described the old card,
+  so the required "Test signal collector" check would have failed.
+- **Stamps.** The asset stamps were stale until I restamped.
+- **Card test coverage.** The test skipped four notes Betaflight can read
+  back (RPM filter and protocol, gyro LPF1, dyn notch, craft name). It now
+  checks them.
+
+**Confirmed, left for the owner:**
+- the parser's multi-profile bug;
+- the HQ31 card's rc_rate.
+
+**Refuted:** the `ryanActual` preset staying at rc_rate 4. That is a
+separate preset, not the card.
+
+### What went wrong
+
+- **"Not reproducible" was wrong.** The investigators' runs covered about
+  20 sequences but never the one the page's turtle makes. My own earlier
+  observation through the adapter was the reproduction.
+- **Fixture missed.** I updated the card without its parser round-trip
+  fixture. The review caught it before any commit.
+- **The plant gyro change has a visible side.** Against a ceiling at full
+  throttle the quad now mostly stays pinned. I found it from the
+  regression script's smaller forward travel, not from a test.
