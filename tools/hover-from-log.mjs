@@ -452,9 +452,11 @@ export async function plateauFromLog(logPath, quadmathDir, air, hover, opts = {}
 // ---- Turtle mode (--turtle): the crash flips of a log, from the gyro alone.
 // Betaflight logs no crash-flip flag, so a flip is found as the rotation it
 // makes. The gyro clips at 2000 deg/s (an ICM-42688-P at its +-2000 range,
-// as the sim's), so a clipped flip's peak and rotation are lower bounds; the
-// time it takes to turn over is the number that stays honest.
-export const TURTLE_RULES = 'a flip is a run of samples with the roll or pitch gyro above 100 deg/s, gaps under 50 ms joined, extended either side to where both fall below 20 deg/s, that turns at least 90 deg by the integrated gyro on its main axis; per flip: the axis, the rotation, the peak rate (clipped when within 1 % of 2000 deg/s: the peak and the rotation are then lower bounds), the time from the run\'s start to 180 deg, and the mean rate over the run';
+// as the sim's), so a clipped flip's peak and rotation are lower bounds, and
+// its time to 180 deg an upper bound. The spin-up below the clip is read
+// whole, and the sim's gyro clips alike, so the sim and a log compare by one
+// rule.
+export const TURTLE_RULES = 'a flip is a run of samples with the roll or pitch gyro above 100 deg/s, gaps under 50 ms joined, extended either side to where both fall below 20 deg/s, that turns at least 90 deg by the integrated gyro on its main axis; per flip: the axis, the rotation, the peak rate (clipped when within 1 % of 2000 deg/s: the peak and the rotation are then lower bounds, and the time to 180 deg an upper bound), the time from the run\'s start to 180 deg, and the mean rate over the run';
 const TURTLE_RATE = 100;
 const TURTLE_EDGE = 20;
 const TURTLE_GAP_S = 0.05;
