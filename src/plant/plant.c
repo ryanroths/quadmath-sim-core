@@ -205,11 +205,13 @@ static void derive(void)
     delayTicks = (int)lround(blk[PB_MOTOR_DELAY] * SC_LOOP_HZ);
 }
 
-static void publishSensors(void)
+// rate: what the gyro reads, rad/s, body frame. A tick passes the rate the
+// attitude turned with (sc_plant_step); everything else, the body rate.
+static void publishSensors(const double rate[3])
 {
     const double g = model == SC_MODEL_REST ? 9.81 : blk[PB_GRAVITY];
     for (int axis = 0; axis < 3; axis++) {
-        sc_sensors.gyro_dps[axis] = sc_plant.omega[axis] * (360.0 / TWO_PI);
+        sc_sensors.gyro_dps[axis] = rate[axis] * (360.0 / TWO_PI);
         sc_sensors.acc_g[axis] = sc_plant.specificForce[axis] / g;
     }
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
@@ -285,7 +287,7 @@ void sc_plant_init(void)
     posePending = false;
     sc_world_reset();
     restState();
-    publishSensors();
+    publishSensors(sc_plant.omega);
 }
 
 int sc_plant_configure(const double *block, int count)
@@ -342,7 +344,7 @@ int sc_plant_configure(const double *block, int count)
         return SC_ERR_BAD_ARG;
     }
     restState();
-    publishSensors();
+    publishSensors(sc_plant.omega);
     return SC_OK;
 }
 
@@ -374,7 +376,7 @@ void sc_plant_battery_carry(double soc, double vbat_filtered)
     }
     battVoltage = sc_plant.vbatLoaded;
     sc_plant.vbatFiltered = sc_plant.vbatLoaded;
-    publishSensors();
+    publishSensors(sc_plant.omega);
 }
 
 void sc_plant_floor_moved(void)
@@ -1244,6 +1246,13 @@ void sc_plant_step(double dt)
         }
     }
     qIntegrate(q, om, dt);
+    // The gyro reads the rate the attitude turned with this tick. The contact
+    // solve below then changes the body rate for the next tick without turning
+    // the attitude; reporting that rate instead gave Betaflight rotation that
+    // never happened (up to 2800 deg/s apart from the attitude's on a floor
+    // strike), and its estimate walked off the attitude on the floor. In the
+    // air, with no contact, the two are the same rate.
+    const double omAttitude[3] = { om[0], om[1], om[2] };
 
     // Forces, world frame (QP:753-768).
     const double vBefore[3] = { v[0], v[1], v[2] };
@@ -1294,5 +1303,5 @@ void sc_plant_step(double dt)
         || fabs(om[1]) > DIVERGED_RAD_S || fabs(om[2]) > DIVERGED_RAD_S) {
         sc_set_fault(SC_FAULT_PLANT_DIVERGED);      // the tick stops here
     }
-    publishSensors();
+    publishSensors(omAttitude);
 }
