@@ -6774,3 +6774,119 @@ separate preset, not the card.
 - **The plant gyro change has a visible side.** Against a ceiling at full
   throttle the quad now mostly stays pinned. I found it from the
   regression script's smaller forward travel, not from a test.
+
+## 2026-10-26 | Phase 2 step 2, round 5 | follow-ups: upstream report, the parser, reverse thrust
+
+Owner, after merging #7 and quadmath #273 and deploying the Worker: "Three
+follow-ups, each its own PR:
+1. Report the anti-gravity crash-flip NaN upstream: betaflight/betaflight
+   issue with the 4.5.1 repro from the test, and note patch 0003. Link it
+   in NOTICE.
+2. Fix parse_tune_diff.py for multi-profile diffs, and the HQ31 card from
+   its real profile.
+3. Reverse thrust: flag 0.85 as unmeasured in air65.json, add a reference
+   slot for a turtle log (flip rate from gyro). I'll fly it.
+Then stop."
+
+Where each landed:
+- **Upstream:** betaflight/betaflight#15910.
+- **sim-core `notice/upstream-ag-nan`:** NOTICE and this entry.
+- **quadmath #274** (`fix/tune-parser-profiles`, 8eb09f6): the parser and
+  the HQ31 card. It needs the human-override label (`scripts/**`, and
+  `sim.html` for its asset stamp).
+- **sim-core #8** (`airframe/reverse-thrust-unmeasured`): reverse thrust
+  flagged, the turtle slot, the tool, X4.
+
+### 1. Upstream report (betaflight/betaflight#15910)
+
+Filed on the headings of Betaflight's bug-report form.
+- **No Support ID.** The bug was found in a simulator build, not on a
+  board; the issue says so. The code path doesn't depend on the target,
+  and every line it cites is unmodified 4.5.1.
+- **The repro is the test's own sequence** (`tests/node/crash-flip.test.mjs`
+  at 88b20f2, lines 90-173), re-run on the unpatched build: crash flip
+  begins 4 ms after the arm, and 20 ms later the roll and pitch pidSum are
+  NaN, yaw 0. On the patched build no value is non-finite.
+- **How long before.** A variant re-run for the issue moves the throttle
+  70 ms, 2.05 s or 10.05 s before the arm into crash flip. The first NaN
+  comes 21, 42 or 44 ms after crash flip begins, with the roll stick held or
+  centred. With the throttle never moved since boot, there is no NaN on
+  either build.
+- **Scope**, read from the sources:
+  - in 4.5.5, 4.5-maintenance, 2025.12.5, 2026.6.2 and master;
+  - the in-place `*=` came with 4.4.0 (#11679, 6aaaf727ff86);
+  - no existing issue or PR.
+- **Possibly worse on 2025.12 and later.** With `crashflip_auto_rearm`,
+  the first loop after crash flip may carry the NaN into the normal mix.
+  This is from reading the code only, and the issue marks it untested.
+- **Fixes offered:**
+  - patch 0003's, linked at 88b20f2: feed the filter in the crash-flip
+    branch;
+  - or stop scaling `antiGravityThrottleD` in place.
+
+**NOTICE.** It said changes to Betaflight ride as patches, but named none.
+It now lists the three patches, and links 0003 to the issue.
+
+### 2. The parser and the HQ31 card (quadmath #274)
+
+- **The parser.** `parse_tune_diff.py` now reads a `diff all` as Betaflight
+  replays it:
+  - each `set` belongs to the master, `profile N` or `rateprofile N` block
+    it is printed in;
+  - the values in force are the master ones, overlaid by the profile and
+    then the rate profile selected at the end;
+  - a bare `board_name` and `manufacturer_id` are read.
+  A diff with no profile commands reads top to bottom as before.
+- **The test that encoded the bug.** `test_last_profile_block_wins` was on
+  a comment-only shape no real diff has. It is now a test of that shape.
+- **New tests:**
+  - a two-profile diff;
+  - the real Air65 diff read as profile 0 and as profile 1, each equal to
+    its card.
+- **The HQ31 card** is profile 1 ('HQ 31mm') with the diff's one rate
+  profile:
+  - rates ACTUAL 2/74/56 · 2/74/56 · 2/70/56, which were rc_rate 4;
+  - the diff's filter and motor notes;
+  - the PIDs were already right.
+  `tools/test_sim_core.mjs` holds the card to Betaflight's own reading of
+  profile 1, as round 4 did for 1219s with profile 0.
+- **Checks:** the `scripts/agent` Python tests (182), `test_sim_core`
+  (19), all 23 `tools/test_*` files and `sim-tracks-test`, and the
+  `scripts/ci` tests (64) pass. Stamps are current.
+
+### 3. Reverse thrust unmeasured; the turtle slot (sim-core #8)
+
+- **`reverseScale` stays 0.85.** It now carries `"measured": false`, the
+  slot's path, and a note: quadmath's feel constant, never measured; what
+  it does to the crash flip (round 4's sweep).
+- **`tests/reference/air65-turtle.json`** is the empty slot.
+- **`tools/hover-from-log.mjs --turtle`** fills it from a log.
+  - Betaflight logs no crash-flip flag, so it finds flips from the gyro:
+    roll or pitch above 100 deg/s, extended to 20 deg/s, turning at least
+    90°.
+  - Per flip: the axis, the rotation, the peak (flagged clipped at
+    2000 deg/s), the time to 180° and the mean rate.
+- **`tests/gate-plant.mjs` X4** reads the sim's crash flip by the same rule
+  from Betaflight's filtered gyro: 180° at 113 ms, peak 2009 deg/s
+  (clipped), mean 1060 deg/s. It reports only, until the owner sets a band.
+- **Checks:** `run-all --quick` 18 pass, the #5 skip. No C change.
+
+### Corrections to round 4
+
+- **"Just before" was wrong.** Round 4 said a throttle move just before
+  crash flip leaves the derivative that compounds. Any throttle move since
+  boot does: 10 s before still gives NaN 44 ms in (section 1). So round 4's
+  reason the investigators missed it ("none moved the throttle just before
+  crash flip") doesn't hold as written. I did not re-run their sequences to
+  find the real one.
+- **"A blackbox can't show it" was too strong.** The gyro clips the peak,
+  but the spin-up below the clip still shows. The sim's crash flip turns
+  180° in 113 ms, at a mean of 1060 deg/s over the flip, while its peak
+  clips. The slot compares the sim and the log by one rule, on gyros that
+  clip alike. Once the gyro clips before 180°, the time to 180° is an upper
+  bound, on both sides alike.
+
+### Open, for the owner
+
+- the human-override label on quadmath #274;
+- the turtle log, and then a band for X4.
