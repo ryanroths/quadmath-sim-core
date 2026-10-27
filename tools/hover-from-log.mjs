@@ -10,6 +10,8 @@
 //        [--out file.json]
 //   node tools/hover-from-log.mjs <log.BBL> --plateau --log 0 [--hover tests/reference/air65-hover.json] [--out file.json]
 //        the full-duty plateau of a punch-out log instead (see analysePlateau)
+//   node tools/hover-from-log.mjs <log.BBL> --turtle --log 0 [--window 3,40] [--out tests/reference/air65-turtle.json]
+//        the crash flips (turtles) of a log instead, from the gyro (see analyseTurtle)
 //
 // <log.BBL> is a path, or a name in SIM_CORE_LOGS (default D:/IGOW6/sim-core,
 // tools/logs.mjs): logs stay out of git, what they give is committed.
@@ -447,6 +449,107 @@ export async function plateauFromLog(logPath, quadmathDir, air, hover, opts = {}
 }
 
 
+// ---- Turtle mode (--turtle): the crash flips of a log, from the gyro alone.
+// Betaflight logs no crash-flip flag, so a flip is found as the rotation it
+// makes. The gyro clips at 2000 deg/s (an ICM-42688-P at its +-2000 range,
+// as the sim's), so a clipped flip's peak and rotation are lower bounds; the
+// time it takes to turn over is the number that stays honest.
+export const TURTLE_RULES = 'a flip is a run of samples with the roll or pitch gyro above 100 deg/s, gaps under 50 ms joined, extended either side to where both fall below 20 deg/s, that turns at least 90 deg by the integrated gyro on its main axis; per flip: the axis, the rotation, the peak rate (clipped when within 1 % of 2000 deg/s: the peak and the rotation are then lower bounds), the time from the run\'s start to 180 deg, and the mean rate over the run';
+const TURTLE_RATE = 100;
+const TURTLE_EDGE = 20;
+const TURTLE_GAP_S = 0.05;
+const TURTLE_MIN_DEG = 90;
+const GYRO_RANGE = 2000;
+
+// rows: { t (s), gyro: [roll, pitch, yaw] deg/s }, in time order. window:
+// [s0, s1] to look in only, or null.
+export function analyseTurtle(rows, window = null) {
+  const inWindow = window ? rows.filter((r) => r.t >= window[0] && r.t <= window[1]) : rows;
+  const fast = (r) => Math.abs(r.gyro[0]) > TURTLE_RATE || Math.abs(r.gyro[1]) > TURTLE_RATE;
+  const runs = [];
+  let run = null;
+  for (let i = 0; i < inWindow.length; i++) {
+    const r = inWindow[i];
+    if (fast(r)) {
+      if (run && r.t - run.last <= TURTLE_GAP_S) {
+        run.end = i;
+        run.last = r.t;
+      } else {
+        run = { start: i, end: i, last: r.t };
+        runs.push(run);
+      }
+    }
+  }
+  const flips = [];
+  const moving = (r) => Math.abs(r.gyro[0]) > TURTLE_EDGE || Math.abs(r.gyro[1]) > TURTLE_EDGE;
+  for (const run of runs) {
+    let { start, end } = run;
+    while (start > 0 && moving(inWindow[start - 1])) start--;
+    while (end < inWindow.length - 1 && moving(inWindow[end + 1])) end++;
+    const seg = inWindow.slice(start, end + 1);
+    if (seg.length < 2) continue;
+    const turned = [0, 0];
+    let at180 = null;
+    let peak = 0;
+    for (let k = 1; k < seg.length; k++) {
+      const dt = seg[k].t - seg[k - 1].t;
+      for (const axis of [0, 1]) turned[axis] += seg[k].gyro[axis] * dt;
+      const axisNow = Math.abs(turned[0]) >= Math.abs(turned[1]) ? 0 : 1;
+      if (at180 === null && Math.abs(turned[axisNow]) >= 180) at180 = seg[k].t - seg[0].t;
+    }
+    const axis = Math.abs(turned[0]) >= Math.abs(turned[1]) ? 0 : 1;
+    if (Math.abs(turned[axis]) < TURTLE_MIN_DEG) continue;
+    for (const r of seg) peak = Math.max(peak, Math.abs(r.gyro[axis]));
+    const duration = seg[seg.length - 1].t - seg[0].t;
+    flips.push({
+      axis: axis === 0 ? 'roll' : 'pitch',
+      start_s: round(seg[0].t, 3),
+      end_s: round(seg[seg.length - 1].t, 3),
+      rotation_deg: round(turned[axis], 1),
+      peak_rate_dps: round(peak, 1),
+      clipped: peak >= 0.99 * GYRO_RANGE,
+      time_to_180_ms: at180 === null ? null : round(at180 * 1000, 1),
+      mean_rate_dps: duration > 0 ? round(Math.abs(turned[axis]) / duration, 1) : null,
+    });
+  }
+  const over = flips.filter((f) => f.time_to_180_ms !== null);
+  const median = (xs) => {
+    const a = [...xs].sort((x, y) => x - y);
+    return a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : null;
+  };
+  return {
+    flips,
+    measured: flips.length ? {
+      flips: flips.length,
+      time_to_180_ms: median(over.map((f) => f.time_to_180_ms)),
+      peak_rate_dps: Math.max(...flips.map((f) => f.peak_rate_dps)),
+      clipped: flips.some((f) => f.clipped),
+      mean_rate_dps: median(flips.map((f) => f.mean_rate_dps).filter((x) => x !== null)),
+    } : null,
+  };
+}
+
+export async function turtleFromLog(logPath, quadmathDir, opts = {}) {
+  const li = Number(opts.log ?? 0);
+  const log = await readLog(logPath, quadmathDir, li);
+  const window = opts.window ? String(opts.window).split(',').map(Number) : null;
+  const a = analyseTurtle(log.rows, window);
+  if (!a.flips.length) throw new Error(`no flip found (${TURTLE_RULES})${window ? ` in ${window.join('-')} s` : ''}`);
+  const dur = log.rows[log.rows.length - 1].t;
+  const crash = Object.fromEntries(Object.entries(log.rawHeader).filter(([k]) => /crash_?flip/i.test(k)));
+  return {
+    source: basename(logPath),
+    log_index: li,
+    mode: 'turtle',
+    rule: TURTLE_RULES,
+    window_s: window,
+    flown: [log.info.datetime, log.info.craft, log.info.board, log.info.firmware].filter(Boolean).join(', '),
+    log: { frames: log.rows.length, duration_s: round(dur, 1), rate_hz: Math.round(log.rows.length / dur), logs_in_file: log.logCount, corrupt_frames_dropped: log.dropped },
+    header: { ...log.header, ...crash },
+    ...a,
+  };
+}
+
 async function main() {
   const a = args(process.argv.slice(2));
   const logPath = a._[0] && findLog(a._[0]);
@@ -457,6 +560,15 @@ async function main() {
   }
   const root = fileURLToPath(new URL('..', import.meta.url));
   const air = JSON.parse(readFileSync(resolve(root, a.airframe ?? 'airframes/air65.json'), 'utf8')).values;
+  if (a.turtle !== undefined) {
+    const t = await turtleFromLog(logPath, qm, a);
+    const text = `${JSON.stringify(t, null, 2)}\n`;
+    if (a.out) writeFileSync(a.out, text);
+    else process.stdout.write(text);
+    for (const x of t.flips) console.error(`flip ${x.start_s}-${x.end_s} s on ${x.axis}: ${x.rotation_deg} deg, peak ${x.peak_rate_dps} deg/s${x.clipped ? ' (clipped)' : ''}, 180 deg at ${x.time_to_180_ms} ms, mean ${x.mean_rate_dps} deg/s`);
+    console.error(`turtle: ${t.measured.flips} flips; 180 deg at ${t.measured.time_to_180_ms} ms (median), peak ${t.measured.peak_rate_dps} deg/s${t.measured.clipped ? ' (clipped)' : ''}`);
+    return;
+  }
   if (a.plateau !== undefined) {
     const hover = JSON.parse(readFileSync(resolve(root, a.hover ?? 'tests/reference/air65-hover.json'), 'utf8'));
     const p = await plateauFromLog(logPath, qm, air, hover, a);

@@ -1,0 +1,11 @@
+{
+  "source": null,
+  "status": "not flown yet: the owner flies a turtle log on the Air65 (2026-10-27) to measure reverse thrust",
+  "how": "node tools/hover-from-log.mjs <log.BBL> --turtle --log 0 [--window s0,s1] --quadmath <quadmath clone> --out tests/reference/air65-turtle.json; for the comparison, full roll (or pitch) stick held from the arm until the quad is upright, on a flat floor, several flips",
+  "mode": "turtle",
+  "rule": "a flip is a run of samples with the roll or pitch gyro above 100 deg/s, gaps under 50 ms joined, extended either side to where both fall below 20 deg/s, that turns at least 90 deg by the integrated gyro on its main axis; per flip: the axis, the rotation, the peak rate (clipped when within 1 % of 2000 deg/s: the peak and the rotation are then lower bounds), the time from the run's start to 180 deg, and the mean rate over the run",
+  "band": null,
+  "band_note": "none until the owner sets one; tests/gate-plant.mjs X4 reports the sim against the log meanwhile",
+  "flips": [],
+  "measured": null
+}

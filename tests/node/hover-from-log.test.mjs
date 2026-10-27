@@ -7,7 +7,7 @@
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { binRows, findWindow, analyse } from '../../tools/hover-from-log.mjs';
+import { binRows, findWindow, analyse, analyseTurtle } from '../../tools/hover-from-log.mjs';
 
 const root = new URL('../../', import.meta.url);
 const air = JSON.parse(await readFile(new URL('airframes/air65.json', root), 'utf8')).values;
@@ -189,3 +189,46 @@ if (qm) {
   }
 }
 console.log('hover-from-log: window, duty, rpm, kt, load fraction, cell IR from synthetic frames: PASS');
+
+// ---- --turtle: crash flips found from the gyro (analyseTurtle) ----
+{
+  // 1 kHz frames: still, a 190 deg roll flip (a turtle lands a little past
+  // 180) at a half-sine rate, still, a pitch flip whose rate the gyro clips at 2000 deg/s,
+  // and a 40 deg wobble that is no flip.
+  const t = [];
+  const add = (seconds, rate) => {
+    const t0 = t.length ? t[t.length - 1].t + 0.001 : 0;
+    for (let k = 0; k < seconds * 1000; k++) {
+      const s = k / (seconds * 1000);
+      t.push({ t: t0 + k / 1000, gyro: rate(s) });
+    }
+  };
+  const still = () => [0, 0, 0];
+  const halfSine = (peak) => (s) => peak * Math.sin(Math.PI * s);
+  add(0.5, still);
+  const rollPeak = (190 * Math.PI) / (2 * 0.4);              // 190 deg over 0.4 s of half-sine
+  add(0.4, (s) => [halfSine(rollPeak)(s), 0, 0]);
+  add(0.5, still);
+  add(0.25, (s) => [0, -Math.min(2000, halfSine(2500)(s)), 0]);
+  add(0.5, still);
+  add(0.2, (s) => [halfSine(300)(s), 0, 0]);                 // about 38 deg: no flip
+  add(0.5, still);
+  const out = analyseTurtle(t);
+  assert.equal(out.flips.length, 2, JSON.stringify(out.flips));
+  const [roll, pitch] = out.flips;
+  assert.equal(roll.axis, 'roll');
+  assert.ok(Math.abs(roll.rotation_deg - 190) < 1, `roll ${roll.rotation_deg} deg`);
+  assert.equal(roll.clipped, false);
+  assert.ok(Math.abs(roll.peak_rate_dps - rollPeak) < 1, `roll peak ${roll.peak_rate_dps}`);
+  // 180 of 190 deg: (1 - cos(pi s)) / 2 = 18 / 19 at s = 0.856, 342 ms into
+  // the half-sine; the run starts where the rate passes 20 deg/s, 3.4 ms in.
+  assert.ok(Math.abs(roll.time_to_180_ms - 338.6) <= 2, `roll 180 deg at ${roll.time_to_180_ms} ms`);
+  assert.equal(pitch.axis, 'pitch');
+  assert.ok(pitch.rotation_deg < -300, `pitch ${pitch.rotation_deg} deg`);
+  assert.equal(pitch.clipped, true, 'a peak at the gyro range is clipped');
+  assert.ok(out.measured.clipped && out.measured.flips === 2);
+  // A window keeps only what is in it.
+  assert.equal(analyseTurtle(t, [1.3, 2.0]).flips.length, 1);
+  assert.equal(analyseTurtle(t, [2.2, 3.0]).measured, null, 'the wobble alone is no flip');
+  console.log(`hover-from-log --turtle: roll flip of 190 deg, 180 deg at ${roll.time_to_180_ms} ms, clipped pitch flip ${pitch.rotation_deg} deg, a 40 deg wobble ignored: PASS`);
+}
