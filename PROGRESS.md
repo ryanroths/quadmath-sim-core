@@ -7276,22 +7276,31 @@ exactly.
 
 ### The CG estimate's range
 
-The owner's CG is an estimate. This what-if sweep varies `hullBelow` with
-the measured duct height (`--set hullBelow=…`, report only):
+The owner's CG height is an estimate. This what-if sweep varies `hullBelow`
+with the measured duct height (`--target --set hullBelow=…`). It reports
+only, nothing asserted. The target is the owner's: upright after the four
+flown hits under 60 degrees and 6 m/s.
 
-| hullBelow, mm | top rim above the CG, mm | flown upright | off upright | flown 4 m/s at 30 deg |
-|---|---|---|---|---|
-| 7 | 6.25 | 8 / 12 | 6 / 12 | inverted, on the wall (up Z -0.820) |
-| 8 | 5.25 | 7 / 12 | 6 / 12 | inverted, on the wall (-0.809) |
-| 9 | 4.25 | 6 / 12 | 9 / 12 | inverted, on the wall (-0.798) |
-| **10** | **3.25** | **5 / 12** | **7 / 12** | **inverted, on the wall (-0.788)** |
-| 11 | 2.25 | 6 / 12 | 10 / 12 | inverted, on the wall (-0.777) |
-| 12 | 1.25 | 5 / 12 | 8 / 12 | inverted, on the wall (-0.766) |
+| hullBelow, mm | top rim above the CG, mm | flown upright | off upright | target cases missed | flown 4 m/s at 30 deg |
+|---|---|---|---|---|---|
+| 4 | 9.25 | 10 / 12 | 6 / 12 | **none: met** | upright |
+| 5 | 8.25 | 9 / 12 | 6 / 12 | **none: met** | upright |
+| 6 | 7.25 | 7 / 12 | 6 / 12 | 1 (4/30) | inverted, on the wall (up Z -0.797), not at rest |
+| 7 | 6.25 | 8 / 12 | 6 / 12 | 1 (4/30) | inverted, on the wall (-0.820) |
+| 8 | 5.25 | 7 / 12 | 6 / 12 | 1 (4/30) | inverted, on the wall (-0.809) |
+| 9 | 4.25 | 6 / 12 | 9 / 12 | 1 (4/30) | inverted, on the wall (-0.798) |
+| **10** | **3.25** | **5 / 12** | **7 / 12** | **1 (4/30)** | **inverted, on the wall (-0.788)** |
+| 11 | 2.25 | 6 / 12 | 10 / 12 | 2 (4/15, 4/30) | inverted, on the wall (-0.777) |
+| 12 | 1.25 | 5 / 12 | 8 / 12 | 2 (4/15, 4/30) | inverted, on the wall (-0.766) |
 
-The target case inverts everywhere from 7 to 12 mm, so the miss is not the
-CG estimate's error. The upright counts move by a few cases either way.
-`hullBelow` also sets the rest height on the floor, so this sweep moves more
-than the wall's lever.
+- **The target turns on the CG height.** It is met at 4 and 5 mm and missed
+  from 6 mm up. The 2026-10-28 entry's component estimate (motors and the
+  pack in the bottom slot) put the CG 4 to 6 mm above the duct bottom; the
+  owner's rim-hang puts it at 10. A measured CG could decide issue #10.
+- **At 11 and 12 mm** the flown 4 m/s 15 degree hit also ends inverted.
+- **At 12 mm** one case ends wedged: flown 4 m/s at 90 degrees, on the wall.
+- **More than the lever moves:** `hullBelow` also sets the rest height on
+  the floor, so the sweep changes more than where the wall meets the rim.
 
 ### The wall-hit test fails one assertion
 
@@ -7342,11 +7351,40 @@ degrees does not.
 - **Worker.** It bundles `PHYS_VER`, so it needs a deploy in step with the
   page. Nothing was deployed.
 
+### Review
+
+Three read-only reviewers (a workflow) went over the tagged commit and the
+quadmath change.
+
+- **Fixed in this entry, after the tag:**
+  - **The CG sweep overreached.** It said a miss from 7 to 12 mm meant the
+    CG estimate's error could not explain it. At 5 mm the target is met. The
+    sweep now runs from 4 mm. The tagged commit's message repeats the old
+    claim.
+- **Fixed in quadmath:**
+  - **Stale Rig comments.** Two comments still described the Rig's walls
+    bouncing harder on bf.
+  - **A missing test.** There was no test that a phys 4 ghost is refused.
+- **Left for the owner:**
+  - **The Rig's walls on bf.** Since v0.4.0 they rebound at
+    `wallRestitution` (0.3) like any map's. The Rig's bounce profile still
+    sets the crash threshold everywhere, and still sets the bounce of
+    floors, box tops, undersides and box edges. The js core still rebounds
+    Rig walls at about 0.41.
+  - **The rest assertion.** It is described above; CI is red until it is
+    decided.
+  - **`hullBelow`'s confidence.** It reads "medium", but the file's
+    definitions would put an owner estimate at "low". It is left as tagged.
+- **Disk.** C: filled during the review. quadmath's map-boot test leaves
+  a Chrome profile per map in %TEMP% and never deletes them: 492 folders,
+  629 MB since 2026-10-26. They were deleted with the owner's OK.
+
 ### Open, for the owner
 
 - **The wall-hit run's length:** see "The wall-hit test fails one
   assertion" above.
-- **The target:** issue #10 stays open. The miss holds for any CG height
-  from 7 to 12 mm.
+- **The target:** issue #10 stays open. On the measured duct height it is
+  met for a CG 4 or 5 mm above the duct bottom and missed from 6 mm up, so
+  measuring the CG could settle it.
 - **The CG:** a balance or pendulum reading would replace the estimate. The
   sweep above shows how much it moves the matrix.
