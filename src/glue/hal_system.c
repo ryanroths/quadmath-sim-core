@@ -120,6 +120,9 @@ void IOWrite(IO_t io, bool value)
 void warningLedFlash(void) {}
 void warningLedDisable(void) {}
 void warningLedUpdate(void) {}
+// The beeper flashes the warning LED with each beep (io/beeper.c).
+void warningLedEnable(void) {}
+void warningLedRefresh(void) {}
 
 // No serial ports carry MSP, and there is no TCP serial in a browser.
 serialPort_t *serTcpOpen(int id, serialReceiveCallbackPtr rxCallback, void *rxCallbackData,

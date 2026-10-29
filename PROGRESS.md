@@ -7714,3 +7714,56 @@ The garage-corner lean that the measured round derived is reverted to main's fix
 - v0.4.0 moves to this commit and is released again.
 - quadmath re-vendors it in PR 282. The module, VERSION and every contact value are the same as main's PR #11 airframe. Only `airframes/air65.json`'s metadata differs: ductHeight's source and note; hullBelow's and hullAbove's source and note, with confidence low and `"measured": false`; and the `measured` block.
 - Nothing was deployed.
+
+## 2026-10-29 | Phase 2 step 3 | the beeper as an FC readout; the Air65's October prop (bladeCount 2); v0.5.0
+
+Owner (2026-10-29): "Two sim-core follow-ups in one PR: add bladeCount and the Oct prop to airframes/air65.json [...], and expose Betaflight's beeper state in getState() so the arm beep works. Then re-vendor into #283." The prop (owner, the same day): "Gemfan 1219S 2-blade 31mm".
+
+### The airframe
+
+- **`name`** now reads "Gemfan 1219S 2-blade 31 mm".
+- **`values.bladeCount`** is 2, from the owner.
+  - It is not a plant field: `plantBlock` reads only `PLANT_FIELDS`. The plant and the module are unchanged by it.
+  - It is there for consumers. quadmath's sound takes its blade-pass frequency from it.
+- **`values.propDiameter`** keeps its AJ source, because the 2026-08-05 bench ran the Gemfan 1219 3-blade. A new note records the 1219S, which is also 31 mm.
+  - `tmax` (the measured kt) and `rpmHover` already come from HV, the 2026-10-23 hover flown on the 1219S. So the plant's thrust is this prop's.
+
+### The beeper
+
+- **`USE_BEEPER` in the QMSC target.** Without it, `io/beeper.c` compiles to stubs and `isBeeperOn()` is always false.
+  - Betaflight's beeper state machine (TASK_BEEPER) now runs as on a quad.
+  - There is no buzzer pin (`BEEPER_PIN` NONE). `src/glue/hal_beeper.c` takes `beeperInit`, `systemBeep` and `systemBeepToggle`.
+  - `hal_system.c` stubs `warningLedEnable` and `warningLedRefresh`. The beeper calls both with each beep, and they were the only link errors.
+- **FC readout 57 is `beeper`, and `FC_LEN` is now 58.** It reads `isBeeperOn()`.
+  - It is appended, as `acc` and `pidSetpoint` were, and the ABI version stays 1.
+  - `sim-core.js` decodes it as a boolean, `fc.beeper`.
+- **CLI policy:**
+  - `beeper` lines now apply, because the beeper's off flags are real config now.
+  - `beacon` stays refused. The new reason: the DShot beacon plays ESC tones, which the plant does not model, and off is Betaflight's default (`DEFAULT_DSHOT_BEACON_OFF_FLAGS`).
+  - The owner's diff turns both beacon modes on, and puts BEEPER on AUX3 with FLIP OVER AFTER CRASH. With the beacon on, raising AUX3 while disarmed would send ESC tones. It would also hold an arm into crash flip for up to 1.2 s (`fc/core.c:499`, `DSHOT_BEACON_GUARD_DELAY_US`).
+  - The owner diff's counts are unchanged: 99 applied, 22 refused, 39 not in the sim target.
+- **Exports:** four new, the `beeperConfig` and `beeperDevConfig` registries and reset templates. `tests/node/abi-exports.json` is updated with `--update`.
+- **Module:** sha256 `367b3670…`, 237 984 bytes. The byte-exact gate rebuilds it.
+
+**What the owner's diff beeps** (`tests/node/beeper.test.mjs`, 1 ms samples):
+
+| event | beeper |
+|---|---|
+| arm (AUX1) | within 20 ms of the arm (the beeper task runs at 100 Hz): 300 ms on, 50 off, 50 on (`beep_armingBeep`) |
+| disarm | 150 ms on, 50 off, 150 ms on (`beep_disarmBeep`) |
+| AUX3 high (BEEPER) | 100 ms RX_SET beeps for as long as it is held, armed in crash flip too; the motors stay at DShot 0 (no beacon) and the arm is not delayed |
+
+**Flight is unchanged.** The same 8.7 s of inputs on the owner's diff and plant were flown on v0.4.0's module and on this one: arm, hover, a punch, rolls and yaw, disarm. The plant state block (position, velocity, attitude, rates, rpm, DShot, vbat) is identical on every tick. The beeper task does not move the physics.
+
+### Tests
+
+- **`tests/node/beeper.test.mjs`** is new and is in `run-all`.
+- **`run-all` (full):** all 20 pass, with 2 skipped (#5 and the #15 target). The byte-exact build, the four WebFPV tests and both Chrome tests are among them.
+  - WebFPV was fetched the way CI fetches it (518846c, sha256 `08e995cb…`). `C:\Users\Risfo\webfpv-upstream` no longer exists.
+
+### Releasing
+
+- v0.5.0 is tagged at this commit.
+- `scripts/release.sh v0.5.0` writes `release/`.
+- quadmath re-vendors it into PR 283, the sound PR.
+- Nothing was deployed.
