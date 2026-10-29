@@ -33,6 +33,12 @@
 #define USE_DYN_IDLE
 #define USE_DYN_NOTCH_FILTER
 
+// Betaflight's beeper (io/beeper.c), its state a readout for the page to
+// play (FC_BEEPER): no buzzer pin (BEEPER_PIN NONE; src/glue/hal_beeper.c).
+// The DShot beacon stays off, Betaflight's default: the policy refuses
+// 'beacon' (cli-policy.js).
+#define USE_BEEPER
+
 // Battery measured by Betaflight through the ADC. Without these the meter
 // sources default to NONE (sensors/battery.c) and Betaflight never reads it.
 #define USE_ADC
