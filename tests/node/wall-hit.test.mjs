@@ -15,10 +15,8 @@
 // at rest on the floor: upright (up Z above 0.9), inverted (below -0.5), or
 // wedged (anything else: on its side, or propped on the wall).
 //
-// Asserted: every case hits the wall and comes to rest; on a 2 m/s head-on
-// hit (off) the duct rim that meets the wall comes back off it at the wall
-// restitution (the CG comes back slower when the hit is off its height and
-// spins the quad); a glancing hit (15 or 30
+// Asserted: every case hits the wall and comes to rest; a 2 m/s head-on hit
+// (off) comes back at the wall restitution; a glancing hit (15 or 30
 // degrees) keeps three quarters of its speed along the wall, and with the
 // motors off loses at least half of one contact's Coulomb take. With --target,
 // the owner's target instead, its own entry in run-all: upright after every
@@ -69,31 +67,21 @@ const upZ = (q) => 1 - 2 * (q[1] * q[1] + q[2] * q[2]);
 // the frontal drag.
 const pitchFor = (v) => Math.atan2(0.5 * val('airDensity') * val('cdAFront') * v * v, val('mass') * val('gravity'));
 
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-
-// The duct point that reaches furthest along +x at attitude q, round each
-// duct at its bottom and top rims: how far (x) and where on the body (r).
-function leading(q) {
+// How far the ducts reach along +x at attitude q: round each duct, at its
+// bottom and top rims.
+function leadingX(q) {
   const arm = val('wheelbase') / 2 * Math.SQRT1_2, R = val('ductOuterRadius');
-  let x = -Infinity, r = null;
+  let best = -Infinity;
   for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
     for (const z of [-val('hullBelow'), -val('hullBelow') + val('ductHeight')]) {
       for (let k = 0; k < 72; k++) {
         const a = (k / 72) * 2 * Math.PI;
-        const p = [sx * arm + R * Math.cos(a), sy * arm + R * Math.sin(a), z];
-        const px = rotate(q, p)[0];
-        if (px > x) {
-          x = px;
-          r = p;
-        }
+        best = Math.max(best, rotate(q, [sx * arm + R * Math.cos(a), sy * arm + R * Math.sin(a), z])[0]);
       }
     }
   }
-  return { x, r };
+  return best;
 }
-const leadingX = (q) => leading(q).x;
-// The world velocity along +x of body point r (omega is the body rate).
-const pointVx = (s, r) => s.vel[0] + rotate(s.quat, cross(s.omega, r))[0];
 
 const AUX1 = 4;
 
@@ -126,8 +114,6 @@ async function hit(speed, angleDeg, pilot) {
   core.teleport({ pos: [WALL_X - GAP - leadingX(q), 0, HEIGHT], quat: q, vel: [vIn.n, vIn.t, 0] });
   core.events();
   let hitUs = null, floorUs = null, crashed = false, impact = null, after = null, slideAtReact = null;
-  // From the teleport (no body rate) until the first tick samples it.
-  let lead = { r: leading(q).r, vx: vIn.n }, rebound = null;
   let rest = 0;
   step(8000, () => {
     for (const e of core.events()) {
@@ -143,14 +129,6 @@ async function hit(speed, angleDeg, pilot) {
       }
     }
     const s = core.state;
-    if (hitUs === null) {
-      // The leading duct point and its speed into the wall, each tick until
-      // the hit; on the tick of the hit, how fast that point comes back off.
-      const l = leading(s.quat);
-      lead = { r: l.r, vx: pointVx(s, l.r) };
-    } else if (rebound === null) {
-      rebound = -pointVx(s, lead.r) / lead.vx;
-    }
     if (hitUs !== null) {
       const since = core.simTimeUs - hitUs;
       if (after === null && since >= 50_000) {
@@ -172,7 +150,7 @@ async function hit(speed, angleDeg, pilot) {
   // either.
   const wallGap = WALL_X - Math.max(s.pos[0] + leadingX(s.quat), ...core.footprint.map((p) => p[0]));
   const state = up > 0.9 ? 'upright' : up < -0.5 ? 'inverted' : 'wedged';
-  return { speed, angleDeg, pilot, pitchDeg: pitch * 180 / Math.PI, vIn, impact, crashed, after, rebound, slideAtReact, state, up,
+  return { speed, angleDeg, pilot, pitchDeg: pitch * 180 / Math.PI, vIn, impact, crashed, after, slideAtReact, state, up,
     z: s.pos[2], onWall: wallGap < 0.002, rested: rest >= 200 };
 }
 
@@ -219,9 +197,8 @@ if (whatIf.length) {
     }
   }
   const headOn = rows.find((r) => r.pilot === 'off' && r.speed === 2 && r.angleDeg === 90);
-  const ratio = headOn.rebound;
-  const cg = headOn.after.vn / headOn.vIn.n;
-  assert.ok(Math.abs(ratio - val('wallRestitution')) < 0.05, `2 m/s head on: the duct comes back off the wall at ${f(ratio, 3)} of its speed in (wallRestitution ${val('wallRestitution')})`);
-  console.log(`2 m/s head on (off): the duct back at ${f(ratio, 3)} of its speed in, the CG at ${f(cg, 3)} 50 ms after`);
+  const ratio = headOn.after.vn / headOn.vIn.n;
+  assert.ok(Math.abs(ratio - val('wallRestitution')) < 0.05, `2 m/s head on comes back at ${f(ratio, 3)} of the speed in (wallRestitution ${val('wallRestitution')})`);
+  console.log(`2 m/s head on (off): back at ${f(ratio, 3)} of the speed in`);
   console.log('wall hits: ok');
 }

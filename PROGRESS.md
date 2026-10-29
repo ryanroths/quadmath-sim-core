@@ -7534,3 +7534,105 @@ So the tag stays on 3cbfd5e, and nothing was released or re-vendored. The airfra
 - **The room corner:** keep or drop its 1 s bound.
 - **Issue #10:** the target now turns on the slide down the wall after the second hit.
 - **Then v0.4.0.**
+
+## 2026-10-29 | Phase 2 step 3 | v0.4.0 ships the flown geometry; the measured values recorded; #15
+
+Owner (2026-10-29): "measured.canopyTop 35 mm above duct bottom, calipers. hullAbove shipped stays 18, measured 30.2 recorded under measured, same #15 flag. Hold the measured CG/canopy out of the contact model. Ship v0.4.0 with hullBelow 10 / hullAbove 18 (the geometry I flew yesterday), measured values recorded in air65.json under measured.cgHeight 4.8 and measured.ductHeight 13.25, flagged "contact model is rigid, measured CG flips on every hit, needs duct compliance, see #15". Open #15: spring-damper duct ring contact (~2 mm crush at 4 m/s) plus duct-top rims for inverted rest. Fold #10, #13, #14 and the 7 untriaged into it. Reject the head-on bounce test change. Keep the room-corner 1 s minimum. Re-run plant-world and the 24-hit table at the shipped numbers, confirm it matches v0.3.0. Move the tag, release, re-vendor, update #282. Stop."
+
+### The airframe
+
+The values the contact model ships are:
+
+| value | shipped |
+|---|---|
+| `hullBelow` | 10 mm, v0.3.0's |
+| `hullAbove` | 18 mm, v0.3.0's |
+| `ductHeight` | 13.25 mm, measured |
+
+Every value matches the first v0.4.0 (3cbfd5e).
+
+`hullBelow` and `hullAbove` match v0.3.0, the geometry the owner flew:
+- the rest height on the floor is 10 mm;
+- the inverted rest on the canopy is 18 mm (`crash-flip`: "inverted at rest: z 0.0180 m").
+
+Both are marked `"measured": false`, confidence low, and held for the rigid contact model, with a note pointing to #15.
+
+A new top-level `measured` block records the owner's measurements. Each entry carries the flag "contact model is rigid, measured CG flips on every hit, needs duct compliance, see #15":
+
+| field | value |
+|---|---|
+| `cgHeight` | 4.8 mm, edge balance |
+| `ductHeight` | 13.25 mm, calipers |
+| `canopyTop` | 35 mm above the duct bottom, calipers |
+| `hullAbove` | 30.2 mm, canopyTop less cgHeight |
+
+Each also records the value shipped in its place. sim-core reads only `values`, so the block changes nothing at run time.
+
+### Tests
+
+- **The head-on bounce change is rejected.** `wall-hit.test.mjs` is back to PR #11's: the CG's rebound against `wallRestitution`. At the shipped CG it reads 0.300.
+- **The room corner's 1 s minimum is kept.** At the shipped numbers it passes: 17 of 48 presses reach the corner, 2867 ms in all.
+- **Three changes from the measured round are kept.** All are derived from the airframe and are no-ops at the shipped numbers:
+  - crash-flip's inverted rest height is `hullAbove`;
+  - plant-world 26's garage lean stays 0.30 rad;
+  - plant-world 50's deck pose keeps the sweep's rims, offset 0.
+- **`run-all` now names #15** on the target's skip, since #10 is folded into #15.
+
+### At the shipped numbers
+
+**The 24-hit table** (`node tests/node/wall-hit.test.mjs`) is identical, row for row, to the table in "the Air65's duct height measured, its CG estimated" above:
+
+| upright | v0.4.0 | v0.3.0 |
+|---|---|---|
+| flown | 5 / 12 | 1 / 12 |
+| motors off | 7 / 12 | 2 / 12 |
+
+- Nothing ends wedged.
+- 4 m/s at 30 degrees, flown, ends inverted on the wall, so the target is missed (#15).
+- A 2 m/s head-on hit comes back at 0.300.
+
+**The wall table does not match v0.3.0, by design.** v0.3.0 had neither the ducts' sides nor wall friction and restitution; PR #11 compared the two. What matches v0.3.0 is the hull geometry: the floor, the rest heights and the canopy.
+
+**`wall-hit.test.mjs` fails one assertion,** as it did on the first v0.4.0:
+- flown 8 m/s at 30 degrees lands on its side against the wall;
+- it rolls over at about 11 deg/s, the floor's scrub damping the fall into a creep;
+- it comes to rest at 8.6 s, 0.6 s past the 8 s run, which the owner keeps.
+
+CI fails on it. It is listed in #15.
+
+**`run-all --quick`:** 17 pass, 1 fail (the wall-hit assertion above), 2 skipped (#5 and the target, #15).
+
+- **plant-world passes** in 126 s. Its numbers match main's:
+
+  | check | result |
+  |---|---|
+  | box on the floor plane | 2819 ticks pressed at the foot |
+  | garage corner | 457 ms at 0.30 rad |
+  | room corner | 17 presses, 2867 ms |
+  | deck spin-up | 0.76 rad/s |
+
+- **The four WebFPV tests pass** against a scratch copy fetched the way CI fetches it: config count, diff passthrough, X1, and gate-plant (X4: 180 degrees at 113 ms).
+
+### #15
+
+#15 is "spring-damper duct ring contact (~2 mm crush at 4 m/s) and duct-top rims for the inverted rest".
+
+Folded into it:
+- #10, the target;
+- #13, the hull pinch's energy gain;
+- #14, the side push under the floor;
+- the seven untriaged plant-world failures on the fully measured airframe;
+- the room corner's 1 s at the measured CG;
+- the wall-hit rest check;
+- quadmath's F flip "inverted at rest" on the measured airframe;
+- the head-on bounce at the measured CG.
+
+#10, #13 and #14 are closed and point to #15.
+
+### v0.4.0, moved
+
+v0.4.0 now points at this commit. `scripts/release.sh v0.4.0` writes `release/`, and quadmath re-vendors it (PR 282).
+
+The module and every contact value are the same as in the first v0.4.0 release. Only `airframes/air65.json`'s notes and its `measured` block differ.
+
+Nothing was deployed.
