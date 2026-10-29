@@ -165,6 +165,16 @@
  *     into the hull, between two rims, no point ever in a box
  *   - a tick that enters a trigger ends the tick run (sc_tick_stop), so the
  *     host's response lands on the next tick at any frame time
+ *   - walls (owner decision 2026-10-28, the physical model only): a box's
+ *     vertical face answers a footprint point, or a duct's side point
+ *     (plant.c: each rim's point furthest toward a face, met only by faces
+ *     with that normal, among the boxes sc_world_near found near the quad),
+ *     with the airframe's wall restitution along its normal and nothing
+ *     taken along it here; plant.c's sweeps give it Coulomb friction. In
+ *     sim.html every tick against a wall kept 0.82 of the speed along it
+ *     (0.55 on a crash), which stopped a quad pressed on a wall in a few
+ *     ticks. The floor, box tops and undersides, quadmath's CG point and the
+ *     hull's contacts answer as before
  *
  * This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
  */
@@ -188,6 +198,7 @@
 #define BOX_PASSES 3
 #define CONTACT_FACES 8
 #define CONTACT_GAP_US 50000        // a face touched again within 50 ms: the same contact
+#define SIDE_CREEP_WU (1e-3 * WS)   // 1 mm: a duct's side point's overlap from before the tick, moved out a tick
 
 #define SC_WORLD_BOX_CAP 16384
 #define SC_WORLD_TRIGGER_CAP 256
@@ -215,6 +226,31 @@ typedef struct {
 } scFace_t;
 static scFace_t touched[CONTACT_FACES];
 static int touchedCount;
+
+// The boxes near the quad this tick (sc_world_near), in order of position:
+// the only boxes a duct's side point (sc_world_point with nearOnly) is
+// resolved against.
+static int nearList[SC_WORLD_BOX_CAP];
+static int nearCount;
+static int nearSolids[SC_WORLD_BOX_CAP];  // the solids those pieces make up, in order of position
+static int nearSolidCount;
+
+// The solids the boxes make up (buildSolids, below).
+static scBox_t solids[SC_WORLD_BOX_CAP];
+static int solidOf[SC_WORLD_BOX_CAP];
+
+// A face (axis, outward side) as a bit of a face mask.
+#define FACE_BIT(ax, side) (1 << ((ax) * 2 + ((side) > 0)))
+#define ALL_FACES SC_WORLD_ALL_FACES
+
+// How much deeper than it came in this tick a duct's side point is pushed out
+// of a wall at most (world units).
+static double sideReachWU;
+
+void sc_world_set_side_reach(double metres)
+{
+    sideReachWU = metres * WS;
+}
 
 static void mod2world(const double m[3], double w[3])
 {
@@ -397,6 +433,21 @@ static bool ductHit(double vel[3], double omega[3], const double n[3], double in
     return crashed;
 }
 
+// A wall (a box's vertical face) and a footprint point or a duct's side
+// (owner decision 2026-10-28): the speed into the face comes back at rest
+// times itself, and the speed along it is left alone here: plant.c's sweeps
+// take friction off it, at most the airframe's wall friction times the push.
+// The crash threshold is quadmath's, for the CONTACT event only.
+static bool wallBounce(double vel[3], const double n[3], double into, double rest, double crashScale)
+{
+    const double vn = vdot(vel, n);
+    const double leave = vn < 0 ? vn : -into;
+    for (int k = 0; k < 3; k++) {
+        vel[k] += n[k] * (-(1 + rest) * leave);
+    }
+    return into > CRASH_SPEED_WU * crashScale;
+}
+
 static void contactEvent(int kind, int id, double into, bool crashed)
 {
     const double values[3] = { id, into / WS, crashed ? 1 : 0 };
@@ -431,10 +482,18 @@ void sc_world_pose_sync(const double pos[3])
     touchedCount = 0;
 }
 
+// While a duct's side point is resolved, the boxes sc_world_near found are the
+// only ones its samples can be in (they lie within PAST_WU of a point in the
+// near region): walking every box in the map for each face of each point
+// doubled the tick of a quad resting on a table in a map of a thousand boxes.
+static bool nearWalk;
+
 // Whether a box other than skip has the point strictly inside it.
 static bool insideAnother(int skip, const double p[3])
 {
-    for (int j = 0; j < boxCount; j++) {
+    const int walk = nearWalk ? nearCount : boxCount;
+    for (int at = 0; at < walk; at++) {
+        const int j = nearWalk ? nearList[at] : at;
         const scBox_t *o = &boxes[j];
         if (j != skip && p[0] > o->min[0] && p[0] < o->max[0] && p[1] > o->min[1] && p[1] < o->max[1]
             && p[2] > o->min[2] && p[2] < o->max[2]) {
@@ -604,14 +663,21 @@ static void touchFace(int ax, int side, double plane, int id, double into, bool 
 // the hull itself. omega: body rates for the duct-hit spin kick, or NULL for
 // a footprint point. A footprint's hard floor hits are keyed like faces, so
 // four ducts landing together are one contact.
+// faceMask: the faces (FACE_BIT) the point may be pushed out through or
+// touch; a point is still outside a box past any of its faces. The floor
+// counts only with box tops in the mask. nearOnly: only the boxes
+// sc_world_near found. wallRest (a footprint point or a duct's side, not
+// quadmath's CG point): at or above 0, a vertical face answers with
+// wallBounce at that restitution instead of ductHit; *wallOut says the
+// point's only response was that.
 static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], double dt, double bounceScale,
-                             double crashScale, double spinScale, double omega[3], bool pad, bool *floorHitOut,
-                             bool *scrubOut)
+                             double crashScale, double spinScale, double omega[3], bool pad, int faceMask,
+                             bool nearOnly, double wallRest, bool *floorHitOut, bool *scrubOut, bool *wallOut)
 {
     const double floorY = (floorZ + (pad ? FLOOR_PAD_M : 0)) * WS;
     uint32_t flags = 0;
-    bool floorHit = false;
-    if (cp[1] < floorY) {
+    bool floorHit = false, wallHit = false, otherHit = false;
+    if (cp[1] < floorY && (faceMask & FACE_BIT(1, 1))) {
         const double impact = -cv[1];
         cp[1] = floorY;
         floorHit = true;
@@ -630,6 +696,17 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
         }
     }
     bool scrub = floorHit;
+    // A duct's side point under the floor (the floor meets only the rims, so
+    // a tilted duct's side dips under it) meets boxes where the floor is: 20
+    // um under it, out of a standing box's reach down to the floor, one
+    // pressed into the foot of the box's side 1.6 mm. Only the box's push
+    // moves it; the lift is taken off again.
+    nearWalk = nearOnly;
+    const double sunkY = cp[1];
+    const bool sunk = (faceMask & ALL_FACES) != ALL_FACES && cp[1] < floorY;
+    if (sunk) {
+        cp[1] = floorY;
+    }
     // Where the tick integrated the point to (after the floor): travel into a
     // face is measured to here, not to where an earlier pass pushed it.
     const double tickPos[3] = { cp[0], cp[1], cp[2] };
@@ -638,10 +715,12 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
     bool forceBegan = false;
     for (int pass = 0; pass < BOX_PASSES; pass++) {
         int bestBox = -1, bestAxis = 0, bestSide = 0;
-        double bestDepth = INFINITY;
+        double bestDepth = INFINITY, bestReach = INFINITY;
         int bestRank = 4;
         bool anyNear = false;
-        for (int i = 0; i < boxCount; i++) {
+        const int walk = nearOnly ? nearCount : boxCount;
+        for (int at = 0; at < walk; at++) {
+            const int i = nearOnly ? nearList[at] : at;
             const scBox_t *b = &boxes[i];
             // Within PAST_WU: a point nanometres off a slab that meets a wall
             // must still find the slab's top or bottom.
@@ -650,6 +729,135 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             }
             anyNear = true;
             const bool onFloor = grounded(b, floorY);
+            if ((faceMask & ALL_FACES) != ALL_FACES) {
+                // A duct's side point (its face kinds in faceMask): the box's
+                // surface of least penetration, if that is one of its face
+                // kinds and no deeper than sideReachWU. Seams (inner faces, a
+                // hair past one included: a 1 um gap let one through) and a
+                // standing box's bottom are not surfaces; tops and undersides
+                // are, and are the rims' and the canopy's. Sunk under a box
+                // top as the quad lands on it, the top is the shallowest: met
+                // as a wall instead, a split table's seam stopped a 5 m/s
+                // slide in 0.1 m, and leaving through the nearest side shoved
+                // a quad resting tilted on a table a metre. Past a stack's
+                // seam the face goes on (the top under the next crate is a
+                // seam). Deeper than it came in this tick by more than
+                // sideReachWU (the band round a duct the rims do not cover) is
+                // the footprint's, a pose's overlap: deep in two overlapping
+                // boxes, their near faces seams, a far end was the nearest
+                // surface and shoved the quad 5 m, and a pose across a gym
+                // seam was shoved 26 mm in a tick. Answered
+                // only through faces it came in through this tick, a side point
+                // that got into a wall any other way (through a box top as the
+                // quad came down past its edge, carried by another push, a
+                // corner's leftover) was never pushed out, and the duct sank
+                // 5 to 15 mm in. An edge point (SC_WORLD_EDGE_FLAG) leaves
+                // through its one face, chosen to clear the corner; the edge's
+                // other face is not weighed against it.
+                const bool edge = (faceMask & SC_WORLD_EDGE_FLAG) != 0;
+                int leastAx = -1, leastSide = 0;
+                double least = INFINITY;
+                bool out = false;
+                for (int ax = 0; ax < 3 && !out; ax++) {
+                    for (int side = -1; side <= 1; side += 2) {
+                        if (ax == 1 && side < 0 && onFloor) {
+                            continue;
+                        }
+                        const double plane = side > 0 ? b->max[ax] : b->min[ax];
+                        const double depth = side > 0 ? plane - cp[ax] : cp[ax] - plane;
+                        if (depth <= FACE_EPS && covered(i, cp, ax, side, plane)) {
+                            continue;
+                        }
+                        // An edge point lies on the edge's other face (plant.c
+                        // takes it where the rim crosses that face): rebuilt
+                        // from the body frame it can land 1e-17 off it, and
+                        // marked outside the box, a duct went 4.5 mm into a
+                        // post's corner unanswered.
+                        const bool ignored = edge && ax != 1 && !(faceMask & FACE_BIT(ax, side));
+                        if (depth < (ignored ? -FACE_EPS : 0)) {
+                            out = true;
+                            break;
+                        }
+                        if (ignored) {
+                            continue;
+                        }
+                        if (depth < least && !covered(i, cp, ax, side, plane)) {
+                            least = depth;
+                            leastAx = ax;
+                            leastSide = side;
+                        }
+                    }
+                }
+                if (out || leastAx < 0 || !(faceMask & FACE_BIT(leastAx, leastSide))) {
+                    continue;
+                }
+                const double travel = leastSide > 0 ? start[leastAx] - tickPos[leastAx] : tickPos[leastAx] - start[leastAx];
+                if (least > fmax(0, travel) + sideReachWU) {
+                    continue;
+                }
+                double came = travel;
+                // Come in this tick through the box's other side face (a
+                // corner: in through one face, out through the other): the
+                // overlap is all this tick's and goes out whole, up to that
+                // face's travel (the point is admitted as before). A rim
+                // past a post's y face beside it, swung in through its x face
+                // 2.8 mm, crept out 1 mm and ended the tick 0.6 mm in. Only
+                // through that face itself: not across a seam's plane, nor its
+                // plane off the face (a point come down through a split
+                // table's top, or out of a 1 um gap, was pushed out whole where
+                // one piece crept). And only out through the nearer of the
+                // solid's two faces on the way out: a duct come in at a 10 mm
+                // post's near corner was pushed out through its far face, the
+                // wrong way, 8.7 mm. An edge point lies on its edge's other
+                // face (plant.c takes it where the rim crosses it), so in as
+                // far as the plane counts.
+                const scBox_t *sol = &solids[solidOf[i]];
+                if (2 * least <= sol->max[leastAx] - sol->min[leastAx]) {
+                    for (int ax2 = 0; ax2 < 3; ax2 += 2) {
+                        for (int side2 = -1; side2 <= 1 && ax2 != leastAx; side2 += 2) {
+                            const double plane2 = side2 > 0 ? b->max[ax2] : b->min[ax2];
+                            const double was = side2 > 0 ? plane2 - start[ax2] : start[ax2] - plane2;
+                            const double now = side2 > 0 ? plane2 - tickPos[ax2] : tickPos[ax2] - plane2;
+                            if (!(was < 0 && now >= -FACE_EPS)) {
+                                continue;
+                            }
+                            double end[3] = { tickPos[0], tickPos[1], tickPos[2] };
+                            end[ax2] = plane2 - side2 * fmax(now, 2 * FACE_EPS);
+                            if (!crossedInside(i, start, end, ax2, side2, plane2)) {
+                                came = fmax(came, now - was);
+                            }
+                        }
+                    }
+                }
+                // What came in this tick goes out whole (a hit); an overlap
+                // from before it (a pose's, a corner's leftover, a duct come
+                // in through a box top) creeps out SIDE_CREEP_WU a tick, as
+                // the hull's carried overlaps do: a pose across a gym seam
+                // was otherwise pushed 9.6 mm in a tick.
+                // A budget over the passes of this call: less what earlier
+                // passes moved the point out along the face (a point between
+                // two faces was moved 1 mm by each, 2 mm a tick).
+                const double already = fmax(0, leastSide * (cp[leastAx] - tickPos[leastAx]));
+                const double reachOut = fmax(0, came) + ON_FACE_WU + SIDE_CREEP_WU - already;
+                if (!(reachOut > 0)) {
+                    continue;
+                }
+                if (least <= FACE_EPS) {
+                    flags |= 2;
+                    const double plane = leastSide > 0 ? b->max[leastAx] : b->min[leastAx];
+                    touchFace(leastAx, leastSide, plane, b->id, fmax(0, -leastSide * cv[leastAx]), false, true);
+                    continue;
+                }
+                if (bestRank > 1 || least < bestDepth) {
+                    bestBox = i;
+                    bestAxis = leastAx;
+                    bestSide = leastSide;
+                    bestDepth = least;
+                    bestReach = reachOut;
+                    bestRank = 1;
+                }
+                continue;
+            }
             // Began the tick deep inside (a pose): leave through a surface.
             // For a footprint point a box standing on the floor has no
             // bottom surface to be near: a rim on the floor, carried into
@@ -690,10 +898,13 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
                             outside = true;     // outside one of its surfaces: not at this box
                             break;
                         }
-                        if (touchAxis < 0) {
+                        if (touchAxis < 0 && (faceMask & FACE_BIT(ax, side))) {
                             touchAxis = ax;     // lying on its surface: touching
                             touchSide = side;
                         }
+                        continue;
+                    }
+                    if (!(faceMask & FACE_BIT(ax, side))) {
                         continue;
                     }
                     // A tick that began on or above an exposed top lands on it.
@@ -780,8 +991,8 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
                 bestRank = boxRank;
             }
         }
-        if (pass == 0 && !forceBegan && anyNear && (bestBox < 0 || (bestRank >= 2 && bestAxis == 1))
-            && deepInSolid(start)) {
+        if (pass == 0 && !forceBegan && (faceMask & ALL_FACES) == ALL_FACES && anyNear
+            && (bestBox < 0 || (bestRank >= 2 && bestAxis == 1)) && deepInSolid(start)) {
             forceBegan = true;
             pass--;
             continue;
@@ -795,7 +1006,11 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
         double n[3] = { 0, 0, 0 };
         n[bestAxis] = bestSide;
         const double plane = bestSide > 0 ? b->max[bestAxis] : b->min[bestAxis];
-        cp[bestAxis] = plane;
+        if (bestDepth > bestReach) {
+            cp[bestAxis] += bestSide * bestReach;     // a duct's side: the overlap from before the tick creeps out
+        } else {
+            cp[bestAxis] = plane;
+        }
         const double into = fmax(0, -bestSide * cv[bestAxis]);
         const bool top = bestAxis == 1 && bestSide > 0;
         bool crashed = false;
@@ -805,16 +1020,28 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             cv[0] *= 0.85;
             cv[2] *= 0.85;
             scrub = true;
+            otherHit = true;
+        } else if (!pad && wallRest >= 0 && bestAxis != 1) {
+            crashed = wallBounce(cv, n, into, wallRest, crashScale);
+            wallHit = true;
         } else {
             crashed = ductHit(cv, omega, n, into, top, bounceScale, crashScale, spinScale);
+            otherHit = true;
         }
         touchFace(bestAxis, bestSide, plane, b->id, into, crashed, !pad);
     }
     if (floorHit) {
         flags |= 1;
     }
+    if (sunk) {
+        cp[1] = sunkY;
+    }
+    nearWalk = false;
     *floorHitOut = floorHit;
     *scrubOut = scrub;
+    if (wallOut) {
+        *wallOut = wallHit && !otherHit && !floorHit;
+    }
     return flags;
 }
 
@@ -850,8 +1077,8 @@ uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double 
         start[a] = cp[a] - cv[a] * dt;
     }
     bool floorHit, scrub;
-    const uint32_t flags = resolvePoint(cp, cv, start, dt, bounceScale, crashScale, spinScale, omega, true,
-                                        &floorHit, &scrub);
+    const uint32_t flags = resolvePoint(cp, cv, start, dt, bounceScale, crashScale, spinScale, omega, true, ALL_FACES,
+                                        false, -1, &floorHit, &scrub, NULL);
     world2mod(cp, pos);
     world2mod(cv, vel);
     if (scrub) {
@@ -865,16 +1092,31 @@ uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double 
     return flags;
 }
 
+// A box face's outward normal in the module frame, as a face mask bit: world
+// (x, y, z) = (-y, z, -x) of it.
+int sc_world_face_bit(const double n[3])
+{
+    const double w[3] = { -n[1], n[2], -n[0] };
+    int ax = 0;
+    for (int a = 1; a < 3; a++) {
+        if (fabs(w[a]) > fabs(w[ax])) {
+            ax = a;
+        }
+    }
+    return FACE_BIT(ax, w[ax] > 0 ? 1 : -1);
+}
+
 uint32_t sc_world_point(double pos[3], double vel[3], const double startPos[3], double dt, double bounceScale,
-                        double crashScale, double spinScale, bool *floorHit, bool *scrub)
+                        double crashScale, double spinScale, int faceMask, double wallRest, bool *floorHit,
+                        bool *scrub, bool *wall)
 {
     double cp[3], cv[3], start[3];
     mod2world(pos, cp);
     mod2world(vel, cv);
     mod2world(startPos, start);
     const double cp0[3] = { cp[0], cp[1], cp[2] }, cv0[3] = { cv[0], cv[1], cv[2] };
-    const uint32_t flags = resolvePoint(cp, cv, start, dt, bounceScale, crashScale, spinScale, NULL, false,
-                                        floorHit, scrub);
+    const uint32_t flags = resolvePoint(cp, cv, start, dt, bounceScale, crashScale, spinScale, NULL, false, faceMask,
+                                        (faceMask & ALL_FACES) != ALL_FACES, wallRest, floorHit, scrub, wall);
     // Only the components the world changed: the x WS round trip is not exact,
     // and its last-bit noise on an untouched axis would read as a push.
     if (cp[2] != cp0[2]) {
@@ -923,11 +1165,12 @@ static const int HULL_EDGES[8][2] = { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 }, { 
 // merges nothing, so the solids, their order and the order of each one's
 // pieces follow where the boxes are, not the order the map lists them in
 // (the order of the hull's contacts is the order of plant.c's sweeps).
-static scBox_t solids[SC_WORLD_BOX_CAP];   // indexed by the solid's first box; extents only
-static int solidOf[SC_WORLD_BOX_CAP];      // the solid a box is part of
+// solids: indexed by the solid's first box, extents only; solidOf: the solid a
+// box is part of (declared above).
 static int solidFirst[SC_WORLD_BOX_CAP];   // a solid's first piece; pieceNext links the rest
 static int pieceNext[SC_WORLD_BOX_CAP];
 static int solidOrder[SC_WORLD_BOX_CAP];   // the solids, in order of position
+static double solidMaxX[SC_WORLD_BOX_CAP]; // the greatest max x of the solids up to each in that order
 static int pieceOrder[SC_WORLD_BOX_CAP];
 static int solidCount;
 static int mergeAx;
@@ -1026,6 +1269,10 @@ static void buildSolids(void)
         pieceOrder[j] = j;
     }
     qsort(solidOrder, solidCount, sizeof(int), solidsByPosition);
+    for (int o = 0; o < solidCount; o++) {
+        const double x = solids[solidOrder[o]].max[0];
+        solidMaxX[o] = o && solidMaxX[o - 1] > x ? solidMaxX[o - 1] : x;
+    }
     qsort(pieceOrder, boxCount, sizeof(int), piecesByPosition);
     for (int k = boxCount - 1; k >= 0; k--) {
         const int j = pieceOrder[k];
@@ -1033,6 +1280,167 @@ static void buildSolids(void)
         solidFirst[solidOf[j]] = j;
     }
     solidsStale = false;
+}
+
+// The boxes within reach of a module-frame region (the quad's span over the
+// tick), for the ducts' side points. The solids are in order of min x: the
+// walk starts at the first whose max x, or an earlier one's, reaches the
+// region (a binary search on the running greatest max x) and stops at the
+// first that starts past it, so a tick away from every box costs a few
+// comparisons, not a pass over the map.
+int sc_world_near(const double lo[3], const double hi[3])
+{
+    nearCount = 0;
+    nearSolidCount = 0;
+    if (!boxCount) {
+        return 0;
+    }
+    if (solidsStale) {
+        buildSolids();
+    }
+    double a[3], b[3], wlo[3], whi[3];
+    mod2world(lo, a);
+    mod2world(hi, b);
+    for (int k = 0; k < 3; k++) {
+        wlo[k] = fmin(a[k], b[k]) - PAST_WU - ON_FACE_WU;
+        whi[k] = fmax(a[k], b[k]) + PAST_WU + ON_FACE_WU;
+    }
+    int first = 0, last = solidCount;
+    while (first < last) {
+        const int mid = first + (last - first) / 2;
+        if (solidMaxX[mid] < wlo[0]) {
+            first = mid + 1;
+        } else {
+            last = mid;
+        }
+    }
+    for (int o = first; o < solidCount; o++) {
+        const scBox_t *s = &solids[solidOrder[o]];
+        if (s->min[0] > whi[0]) {
+            break;                      // in order of min x: this and the rest start past the region
+        }
+        if (s->max[0] < wlo[0] || s->min[1] > whi[1] || s->max[1] < wlo[1] || s->min[2] > whi[2]
+            || s->max[2] < wlo[2]) {
+            continue;
+        }
+        nearSolids[nearSolidCount++] = solidOrder[o];
+        for (int j = solidFirst[solidOrder[o]]; j >= 0; j = pieceNext[j]) {
+            const scBox_t *p = &boxes[j];
+            if (p->min[0] <= whi[0] && p->max[0] >= wlo[0] && p->min[1] <= whi[1] && p->max[1] >= wlo[1]
+                && p->min[2] <= whi[2] && p->max[2] >= wlo[2]) {
+                nearList[nearCount++] = j;
+            }
+        }
+    }
+    return nearCount;
+}
+
+// The vertical edges of the boxes sc_world_near found, in its order (module
+// frame: x, y, bottom z, top z, the outward normals of the two faces meeting
+// there, along x and along y, +-1, and the box's size across each of those
+// faces), each with the mask of those two
+// faces: those that reach between zlo and zhi, within reach of centre across
+// the floor (taking a slot, the tiles of a floor under the rims pushed a
+// post's corners past the cap); up to max (at most SC_WORLD_EDGE_CAP).
+static int edgeBox[SC_WORLD_EDGE_CAP];
+static int edgeSides[SC_WORLD_EDGE_CAP][2];
+
+int sc_world_near_edges(const double centre[3], double reach, double zlo, double zhi, double edges[][8], int masks[],
+                        int max)
+{
+    int n = 0;
+    if (max > SC_WORLD_EDGE_CAP) {
+        max = SC_WORLD_EDGE_CAP;
+    }
+    for (int at = 0; at < nearCount && n < max; at++) {
+        const scBox_t *b = &boxes[nearList[at]];
+        if (b->max[1] / WS < zlo || b->min[1] / WS > zhi) {
+            continue;
+        }
+        const scBox_t *sol = &solids[solidOf[nearList[at]]];
+        for (int c = 0; c < 4 && n < max; c++) {
+            const int sx = c & 1 ? 1 : -1, sz = c & 2 ? 1 : -1;     // world x and z sides
+            const double wx = sx > 0 ? b->max[0] : b->min[0];
+            const double wz = sz > 0 ? b->max[2] : b->min[2];
+            // A piece's corner that is not its solid's has a face inside the
+            // solid, a seam all along it: never a corner (a floor in tiles
+            // filled the slots and a post's corner lost its edge points).
+            if (wx != (sx > 0 ? sol->max[0] : sol->min[0]) || wz != (sz > 0 ? sol->max[2] : sol->min[2])) {
+                continue;
+            }
+            if (!(hypot(-wz / WS - centre[0], -wx / WS - centre[1]) <= reach)) {
+                continue;
+            }
+            edges[n][0] = -wz / WS;
+            edges[n][1] = -wx / WS;
+            edges[n][2] = b->min[1] / WS;
+            edges[n][3] = b->max[1] / WS;
+            edges[n][4] = -sz;
+            edges[n][5] = -sx;
+            edges[n][6] = (b->max[2] - b->min[2]) / WS;     // the box's size across the x face
+            edges[n][7] = (b->max[0] - b->min[0]) / WS;     // and across the y face
+            masks[n] = FACE_BIT(0, sx) | FACE_BIT(2, sz);
+            edgeBox[n] = nearList[at];
+            edgeSides[n][0] = sx;
+            edgeSides[n][1] = sz;
+            n++;
+        }
+    }
+    return n;
+}
+
+// The tops (+1) and bottoms (-1) of the solids sc_world_near found, between
+// zlo and zhi (module-frame heights), each height and kind once, in order of
+// height (then kind); up to max. Solids, not pieces: a shelf cut along its
+// height had its pieces' top and bottom at the cut, inside it, and points
+// there the shelf in one piece did not have.
+int sc_world_near_levels(double zlo, double zhi, double levels[], int kinds[], int max)
+{
+    int n = 0;
+    for (int at = 0; at < nearSolidCount; at++) {
+        const scBox_t *b = &solids[nearSolids[at]];
+        for (int k = -1; k <= 1; k += 2) {
+            const double z = (k > 0 ? b->max[1] : b->min[1]) / WS;
+            if (z < zlo || z > zhi) {
+                continue;
+            }
+            int j = 0;
+            while (j < n && (levels[j] < z || (levels[j] == z && kinds[j] < k))) {
+                j++;
+            }
+            if ((j < n && levels[j] == z && kinds[j] == k) || j == max) {
+                continue;               // already there, or past the last kept
+            }
+            for (int m = (n < max ? n : max - 1); m > j; m--) {
+                levels[m] = levels[m - 1];
+                kinds[m] = kinds[m - 1];
+            }
+            levels[j] = z;
+            kinds[j] = k;
+            if (n < max) {
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+// Whether edge e (of the last sc_world_near_edges) is a corner of the solid
+// at a module-frame point by it: neither of its faces is a seam there (the
+// edges of a wall in pieces, along their seam, are inside the wall).
+bool sc_world_edge_open(int e, const double at[3])
+{
+    double cp[3];
+    mod2world(at, cp);
+    const scBox_t *b = &boxes[edgeBox[e]];
+    const int sides[2][2] = { { 0, edgeSides[e][0] }, { 2, edgeSides[e][1] } };
+    for (int f = 0; f < 2; f++) {
+        const int ax = sides[f][0], side = sides[f][1];
+        if (covered(edgeBox[e], cp, ax, side, side > 0 ? b->max[ax] : b->min[ax])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // The piece of solid s whose face (axis ax, side) is the solid's there and

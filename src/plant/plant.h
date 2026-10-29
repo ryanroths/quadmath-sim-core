@@ -11,7 +11,9 @@
  *                      quadratic drag (frontal and plan) and rotational
  *                      damping, quadmath's rigid body and ground effect, and
  *                      contact through a five-point footprint (four duct rims
- *                      and the canopy top)
+ *                      and the canopy top), plus the ducts' sides (a tube
+ *                      round each motor) against walls, which answer with a
+ *                      restitution and Coulomb friction
  *   SC_MODEL_PARITY    quadmath's own motor spool, aero and battery, for the
  *                      port-parity tests P2 and P3 only
  *
@@ -96,7 +98,14 @@ enum {
     // SC_SOC_FLOOR, and the OCV falls from PB_OCV's SoC 0 value through
     // these three, linear between them
     PB_OCV_OVER = 48,           // 3 values: V per cell at SoC -0.05, -0.10, -0.15
-    PB_LEN = 51,
+    // Walls (physical model): each duct is a tube, PB_DUCT_RADIUS round, from
+    // PB_HULL_BELOW under the CG up PB_DUCT_HEIGHT, and a box's vertical face
+    // answers its sides, the duct rims and the canopy with a restitution and
+    // Coulomb friction; the floor, box tops and undersides are as before
+    PB_DUCT_HEIGHT = 51,        // m, duct bottom to duct top; 0: no sides, the footprint alone
+    PB_WALL_FRICTION = 52,      // friction impulse / normal impulse, at most
+    PB_WALL_RESTITUTION = 53,   // speed out / speed in, along the face normal
+    PB_LEN = 54,
 };
 
 // The lowest state of charge a physical pack reaches (the last
@@ -155,8 +164,45 @@ uint32_t sc_world_contact(double pos[3], double vel[3], double omega[3], double 
 // One footprint point (module frame, m and m/s; startPos where the point was
 // at the start of the tick): floor and boxes, no floor pad, no spin kick.
 // Corrects pos and vel in place; returns flags (1 floor, 2 box).
+// faceMask: SC_WORLD_ALL_FACES (a footprint point: every face and the
+// floor), or a duct's side point's face kinds (sc_world_face_bit of their
+// outward normals, box vertical faces), met among the boxes sc_world_near
+// found this tick, only through the box's surface of least penetration, no
+// deeper than the point came into the box this tick and the side reach, and
+// out by what came in this tick and 1 mm of what was there before (an older
+// overlap creeps out), no floor. wallRest
+// at or above 0: a box's vertical face answers with that restitution and
+// leaves the speed along it to the caller's friction; *wall (may be NULL)
+// says that was the point's only response.
+#define SC_WORLD_ALL_FACES 63
+// With a side point's one face: an edge point, chosen to clear a box's corner
+// through that face; the edge's other face is not weighed against it.
+#define SC_WORLD_EDGE_FLAG 64
 uint32_t sc_world_point(double pos[3], double vel[3], const double startPos[3], double dt, double bounceScale,
-                        double crashScale, double spinScale, bool *floorHit, bool *scrub);
+                        double crashScale, double spinScale, int faceMask, double wallRest, bool *floorHit,
+                        bool *scrub, bool *wall);
+// A box face's outward normal (module frame) as a face-mask bit.
+int sc_world_face_bit(const double n[3]);
+// How much deeper (m) than it came in this tick a duct's side point is pushed
+// out of a wall at most: deeper is the footprint's (a pose's overlap).
+void sc_world_set_side_reach(double metres);
+// The boxes within reach of a module-frame region (lo and hi corners, m),
+// for the ducts' side points this tick; returns how many.
+int sc_world_near(const double lo[3], const double hi[3]);
+// Those boxes' vertical edges (module frame: x, y, bottom z, top z, the two
+// faces' outward normals along x and y, +-1, and the box's size across each
+// of those faces) that reach between zlo and
+// zhi within reach (m) of centre across the floor, each with the face mask of
+// those faces; up to max, returns how many.
+// The tops (+1) and bottoms (-1) of those boxes between zlo and zhi
+// (module-frame heights, m), each height and kind once, in order; up to max.
+int sc_world_near_levels(double zlo, double zhi, double levels[], int kinds[], int max);
+#define SC_WORLD_EDGE_CAP 256
+int sc_world_near_edges(const double centre[3], double reach, double zlo, double zhi, double edges[][8], int masks[],
+                        int max);
+// Whether edge e of the last sc_world_near_edges is the solid's corner at a
+// module-frame point by it (neither face a seam there).
+bool sc_world_edge_open(int e, const double at[3]);
 // Whether a module-frame point is strictly inside a box.
 bool sc_world_inside(const double pos[3]);
 // Whether a footprint point (module frame) is in the solid: under the floor,

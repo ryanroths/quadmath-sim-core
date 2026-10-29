@@ -43,15 +43,24 @@
 #define FOOTPRINT_POINTS 5
 #define HULL_BOXES 4                // solids held off by the footprint's hull, a tick
 #define HULL_PASSES 4               // top-ups of the hull contacts' pushes, a tick
-// The points, the points the points' push carried into the solid, up to
-// SC_HULL_HOLD hold points for each hull contact, the points again after the
-// hull's push.
-#define CONTACTS (FOOTPRINT_POINTS + FOOTPRINT_POINTS + SC_HULL_HOLD * HULL_BOXES + FOOTPRINT_POINTS)
+#define DUCT_RIMS 2                 // a duct's side: its bottom and top rims
+#define WALL_NORMALS 4              // the vertical faces a box has: -x, +x, -y, +y
+#define EDGE_POINTS 16              // duct sides into a box's vertical edge, a tick
+#define NEAR_LEVELS 8               // box tops and bottoms within the rims' height looked at, a tick
+#define LEVEL_POINTS 32             // duct sides just above a top or below a bottom, a tick
+#define LEVEL_EPS 2e-5              // m past a top or bottom: past world.c's 5 um seam window
+#define NEAR_EDGES 128              // vertical edges of the boxes near the quad looked at, a tick
+#define SIDE_POINTS (SC_MOTOR_COUNT * DUCT_RIMS * WALL_NORMALS + SC_MOTOR_COUNT + EDGE_POINTS + LEVEL_POINTS)
+// The points, the ducts' side points, the points the points' push carried
+// into the solid, up to SC_HULL_HOLD hold points for each hull contact, the
+// points again after the hull's push.
+#define CONTACTS (FOOTPRINT_POINTS + SIDE_POINTS + FOOTPRINT_POINTS + SC_HULL_HOLD * HULL_BOXES + FOOTPRINT_POINTS)
 #define CONTACT_SWEEPS 32
 #define PINCH_BIAS_MAX 0.1          // m/s: a contact's push left undone is moved out no faster
 #define SLIP_MIN 1e-6               // m/s: a contact arriving slower along the surface is static
 #define CARRY_MIN 1e-4              // m (world.c ON_FACE_WU): a carry the next tick's resolution reaches
 #define CONTACT_SPIN_CAP 150.0      // rad/s, below the divergence guard (as world.c)
+#define ON_FACE_M 1e-4              // m (world.c ON_FACE_WU): on a face
 
 sc_plant_state_t sc_plant;
 
@@ -320,7 +329,9 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_ELEC_TAU] >= 0
                                         && block[PB_OCV_OVER] >= 0 && block[PB_OCV_OVER] <= block[PB_OCV]
                                         && block[PB_OCV_OVER + 1] >= 0 && block[PB_OCV_OVER + 1] <= block[PB_OCV_OVER]
-                                        && block[PB_OCV_OVER + 2] >= 0 && block[PB_OCV_OVER + 2] <= block[PB_OCV_OVER + 1])) {
+                                        && block[PB_OCV_OVER + 2] >= 0 && block[PB_OCV_OVER + 2] <= block[PB_OCV_OVER + 1]
+                                        && block[PB_DUCT_HEIGHT] >= 0 && block[PB_WALL_FRICTION] >= 0
+                                        && block[PB_WALL_RESTITUTION] >= 0 && block[PB_WALL_RESTITUTION] <= 1)) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -663,6 +674,154 @@ static double restHeightAt(const double q[4])
     return drop;
 }
 
+// A quantity round a duct's rim, a cos t + b sin t + c at the angle t from the
+// body's x axis: how far a rim point is past a face, or its height. Each is
+// one of these whatever the attitude, so its extremes and zeros are exact.
+typedef struct {
+    double a, b, c;
+} scWave_t;
+
+static double waveAt(const scWave_t *w, double t)
+{
+    return w->a * cos(t) + w->b * sin(t) + w->c;
+}
+
+// The wave at a linear measure of the rim's points: its value at the rim's
+// centre (c), and along the rim's two in-plane axes times the radius.
+static scWave_t waveOf(double centre, double alongX, double alongY, double radius)
+{
+    const scWave_t w = { radius * alongX, radius * alongY, centre };
+    return w;
+}
+
+// The angles where w is v, appended at out; returns how many (0 or 2).
+static int waveCrossing(const scWave_t *w, double v, double *out)
+{
+    const double m = hypot(w->a, w->b);
+    if (!(m > 0) || fabs(w->c - v) > m) {
+        return 0;
+    }
+    const double th = atan2(w->b, w->a), d = acos((v - w->c) / m);
+    out[0] = th + d;
+    out[1] = th - d;
+    return 2;
+}
+
+// A duct's rim (0 bottom, 1 top) reaching toward a horizontal direction
+// (world frame): the rim's point furthest that way, in the body frame. False
+// when the rim lies square to it (the quad on its side against a wall: the
+// rim is flat on it, and has no furthest point).
+static bool rimToward(int motor, int rim, const double q[4], const double toward[3], double body[3])
+{
+    double tb[3];
+    qRotateInverse(q, toward, tb);
+    const double tl = hypot(tb[0], tb[1]);
+    if (!(tl > 1e-6)) {
+        return false;
+    }
+    body[0] = MOTOR_X[motor] * derived[PD_ARM] + blk[PB_DUCT_RADIUS] * tb[0] / tl;
+    body[1] = MOTOR_Y[motor] * derived[PD_ARM] + blk[PB_DUCT_RADIUS] * tb[1] / tl;
+    body[2] = -blk[PB_HULL_BELOW] + rim * blk[PB_DUCT_HEIGHT];
+    return true;
+}
+
+// A duct's side point's push joins the CG's (the largest each way per axis),
+// except down when the footprint stands on the floor or a box top this tick:
+// squeezed into a slot lower than the quad, a top rim under the upper plate
+// pushed the CG down and carried the rims 2 um into the lower plate. The
+// floor wins; what the push leaves undone moves out as a pinch does (bias).
+static void sidePush(const double push[3], bool floored, double hi[3], double lo[3])
+{
+    for (int a = 0; a < 3; a++) {
+        hi[a] = fmax(hi[a], push[a]);
+        if (!(a == 2 && floored)) {
+            lo[a] = fmin(lo[a], push[a]);
+        }
+    }
+}
+
+// A duct's side point (body frame) against the box faces in faceMask among
+// the boxes near the quad (world.c): when the world pushes it or turns its
+// velocity, one contact as a footprint point's (rw, normal, target, slip,
+// mu, push). Returns the world's flags; *added says the contact was made.
+static uint32_t sideContact(const double body[3], int faceMask, const double p[3], const double v[3], const double q[4],
+                            const double omW[3], const double p0[3], const double q0[4], double dt, double rw[3],
+                            double normal[3], double target[3], double slip[3], double *mu, double push[3], bool *added)
+{
+    double rs[3], wxr[3], pt[3], vt[3], st[3];
+    *added = false;
+    // How far past the footprint this point can lead into a wall: a rim
+    // reaches R (1 - cos 45 degrees) past the arm diagonal in its own plane,
+    // and the top rim leads the bottom by the duct's height times its lean
+    // (a top rim come down past a box's side 5.8 mm in, at 0.4 rad of roll,
+    // was past a level band and never answered).
+    {
+        static const double BZ[3] = { 0, 0, 1 };
+        double ez[3];
+        qRotate(q, BZ, ez);
+        const bool top = body[2] > -blk[PB_HULL_BELOW] + 0.5 * blk[PB_DUCT_HEIGHT];
+        sc_world_set_side_reach(blk[PB_DUCT_RADIUS] * (1 - sqrt(0.5)) + (top ? blk[PB_DUCT_HEIGHT] * hypot(ez[0], ez[1]) : 0));
+    }
+    qRotate(q, body, rw);
+    qRotate(q0, body, rs);
+    cross3(omW, rw, wxr);
+    for (int a = 0; a < 3; a++) {
+        pt[a] = p[a] + rw[a];
+        vt[a] = v[a] + wxr[a];
+        st[a] = p0[a] + rs[a];
+    }
+    const double ptIn[3] = { pt[0], pt[1], pt[2] };
+    const double vtIn[3] = { vt[0], vt[1], vt[2] };
+    bool floorHit = false, scrub = false, wall = false;
+    const uint32_t f = sc_world_point(pt, vt, st, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE], blk[PB_SPIN_SCALE],
+                                      faceMask, blk[PB_WALL_RESTITUTION], &floorHit, &scrub, &wall);
+    if (!f) {
+        return 0;
+    }
+    double dp[3], dv[3];
+    for (int a = 0; a < 3; a++) {
+        dp[a] = pt[a] - ptIn[a];
+        dv[a] = vt[a] - vtIn[a];
+    }
+    double len = sqrt(dot3(dp, dp));
+    const double *dir = dp;
+    if (!(len > 0)) {
+        len = sqrt(dot3(dv, dv));
+        dir = dv;
+    }
+    if (!(len > 0)) {
+        return f;
+    }
+    for (int a = 0; a < 3; a++) {
+        push[a] = dp[a];
+        normal[a] = dir[a] / len;
+        target[a] = vt[a];
+    }
+    const double vin = dot3(vtIn, normal);
+    // A side point already leaving the face is only kept from moving into
+    // it, not held at the speed it was leaving at (as the hull's contacts):
+    // spun off a bench's end 8 m/s into it, ducts on its end and a leg's
+    // side each held the speed they left at, fought through their lever
+    // arms, and threw the quad to 13 m/s in a tick.
+    if (vin >= 0) {
+        const double tn = dot3(target, normal);
+        for (int a = 0; a < 3; a++) {
+            target[a] -= tn * normal[a];
+        }
+    }
+    double sl[3];
+    for (int a = 0; a < 3; a++) {
+        sl[a] = vtIn[a] - vin * normal[a];
+    }
+    const double slen = sqrt(dot3(sl, sl));
+    for (int a = 0; a < 3; a++) {
+        slip[a] = slen > SLIP_MIN ? sl[a] / slen : 0;
+    }
+    *mu = wall ? blk[PB_WALL_FRICTION] : -1;
+    *added = true;
+    return f;
+}
+
 // Contact through the footprint (owner decision 2026-10-23): four points on
 // the duct rims along the arm diagonals at the duct bottom, and the canopy
 // top. Each point meets the floor and boxes through quadmath's CG point's
@@ -684,8 +843,9 @@ static double restHeightAt(const double q[4])
 //     least the speed out (to PINCH_BIAS_MAX) that moves the part of its push
 //     the CG's move left undone (a pinch: pushes that cancelled) in a tick;
 //     across it the world's tangential target (its friction), a sliding
-//     contact by one exact row along its slip. A fixed sweep count keeps it
-//     deterministic.
+//     contact by one exact row along its slip, or on a wall Coulomb friction
+//     toward no slip, at most PB_WALL_FRICTION times the contact's push so
+//     far. A fixed sweep count keeps it deterministic.
 // The spin now comes from the lever arms, so the duct-hit spin kick is not
 // applied; the ground scrub (H:3196-3203) and the spin cap are.
 // A box edge or corner can pass between the points (a shelf's front edge
@@ -719,6 +879,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     const double spinBefore = sqrt(dot3(om, om));
     double rw[CONTACTS][3], target[CONTACTS][3], normal[CONTACTS][3];
     double slip[CONTACTS][3];           // unit tangential slip at contact, or zero
+    double mu[CONTACTS];                // a wall's Coulomb friction, or -1: the world's tangential target
     double r0[FOOTPRINT_POINTS][3];
     bool active[CONTACTS];
     double pushHi[3] = { 0, 0, 0 }, pushLo[3] = { 0, 0, 0 };
@@ -744,9 +905,11 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         }
         const double ptIn[3] = { pt[0], pt[1], pt[2] };
         const double vtIn[3] = { vt[0], vt[1], vt[2] };
-        bool floorHit = false, scrub = false;
+        bool floorHit = false, scrub = false, wall = false;
         const uint32_t f = sc_world_point(pt, vt, st, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE],
-                                          blk[PB_SPIN_SCALE], &floorHit, &scrub);
+                                          blk[PB_SPIN_SCALE], SC_WORLD_ALL_FACES, blk[PB_WALL_RESTITUTION], &floorHit,
+                                          &scrub, &wall);
+        mu[k] = wall ? blk[PB_WALL_FRICTION] : -1;
         flags |= f;
         anyFloor = anyFloor || floorHit;
         anyScrub = anyScrub || scrub;
@@ -792,6 +955,259 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         }
         active[k] = true;
     }
+    // The ducts' sides (owner decision 2026-10-28): each duct is a tube round
+    // its motor, PB_DUCT_RADIUS out, from its bottom rim (PB_HULL_BELOW under
+    // the CG) to its top rim (PB_DUCT_HEIGHT up). A box's vertical face meets
+    // it first where each rim reaches furthest toward the face, so for each
+    // face normal a box can have (-x, +x, -y, +y) and each rim, that rim's
+    // point furthest along the normal's opposite is a contact point, meeting
+    // only faces with that normal, among the boxes near the quad. As the quad
+    // turns, the point runs round the rim: a wall rolls the duct off it, where
+    // the rim point on the arm diagonal caught it like a corner. Both rims
+    // meet a wall the quad is level against, so the push is spread up the
+    // duct's side, not all on its bottom 10 mm under the CG, which pitched
+    // every wall hit into a flip. With a rim's plane square to the face (the
+    // quad on its side against it) the rim lies flat on it and has no
+    // furthest point: the other normals' points on that rim are there. A
+    // duct of no height (PB_DUCT_HEIGHT 0) has no side: the footprint alone.
+    int contacts = FOOTPRINT_POINTS;
+    double nearLo[3], nearHi[3];
+    const double span = blk[PB_WHEELBASE] * 0.5 + blk[PB_DUCT_RADIUS] + blk[PB_HULL_BELOW] + blk[PB_DUCT_HEIGHT];
+    for (int a = 0; a < 3; a++) {
+        nearLo[a] = fmin(p[a], p0[a]) - span;
+        nearHi[a] = fmax(p[a], p0[a]) + span;
+    }
+    if (blk[PB_DUCT_HEIGHT] > 0 && sc_world_near(nearLo, nearHi)) {
+        static const double WALL_N[WALL_NORMALS][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 } };
+        static const double DOWN[3] = { 0, 0, -1 }, UP[3] = { 0, 0, 1 };
+        // A duct's top rim meets box undersides too, as the rims and the
+        // canopy do (their response): risen into a deck's underside proud of
+        // a wall, a top rim's side point found the deck's face the shallower
+        // once it was deeper than the overhang, and was shoved out sideways
+        // (8 mm). Its highest point is one more side point, for an underside
+        // alone. Box tops stay the rims' (the floor, as before).
+        const int under = sc_world_face_bit(DOWN);
+        for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+            for (int rim = 0; rim < DUCT_RIMS; rim++) {
+                for (int w = 0; w <= WALL_NORMALS; w++) {
+                    if (w == WALL_NORMALS && rim == 0) {
+                        continue;       // the highest point: the top rim's only
+                    }
+                    double toward[3], body[3];
+                    for (int a = 0; a < 3; a++) {
+                        toward[a] = w < WALL_NORMALS ? -WALL_N[w][a] : UP[a];
+                    }
+                    if (!rimToward(i, rim, q, toward, body)) {
+                        continue;
+                    }
+                    const int mask = w < WALL_NORMALS ? sc_world_face_bit(WALL_N[w]) | (rim ? under : 0) : under;
+                    const int c = contacts;
+                    bool added;
+                    flags |= sideContact(body, mask, p, v, q, omW, p0, q0, dt, rw[c], normal[c],
+                                         target[c], slip[c], &mu[c], pushAt[c], &added);
+                    if (added) {
+                        sidePush(pushAt[c], anyFloor || anyScrub, pushHi, pushLo);
+                        active[c] = true;
+                        contacts++;
+                    }
+                }
+            }
+        }
+        // A box's vertical edge (a post's corner, a door jamb) meets a rim
+        // between the points above, up to R (1 - cos 45 degrees) = 5.3 mm
+        // round from them (a duct cut a door jamb's corner 1.2 mm deep). Of
+        // the rim's points past both faces at the edge (within the box's
+        // height), found round the rim in EDGE_STEPS and refined, the
+        // deepest past each face among those past the other is the push
+        // through that face that takes the whole rim out of the corner: the
+        // smaller of the two is an edge point, leaving through its face
+        // (pushed out by the point deepest past both, through one face, an
+        // arc beside it stayed past both, 0.5 to 1.4 mm). Edges come from the
+        // boxes near the quad, those within the rims' height and reach; at
+        // most EDGE_POINTS a tick, of the first NEAR_EDGES.
+        const double reach = blk[PB_DUCT_RADIUS];
+        double centreBody[SC_MOTOR_COUNT][DUCT_RIMS][3], centre[SC_MOTOR_COUNT][DUCT_RIMS][3];
+        double rimLo[SC_MOTOR_COUNT][DUCT_RIMS], rimHi[SC_MOTOR_COUNT][DUCT_RIMS];
+        double zlo = INFINITY, zhi = -INFINITY;
+        {
+            // A rim's height span: its centre's, plus or minus the duct
+            // radius times how far its plane leans from level.
+            static const double BX[3] = { 1, 0, 0 }, BY[3] = { 0, 1, 0 };
+            double ux[3], uy[3];
+            qRotate(q, BX, ux);
+            qRotate(q, BY, uy);
+            const double half = reach * hypot(ux[2], uy[2]) + ON_FACE_M;
+            for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+                for (int rim = 0; rim < DUCT_RIMS; rim++) {
+                    centreBody[i][rim][0] = MOTOR_X[i] * derived[PD_ARM];
+                    centreBody[i][rim][1] = MOTOR_Y[i] * derived[PD_ARM];
+                    centreBody[i][rim][2] = -blk[PB_HULL_BELOW] + rim * blk[PB_DUCT_HEIGHT];
+                    qRotate(q, centreBody[i][rim], centre[i][rim]);
+                    rimLo[i][rim] = p[2] + centre[i][rim][2] - half;
+                    rimHi[i][rim] = p[2] + centre[i][rim][2] + half;
+                    zlo = fmin(zlo, rimLo[i][rim]);
+                    zhi = fmax(zhi, rimHi[i][rim]);
+                }
+            }
+        }
+        // A rim's point furthest toward a wall can lie where the wall's face
+        // is a seam, under a table top standing against the wall (a T-join),
+        // and the rest of the rim past the face, above the top, then goes
+        // unanswered: a duct sat 1.4 mm into the wall over a table. So for
+        // each box top the rim spans, its point just above the top furthest
+        // toward each wall normal is a side point too, and just below each
+        // bottom (a deck or shelf against a wall). At most LEVEL_POINTS a
+        // tick, of the first NEAR_LEVELS heights.
+        {
+            double levels[NEAR_LEVELS];
+            int kinds[NEAR_LEVELS];
+            const int levelCount = sc_world_near_levels(zlo, zhi, levels, kinds, NEAR_LEVELS);
+            double ux[3], uy[3];
+            static const double BX[3] = { 1, 0, 0 }, BY[3] = { 0, 1, 0 };
+            qRotate(q, BX, ux);
+            qRotate(q, BY, uy);
+            int made = 0;
+            for (int l = 0; l < levelCount && made < LEVEL_POINTS; l++) {
+                for (int i = 0; i < SC_MOTOR_COUNT && made < LEVEL_POINTS; i++) {
+                    for (int rim = 0; rim < DUCT_RIMS && made < LEVEL_POINTS; rim++) {
+                        if (levels[l] < rimLo[i][rim] || levels[l] > rimHi[i][rim]) {
+                            continue;
+                        }
+                        const scWave_t pz = waveOf(p[2] + centre[i][rim][2], ux[2], uy[2], reach);
+                        double cross[2];
+                        if (waveCrossing(&pz, levels[l] + kinds[l] * LEVEL_EPS, cross) != 2) {
+                            continue;       // the rim does not reach past the top or bottom
+                        }
+                        for (int w = 0; w < WALL_NORMALS && made < LEVEL_POINTS; w++) {
+                            // Of the two crossings, the one further toward the wall.
+                            const double toward[3] = { -WALL_N[w][0], -WALL_N[w][1], -WALL_N[w][2] };
+                            const scWave_t pt = waveOf(0, dot3(toward, ux), dot3(toward, uy), reach);
+                            const double a = waveAt(&pt, cross[0]) >= waveAt(&pt, cross[1]) ? cross[0] : cross[1];
+                            const double body[3] = { centreBody[i][rim][0] + reach * cos(a),
+                                                     centreBody[i][rim][1] + reach * sin(a), centreBody[i][rim][2] };
+                            made++;
+                            const int c = contacts;
+                            bool added;
+                            flags |= sideContact(body, sc_world_face_bit(WALL_N[w]) | (rim ? under : 0), p, v, q, omW, p0,
+                                                 q0, dt, rw[c], normal[c], target[c], slip[c], &mu[c], pushAt[c], &added);
+                            if (added) {
+                                sidePush(pushAt[c], anyFloor || anyScrub, pushHi, pushLo);
+                                active[c] = true;
+                                contacts++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        double edges[NEAR_EDGES][8];
+        int edgeMask[NEAR_EDGES];
+        const int edgeCount = sc_world_near_edges(p, derived[PD_ARM] * sqrt(2.0) + reach, zlo, zhi, edges, edgeMask,
+                                                  NEAR_EDGES);
+        int tried = 0;
+        for (int e = 0; e < edgeCount && tried < EDGE_POINTS; e++) {
+            for (int i = 0; i < SC_MOTOR_COUNT && tried < EDGE_POINTS; i++) {
+                for (int rim = 0; rim < DUCT_RIMS && tried < EDGE_POINTS; rim++) {
+                    if (edges[e][3] < rimLo[i][rim] || edges[e][2] > rimHi[i][rim]) {
+                        continue;           // above or below the rim
+                    }
+
+                    // Past the x face, past the y face, and the height, round
+                    // the rim: waves, so the extremes of the lesser of the two
+                    // depths, and of each depth where the other is past its
+                    // face, both within the box's height, are at a wave's
+                    // peak, where two waves cross, or where a bound is met
+                    // (sampled 32 times round, a 1 mm cut into a corner, 6
+                    // degrees of rim, went unseen).
+                    double ux[3], uy[3];
+                    {
+                        static const double BX[3] = { 1, 0, 0 }, BY[3] = { 0, 1, 0 };
+                        qRotate(q, BX, ux);
+                        qRotate(q, BY, uy);
+                    }
+                    const scWave_t px = waveOf(-edges[e][4] * (p[0] + centre[i][rim][0] - edges[e][0]), -edges[e][4] * ux[0],
+                                               -edges[e][4] * uy[0], reach);
+                    const scWave_t py = waveOf(-edges[e][5] * (p[1] + centre[i][rim][1] - edges[e][1]), -edges[e][5] * ux[1],
+                                               -edges[e][5] * uy[1], reach);
+                    const scWave_t pz = waveOf(p[2] + centre[i][rim][2], ux[2], uy[2], reach);
+                    // The rim must reach past both faces' planes (a tilted
+                    // rim's centre can be beside one face and the edge more
+                    // than R off, and still cut the corner: dropped by a
+                    // distance test, a duct sat 5 mm in a corner).
+                    if (!(px.c + hypot(px.a, px.b) > 0 && py.c + hypot(py.a, py.b) > 0)) {
+                        continue;
+                    }
+                    const scWave_t pd = { px.a - py.a, px.b - py.b, px.c - py.c };
+                    double cand[17];
+                    int nc = 0;
+                    cand[nc++] = atan2(px.b, px.a);
+                    cand[nc++] = atan2(py.b, py.a);
+                    cand[nc++] = atan2(pz.b, pz.a);
+                    nc += waveCrossing(&pd, 0, cand + nc);
+                    nc += waveCrossing(&px, 0, cand + nc);
+                    nc += waveCrossing(&py, 0, cand + nc);
+                    nc += waveCrossing(&pz, edges[e][2], cand + nc);
+                    nc += waveCrossing(&pz, edges[e][3], cand + nc);
+                    nc += waveCrossing(&px, edges[e][6], cand + nc);
+                    nc += waveCrossing(&py, edges[e][7], cand + nc);
+                    // A top rim risen under the box (a deck's corner over it):
+                    // how far above its bottom the rim gets among its points
+                    // past both faces, the push down that clears it (the
+                    // third face; box tops stay the rims').
+                    double both = -INFINITY, deepest[3] = { -INFINITY, -INFINITY, -INFINITY }, at[3] = { 0, 0, 0 };
+                    for (int k = 0; k < nc; k++) {
+                        const double z = waveAt(&pz, cand[k]);
+                        if (z < edges[e][2] - ON_FACE_M || z > edges[e][3] + ON_FACE_M) {
+                            continue;       // above or below the box
+                        }
+                        const double past[2] = { waveAt(&px, cand[k]), waveAt(&py, cand[k]) };
+                        if (past[0] > edges[e][6] || past[1] > edges[e][7]) {
+                            continue;       // past the box's far side: not in it
+                        }
+                        both = fmax(both, fmin(past[0], past[1]));
+                        for (int g = 0; g < 2; g++) {
+                            if (past[1 - g] > -1e-12 && past[g] > deepest[g]) {
+                                deepest[g] = past[g];
+                                at[g] = cand[k];
+                            }
+                        }
+                        if (rim && past[0] > -1e-12 && past[1] > -1e-12 && z - edges[e][2] > deepest[2]) {
+                            deepest[2] = z - edges[e][2];
+                            at[2] = cand[k];
+                        }
+                    }
+                    if (!(both > 0)) {
+                        continue;           // not past both faces: clear of the edge
+                    }
+                    int f = deepest[0] <= deepest[1] ? 0 : 1;
+                    if (rim && deepest[2] > 0 && deepest[2] < deepest[f]) {
+                        f = 2;
+                    }
+                    const double body[3] = { centreBody[i][rim][0] + reach * cos(at[f]),
+                                             centreBody[i][rim][1] + reach * sin(at[f]), centreBody[i][rim][2] };
+                    double pt[3];
+                    qRotate(q, body, pt);
+                    for (int a = 0; a < 3; a++) {
+                        pt[a] += p[a];
+                    }
+                    if (!sc_world_edge_open(e, pt)) {
+                        continue;           // a seam of a wall in pieces: inside the wall, not a corner
+                    }
+                    const double face[3] = { f == 0 ? edges[e][4] : 0, f == 1 ? edges[e][5] : 0, f == 2 ? -1 : 0 };
+                    tried++;
+                    const int c = contacts;
+                    bool added;
+                    flags |= sideContact(body, sc_world_face_bit(face) | SC_WORLD_EDGE_FLAG, p, v, q, omW, p0, q0, dt,
+                                         rw[c], normal[c], target[c], slip[c], &mu[c], pushAt[c], &added);
+                    if (added) {
+                        sidePush(pushAt[c], anyFloor || anyScrub, pushHi, pushLo);
+                        active[c] = true;
+                        contacts++;
+                    }
+                }
+            }
+        }
+    }
     // Opposite pushes on one axis: a quad wedged in a gap narrower than its
     // footprint stays put (they cancel); a quad whose CG is inside a box (a
     // pose into the solid) leaves by the larger push.
@@ -810,7 +1226,6 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     // 7 us a tick with 1088 boxes in the map). Not with the CG in or on a box
     // (a pose on a seam inside a wall: the points on both sides cancelled
     // and it never came out).
-    int contacts = FOOTPRINT_POINTS;
     double net[3];
     for (int a = 0; a < 3; a++) {
         net[a] = pushHi[a] + pushLo[a];
@@ -841,9 +1256,9 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         }
         const double ptIn[3] = { pt[0], pt[1], pt[2] };
         const double vtIn[3] = { vt[0], vt[1], vt[2] };
-        bool floorHit = false, scrub = false;
+        bool floorHit = false, scrub = false, wall = false;
         flags |= sc_world_point(pt, vt, st, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE], blk[PB_SPIN_SCALE],
-                                &floorHit, &scrub);
+                                SC_WORLD_ALL_FACES, blk[PB_WALL_RESTITUTION], &floorHit, &scrub, &wall);
         anyFloor = anyFloor || floorHit;
         anyScrub = anyScrub || scrub;
         double dp[3];
@@ -855,6 +1270,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             continue;
         }
         const int c = contacts++;
+        mu[c] = wall ? blk[PB_WALL_FRICTION] : -1;
         const double vin = dot3(vtIn, dp) / len;
         double sl[3];
         for (int a = 0; a < 3; a++) {
@@ -900,6 +1316,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         }
         for (int m = 0; m < hull[j].points; m++) {
             const int k = contacts++;
+            mu[k] = -1;
             double wxr[3], vt[3], vtIn[3];
             for (int a = 0; a < 3; a++) {
                 rw[k][a] = hull[j].point[m][a] - p[a];
@@ -992,9 +1409,9 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             }
             const double ptIn[3] = { pt[0], pt[1], pt[2] };
             const double vtIn[3] = { vt[0], vt[1], vt[2] };
-            bool floorHit = false, scrub = false;
+            bool floorHit = false, scrub = false, wall = false;
             flags |= sc_world_point(pt, vt, st, dt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE], blk[PB_SPIN_SCALE],
-                                    &floorHit, &scrub);
+                                    SC_WORLD_ALL_FACES, blk[PB_WALL_RESTITUTION], &floorHit, &scrub, &wall);
             anyFloor = anyFloor || floorHit;
             anyScrub = anyScrub || scrub;
             double dp[3];
@@ -1008,6 +1425,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
                 continue;
             }
             const int c = contacts++;
+            mu[c] = wall ? blk[PB_WALL_FRICTION] : -1;
             const double vin = dot3(vtIn, dp) / len;
             double sl[3];
             for (int a = 0; a < 3; a++) {
@@ -1074,11 +1492,38 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
                 vp[a] = v[a] + wxr[a];
             }
             double vn = dot3(vp, n);
+            // A wall's Coulomb friction steers toward no slip at all, never
+            // with more than mu times the push the contact has so far.
+            const bool coulomb = mu[k] >= 0;
+            const double cap = coulomb ? mu[k] * pushed[k] : 0;
             for (int a = 0; a < 3; a++) {
-                e[a] = (target[k][a] - tn * n[a]) - (vp[a] - vn * n[a]);
+                e[a] = (coulomb ? 0 : target[k][a] - tn * n[a]) - (vp[a] - vn * n[a]);
             }
             if (dot3(e, e) > 0) {
-                if (dot3(slip[k], slip[k]) > 0) {
+                if (coulomb && dot3(slip[k], slip[k]) > 0) {
+                    double ks[3];
+                    contactResponse(q, rw[k], slip[k], ks);
+                    const double before = dot3(rubbed[k], slip[k]);
+                    const double along = fmax(-cap, fmin(0, before + dot3(e, slip[k]) / dot3(ks, slip[k])));
+                    for (int a = 0; a < 3; a++) {
+                        j[a] = (along - before) * slip[k][a];
+                        rubbed[k][a] = along * slip[k][a];
+                    }
+                } else if (coulomb) {
+                    contactImpulse(q, rw[k], e, j);
+                    const double jn = dot3(j, n);
+                    double total[3];
+                    for (int a = 0; a < 3; a++) {
+                        total[a] = rubbed[k][a] + j[a] - jn * n[a];
+                    }
+                    const double size = sqrt(dot3(total, total));
+                    const double keep = size > cap ? cap / size : 1;
+                    for (int a = 0; a < 3; a++) {
+                        total[a] *= keep;
+                        j[a] = total[a] - rubbed[k][a];
+                        rubbed[k][a] = total[a];
+                    }
+                } else if (dot3(slip[k], slip[k]) > 0) {
                     // Sliding: one row along the slip, stepped exactly, its
                     // accumulated friction kept opposing the arrival slip (it
                     // never pushes the point along its own slip, which would
