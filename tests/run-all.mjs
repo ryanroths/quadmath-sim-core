@@ -43,7 +43,7 @@ const TESTS = [
   ['P2 fly harness: radio map, calibration port, input clock, Air65 arms on AUX1', 'tests/node/fly-radio.test.mjs'],
   ['P2 turtle: crash flip on AUX3 (owner diff), inverted to upright within 500 ms of full roll, rests upright', 'tests/node/crash-flip.test.mjs'],
   ['P2 pack to empty (owner diff): OCV at capacity is Betaflight\'s min cell, LAND NOW before 340 mAh, no hover by 380, SoC bounded', 'tests/node/pack-empty.test.mjs'],
-  ['P2 wall hits (owner, 2026-10-28): 2, 4, 8 m/s at 15, 30, 60, 90 deg, flown and motors off; the wall restitution head on, glances keep their speed along the wall', 'tests/node/wall-hit.test.mjs'],
+  ['P2 wall hits (owner, 2026-10-28): 2, 4, 8 m/s at 15, 30, 60, 90 deg, flown and motors off; the duct comes back at the wall restitution head on, glances keep their speed along the wall', 'tests/node/wall-hit.test.mjs'],
   ['P2 wall hits, the owner\'s target: upright after every hit under 60 deg and 6 m/s (flown)', 'tests/node/wall-hit.test.mjs', ['--target'],
     { skip: 'known failing, issue #10 https://github.com/ryanroths/quadmath-sim-core/issues/10' }],
   ['P2 fly harness in headless Chrome: a TX16S arms, climbs, disarms, calibrates, keeps the link guard; console clean', 'tests/browser/fly.test.mjs'],

@@ -924,14 +924,24 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
 
   // Garage corner: wall box 0 (face x = 5.942857) meets wall box 6 (face
   // y = 2.942857). The leading rim (motor 3, +x +y) starts where the CG
-  // point did, 43 mm from each wall, leaning 0.3 rad into the corner. Open
-  // loop, a wall pushing on a rim below the CG tips the quad further in, so
-  // it is pressed in for about 0.2 s, then tumbles out of the corner and
-  // across the floor; all 3 s are checked. In the corner since the ducts'
-  // sides: the duct touching both walls holds its diagonal rim 5.3 mm off
-  // each, so the outline (the rims and the ducts' sides) is what reaches them.
+  // point did, 43 mm from each wall, leaning into the corner. The walls meet
+  // the ducts on the lean's axis (motor 1 the x wall, motor 2 the y wall) at
+  // their top rims, ductHeight - hullBelow above the CG. Open loop, a wall
+  // pushing on them below the CG tips the quad further in; above it, the quad
+  // is righted and bounces out (the measured 4.8 mm CG at 0.3 rad: those rims
+  // 4.4 mm above it, a 7.2 rad/s righting kick, 42 ms in the corner). So the
+  // lean is 0.3 rad, or more in 0.05 rad steps until those rims meet the
+  // walls at or below the CG (0.3 rad with the CG 10 mm up the ducts, 0.65
+  // at 4.8 mm). Pressed in for 0.2 to 0.5 s while the walls' friction on its
+  // fall slowly rights it, it then tumbles out of the corner and across the
+  // floor; all 3 s are checked. In the corner since the ducts' sides: the
+  // duct touching both walls holds its diagonal rim 5.3 mm off each, so the
+  // outline (the rims and the ducts' sides) is what reaches them.
   const garage = await mapBoxes('garage');
-  const gq = [Math.cos(0.15), -0.707 * Math.sin(0.15), 0.707 * Math.sin(0.15), 0];
+  const leanQ = (a) => [Math.cos(a / 2), -0.707 * Math.sin(a / 2), 0.707 * Math.sin(a / 2), 0];
+  let gLean = 0.3;
+  while (sideLead(leanQ(gLean), [1, 0, 0])[2] > 0) gLean += 0.05;
+  const gq = leanQ(gLean);
   const gPos = placing(3, [5.9, 2.9, 1.0], gq);
   assert.ok(!startsInside(gPos, gq, garage), 'garage corner pose starts outside every box');
   const gc = await flight({ floorZ: 0, boxes: garage });
@@ -953,7 +963,7 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
     if (footInside(gc, garage)) gIn++;
     for (const id of contactIds(gc)) gIds.add(id);
   }
-  console.log(`garage corner, 3 s leaning in: outline to x ${gx.toFixed(5)} y ${gy.toFixed(5)}, ${gPressed} ms within 3 mm of both walls, contacts on boxes ${[...gIds].join(' ')}, ${gIn} ticks inside a box, end ${gc.state.pos.map((v) => v.toFixed(4)).join(' ')}`);
+  console.log(`garage corner, 3 s leaning ${gLean.toFixed(2)} rad in: outline to x ${gx.toFixed(5)} y ${gy.toFixed(5)}, ${gPressed} ms within 3 mm of both walls, contacts on boxes ${[...gIds].join(' ')}, ${gIn} ticks inside a box, end ${gc.state.pos.map((v) => v.toFixed(4)).join(' ')}`);
   assert.ok(gx > 5.94 && gy > 2.94 && gPressed >= 100 && gIds.has(0) && gIds.has(6), 'pressed into the garage corner');
   assert.ok(gx < 5.943 && gy < 2.943 && gIn === 0, 'held in the corner, inside the room');
 
@@ -3133,10 +3143,19 @@ const pushOf = (prev, s) => {
 // rim 3 lying on the side of backyard deck 39, the quad went from 0.07 m/s
 // and 1.8 rad/s to 2.6 m/s and 117 rad/s in one tick (as on 2a8ec95). 4 s
 // from the sweep's pose: no one-tick spin-up over 5 rad/s, |omega| under 10.
+// The sweep flew with the CG 10 mm above the rims. Its rims (and so its
+// ducts) are kept where they were and the CG goes down the body's up axis to
+// REST above them: left at the sweep's CG, the measured 4.8 mm held rims 0
+// and 2 5 mm over the floor, and the quad fell onto them at 0.3 m/s, which
+// a landing turns into 5.2 rad/s about their line in one tick.
 {
   const yard = await mapFixture('backyard');
   const c = await flight({ floorZ: 0, boxes: yard });
-  c.teleport({ pos: [2.4807856761043374, 0.9384597034889406, 0.019070914199102625], quat: [-0.18771634264818413, 0.13042490051738878, 0.025192239350749563, 0.9731995022112956], vel: [-0.025168908166955318, -0.0050279439800840296, -0.043128299445611105] });
+  const quat = [-0.18771634264818413, 0.13042490051738878, 0.025192239350749563, 0.9731995022112956];
+  const [w, x, y, z] = quat;
+  const up = [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
+  const pos = [2.4807856761043374, 0.9384597034889406, 0.019070914199102625].map((v, a) => v - (0.010 - REST) * up[a]);
+  c.teleport({ pos, quat, vel: [-0.025168908166955318, -0.0050279439800840296, -0.043128299445611105] });
   c.motorOverride(-1, 0);
   let gain = 0;
   let spin = 0;
