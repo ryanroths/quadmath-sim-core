@@ -3133,10 +3133,19 @@ const pushOf = (prev, s) => {
 // rim 3 lying on the side of backyard deck 39, the quad went from 0.07 m/s
 // and 1.8 rad/s to 2.6 m/s and 117 rad/s in one tick (as on 2a8ec95). 4 s
 // from the sweep's pose: no one-tick spin-up over 5 rad/s, |omega| under 10.
+// The sweep flew with the CG 10 mm above the rims. Its rims (and so its
+// ducts) are kept where they were and the CG goes down the body's up axis to
+// REST above them: left at the sweep's CG, the measured 4.8 mm held rims 0
+// and 2 5 mm over the floor, and the quad fell onto them at 0.3 m/s, which
+// a landing turns into 5.2 rad/s about their line in one tick.
 {
   const yard = await mapFixture('backyard');
   const c = await flight({ floorZ: 0, boxes: yard });
-  c.teleport({ pos: [2.4807856761043374, 0.9384597034889406, 0.019070914199102625], quat: [-0.18771634264818413, 0.13042490051738878, 0.025192239350749563, 0.9731995022112956], vel: [-0.025168908166955318, -0.0050279439800840296, -0.043128299445611105] });
+  const quat = [-0.18771634264818413, 0.13042490051738878, 0.025192239350749563, 0.9731995022112956];
+  const [w, x, y, z] = quat;
+  const up = [2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)];
+  const pos = [2.4807856761043374, 0.9384597034889406, 0.019070914199102625].map((v, a) => v - (0.010 - REST) * up[a]);
+  c.teleport({ pos, quat, vel: [-0.025168908166955318, -0.0050279439800840296, -0.043128299445611105] });
   c.motorOverride(-1, 0);
   let gain = 0;
   let spin = 0;

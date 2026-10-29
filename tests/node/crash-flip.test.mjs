@@ -47,7 +47,9 @@ function run(ms, each) {
 core.teleport({ pos: [0, 0, 0.05], quat: [0, 1, 0, 0] });
 run(1500);
 assert.ok(upZ() < -0.99, `rests inverted (up Z ${upZ().toFixed(3)})`);
-assert.ok(core.state.pos[2] < 0.03 && omega() < 0.01, `at rest on the floor (z ${core.state.pos[2].toFixed(4)} m, |omega| ${omega().toFixed(4)})`);
+// On the canopy: the CG hullAbove up (values.hullAbove, 18 mm shipped; the
+// measured 30.2 mm is held in measured.hullAbove, #15), within 1 mm.
+assert.ok(Math.abs(core.state.pos[2] - air65.values.hullAbove.value) < 1e-3 && omega() < 0.01, `at rest on the floor (z ${core.state.pos[2].toFixed(4)} m, |omega| ${omega().toFixed(4)})`);
 console.log(`inverted at rest: up Z ${upZ().toFixed(3)}, z ${core.state.pos[2].toFixed(4)} m`);
 
 // AUX3 high, then arm with the throttle low.
