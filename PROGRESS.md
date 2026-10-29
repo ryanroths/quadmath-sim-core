@@ -7636,3 +7636,81 @@ v0.4.0 now points at this commit. `scripts/release.sh v0.4.0` writes `release/`,
 The module and every contact value are the same as in the first v0.4.0 release. Only `airframes/air65.json`'s notes and its `measured` block differ.
 
 Nothing was deployed.
+
+## 2026-10-29 | Phase 2 step 3 | v0.4.0 ships PR #11's duct height (14.5 mm); 13.25 recorded
+
+Owner (2026-10-29): "ductHeight shipped 14.5 (PR #11's value, 8/12 upright), 13.25 moves to the measured block with the rest. Re-run the 24-hit table, confirm 8/12 flown 9/12 off. Move the tag, release, re-vendor, update #282. Stop."
+
+### The airframe
+
+`values.ductHeight` is back to 14.5 mm, PR #11's value from BetaFPV's frame table, as a retailer reproduces it. It is `"measured": false`, and its note points to #15. The owner's 13.25 mm caliper reading stays in `measured.ductHeight`, now with `"shipped": "values.ductHeight 0.0145"`, alongside the measured CG (4.8 mm) and the canopy top (35 mm). All of these carry the #15 flag.
+
+Every value in `values` now equals main's (c01523c, PR #11):
+
+| value | shipped |
+|---|---|
+| `hullBelow` | 10 mm |
+| `hullAbove` | 18 mm |
+| `ductHeight` | 14.5 mm |
+
+The ducts' top rims sit 4.5 mm above the CG. The module is unchanged (sha256 `369c5d82…`).
+
+### The 24-hit table, at the shipped numbers
+
+`node tests/node/wall-hit.test.mjs`. **All 24 rows match PR #11's table in the 2026-10-28 entry, value for value.**
+
+| pilot | m/s | deg | into the wall, m/s | 50 ms after: away / along / up, m/s | tilt rate 50 ms after, deg/s | along the wall 250 ms after, m/s | end |
+|---|---|---|---|---|---|---|---|
+| flown | 2 | 15 | 0.52 | 0.06 / 1.82 / -0.05 | 13 | 1.81 | upright |
+| flown | 2 | 30 | 1.00 | 0.30 / 1.47 / -0.16 | 0 | 1.49 | upright |
+| flown | 2 | 60 | 1.73 | 0.31 / 1.00 / 0.14 | 81 | 0.99 | upright |
+| flown | 2 | 90 | 2.00 | 0.58 / 0.00 / 0.02 | 25 | 0.00 | upright |
+| flown | 4 | 15 | 1.04 | -0.03 / 3.81 / 0.24 | 57 | 4.03 | upright |
+| flown | 4 | 30 | 2.00 | 0.02 / 3.01 / -0.25 | 943 | 2.19 | inverted, on the wall |
+| flown | 4 | 60 | 3.46 | 0.05 / 1.50 / -0.40 | 1378 | 1.00 | upright |
+| flown | 4 | 90 | 4.00 | 0.62 / 0.00 / 0.80 | 209 | 0.00 | upright |
+| flown | 8 | 15 | 2.07 | -0.24 / 7.16 / -0.80 | 1121 | 5.34 | upright |
+| flown | 8 | 30 | 4.00 | 0.25 / 5.44 / -0.48 | 568 | 4.26 | inverted |
+| flown | 8 | 60 | 6.93 | 1.50 / 2.37 / -0.04 | 1140 | 0.45 | inverted |
+| flown | 8 | 90 | 8.00 | 1.22 / 0.00 / 0.08 | 756 | 0.00 | inverted |
+| off | 2 | 15 | 0.52 | 0.05 / 1.78 / -0.58 | 199 | 1.61 | upright |
+| off | 2 | 30 | 1.00 | 0.32 / 1.44 / -0.54 | 11 | 1.32 | upright |
+| off | 2 | 60 | 1.73 | 0.31 / 0.99 / -0.52 | 236 | 0.92 | upright |
+| off | 2 | 90 | 2.00 | 0.59 / 0.00 / -0.52 | 280 | 0.00 | upright |
+| off | 4 | 15 | 1.04 | 0.10 / 3.49 / -0.53 | 305 | 2.99 | upright |
+| off | 4 | 30 | 2.00 | 0.46 / 2.87 / -0.51 | 1229 | 2.53 | inverted |
+| off | 4 | 60 | 3.46 | 0.42 / 1.93 / -0.42 | 1734 | 1.75 | upright |
+| off | 4 | 90 | 4.00 | 1.00 / 0.00 / 0.37 | 732 | 0.00 | upright |
+| off | 8 | 15 | 2.07 | 0.52 / 6.65 / -0.45 | 356 | 5.13 | upright |
+| off | 8 | 30 | 4.00 | 0.86 / 5.58 / -0.40 | 396 | 4.41 | inverted |
+| off | 8 | 60 | 6.93 | 1.63 / 2.88 / 0.17 | 1986 | 2.49 | inverted |
+| off | 8 | 90 | 8.00 | 1.66 / 0.00 / 0.44 | 1361 | 0.00 | upright |
+- **Upright:** flown **8 / 12**, motors off **9 / 12**, as the owner expected. None wedged. (v0.3.0: 1 / 12 and 2 / 12.)
+- **The head-on rebound at 2 m/s:** 0.294.
+- **The plain test passes:** all 24 come to rest within the 8 s run. The late rest #15 lists (flown 8 m/s at 30 degrees, 0.6 s past the run) happened only with the 13.25 mm duct and the 10 mm CG. It rests in time at 14.5 / 10 mm, and on the fully measured 13.25 / 4.8 / 30.2 mm.
+- **The owner's target is still missed:** flown 4 m/s at 30 degrees ends inverted on the wall (tilt 943 deg/s). It is skipped in `run-all`, tracked in #15.
+
+### Tests
+
+After this commit, the test files differ from main only where the airframe's own values set the outcome, and none of those differences change anything at the shipped numbers:
+
+- **crash-flip.** The inverted rest height comes from `hullAbove` (z 0.0180 m).
+- **plant-world 50.** The deck pose offset is 0.010 − REST = 0.
+- **run-all.** The target's skip names #15.
+
+The garage-corner lean that the measured round derived is reverted to main's fixed 0.3 rad. It was derived for the measured CG. At the 14.5 mm duct it would have raised the lean to 0.35 rad, because the ducts' top rims meet the walls 0.6 mm above the CG at 0.3 rad. That would no longer be a no-op, so it belongs with the measured CG in #15. Commit e810f6e has it.
+
+**Full runs at the shipped numbers, all passing:**
+
+- **plant-world.** Box on the floor plane: 2762 ticks pressed at the foot. Garage corner: 294 ms in it at 0.3 rad. Room corner: 19 presses, 1621 ms in all; the 1 s minimum is kept. Deck spin-up: 0.55 rad/s.
+- **crash-flip.**
+- **Correction:** the "flown geometry" entry above said plant-world's numbers matched main's. Those were the 13.25 mm duct's numbers (2819, 457 ms, 17 presses / 2867 ms, 0.76 rad/s); main's, at 14.5 mm, are these.
+- **The four WebFPV tests.** Run against a fresh copy fetched the way CI fetches it: config count, diff passthrough, X1, and gate-plant (X4: 180 degrees at 113 ms).
+- **`run-all --quick`** passes everything else. It skips #5 and the target (#15).
+
+### Releasing
+
+- quadmath's `sim-whoop.js` PHYSICS_VER comment said "the Air65's measured duct height". It now says the ducts' sides are 14.5 mm, from BetaFPV's frame table.
+- v0.4.0 moves to this commit and is released again.
+- quadmath re-vendors it in PR 282. The module, VERSION and every contact value are the same as main's PR #11 airframe. Only `airframes/air65.json`'s metadata differs: ductHeight's source and note; hullBelow's and hullAbove's source and note, with confidence low and `"measured": false`; and the `measured` block.
+- Nothing was deployed.
