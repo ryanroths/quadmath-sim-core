@@ -7202,3 +7202,151 @@ final build, apart from what the gaps above list.
 - **Follow-up:** the ducts' sides against horizontal box edges (and with
   them box tops, which the thin-gap fall-through and the descents past an
   edge come from).
+
+## 2026-10-29 | Phase 2 step 3 | the Air65's duct height measured, its CG estimated; v0.4.0
+
+Owner (2026-10-29): "Duct height 13.25 mm, calipers. CoG 10 mm above duct
+bottom, estimated from a rim-hang (string tied at a duct rim hangs ~25-30
+deg, CoG a few mm above the plate), flag as estimated. Update air65.json,
+re-run wall-hit --target, report the 24-hit table and whether 4 m/s at 30
+deg still inverts. Tag v0.4.0, release, re-vendor into quadmath, PHYS_VER 5,
+open the quadmath PR. Stop there."
+
+### The airframe
+
+- `ductHeight` 0.0145 to **0.01325 m**: measured (calipers), confidence
+  high. It replaces BetaFPV's frame table as a retailer reproduces it.
+- `hullBelow` stays **0.010 m**, now from the owner's estimate. It is
+  flagged `"estimated": true` and `"measured": false`, confidence medium. It
+  was WebFPV's `vHalfDown`, the same number.
+- The ducts' top rim is now 3.25 mm above the CG, down from 4.5 mm. The
+  floor and rest height do not change, since `hullBelow` does not. The
+  module does not change either: the airframe is read at configure time.
+
+### The wall-hit matrix, measured airframe
+
+`node tests/node/wall-hit.test.mjs --target`, the same build as PR #11
+(dist sha256 `369c5d82…`). The cases are as in the 2026-10-28 entry. The
+last column is the end state on PR #11's airframe (14.5 mm), from the same
+build with `--set ductHeight=0.0145`, which reproduces that entry's table
+exactly.
+
+| pilot | m/s | deg | into the wall, m/s | 50 ms after: away / along / up, m/s | tilt rate 50 ms after, deg/s | along the wall 250 ms after, m/s | end | at 14.5 mm |
+|---|---|---|---|---|---|---|---|---|
+| flown | 2 | 15 | 0.52 | 0.05 / 1.82 / -0.09 | 7 | 1.81 | upright | upright |
+| flown | 2 | 30 | 1.00 | 0.30 / 1.47 / -0.16 | 0 | 1.49 | upright | upright |
+| flown | 2 | 60 | 1.73 | 0.26 / 0.99 / 0.14 | 13 | 0.96 | upright | upright |
+| flown | 2 | 90 | 2.00 | 0.57 / 0.00 / -0.15 | 0 | 0.00 | upright | upright |
+| flown | 4 | 15 | 1.04 | -0.10 / 3.82 / 0.21 | 180 | 4.31 | upright | upright |
+| flown | 4 | 30 | 2.00 | -0.08 / 3.01 / -0.31 | 1102 | 1.87 | inverted, on the wall | inverted, on the wall |
+| flown | 4 | 60 | 3.46 | 0.33 / 1.46 / -0.36 | 539 | -1.33 | inverted | upright |
+| flown | 4 | 90 | 4.00 | 0.52 / 0.00 / 0.87 | 273 | 0.00 | inverted, on the wall | upright |
+| flown | 8 | 15 | 2.07 | -0.25 / 7.11 / -0.78 | 1020 | 4.36 | inverted, on the wall | upright |
+| flown | 8 | 30 | 4.00 | 0.14 / 5.48 / -0.47 | 757 | 3.73 | inverted, on the wall, not at rest | inverted |
+| flown | 8 | 60 | 6.93 | 1.53 / 2.38 / -0.03 | 1266 | 1.84 | inverted | inverted |
+| flown | 8 | 90 | 8.00 | 1.25 / 0.00 / 0.07 | 825 | 0.00 | inverted | inverted |
+| off | 2 | 15 | 0.52 | 0.05 / 1.78 / -0.58 | 125 | 1.61 | upright | upright |
+| off | 2 | 30 | 1.00 | 0.32 / 1.44 / -0.54 | 11 | 1.32 | upright | upright |
+| off | 2 | 60 | 1.73 | 0.31 / 0.99 / -0.52 | 158 | 0.92 | upright | upright |
+| off | 2 | 90 | 2.00 | 0.60 / 0.00 / -0.50 | 15 | 0.00 | upright | upright |
+| off | 4 | 15 | 1.04 | 0.09 / 3.49 / -0.53 | 430 | 2.99 | upright | upright |
+| off | 4 | 30 | 2.00 | 0.39 / 2.89 / -0.51 | 1363 | 2.54 | inverted | inverted |
+| off | 4 | 60 | 3.46 | 0.45 / 1.94 / -0.38 | 1607 | 1.75 | inverted | upright |
+| off | 4 | 90 | 4.00 | 0.93 / 0.00 / 0.47 | 829 | 0.00 | inverted | upright |
+| off | 8 | 15 | 2.07 | 0.49 / 6.66 / -0.45 | 246 | 5.18 | inverted | upright |
+| off | 8 | 30 | 4.00 | 0.78 / 5.59 / -0.42 | 458 | 4.43 | inverted | inverted |
+| off | 8 | 60 | 6.93 | 1.58 / 2.87 / 0.18 | 2052 | 2.49 | upright | inverted |
+| off | 8 | 90 | 8.00 | 1.70 / 0.00 / 0.41 | 1334 | 0.00 | upright | upright |
+
+- **Upright:** flown 5 of 12 (8 at 14.5 mm, 1 on v0.3.0); off 7 of 12 (9 at
+  14.5 mm, 2 on v0.3.0). None wedged.
+- **4 m/s at 30 degrees, flown, still ends inverted** (on the wall, up Z
+  -0.788). The tilt rate 50 ms after the hit is 1102 deg/s, against 943 at
+  14.5 mm. The owner's target is still 3 of 4 met (issue #10).
+- **Newly inverted:** flown and off at 4 m/s, 60 and 90 degrees, and at
+  8 m/s, 15 degrees. The off 8 m/s 60 degree hit now ends upright.
+- **Why lower is likely worse:** the quad is pitched into its travel (18.6
+  degrees at 4 m/s, 53.4 at 8), so the lower top rim meets the wall further
+  below the CG. That gives the wall's push a longer lever to pitch it over.
+- **The glance itself barely changes:** on every 15 and 30 degree hit, the
+  speed along the wall 50 ms after is within 0.05 m/s of the 14.5 mm run.
+- **Flown 4 m/s at 15 degrees** is now flagged a crash on contact (into the
+  wall at 1.04 m/s). Before, it was not. It still ends upright, sliding at
+  4.31 m/s 250 ms after.
+
+### The CG estimate's range
+
+The owner's CG is an estimate. This what-if sweep varies `hullBelow` with
+the measured duct height (`--set hullBelow=…`, report only):
+
+| hullBelow, mm | top rim above the CG, mm | flown upright | off upright | flown 4 m/s at 30 deg |
+|---|---|---|---|---|
+| 7 | 6.25 | 8 / 12 | 6 / 12 | inverted, on the wall (up Z -0.820) |
+| 8 | 5.25 | 7 / 12 | 6 / 12 | inverted, on the wall (-0.809) |
+| 9 | 4.25 | 6 / 12 | 9 / 12 | inverted, on the wall (-0.798) |
+| **10** | **3.25** | **5 / 12** | **7 / 12** | **inverted, on the wall (-0.788)** |
+| 11 | 2.25 | 6 / 12 | 10 / 12 | inverted, on the wall (-0.777) |
+| 12 | 1.25 | 5 / 12 | 8 / 12 | inverted, on the wall (-0.766) |
+
+The target case inverts everywhere from 7 to 12 mm, so the miss is not the
+CG estimate's error. The upright counts move by a few cases either way.
+`hullBelow` also sets the rest height on the floor, so this sweep moves more
+than the wall's lever.
+
+### The wall-hit test fails one assertion
+
+`tests/node/wall-hit.test.mjs` (no `--target`) asserts that every case comes
+to rest within its 8 s run. On the measured airframe, flown 8 m/s at 30
+degrees does not.
+
+- It lands on its side against the wall and is disarmed at up Z -0.06.
+- With the motors off it then rolls over to inverted at about 11 deg/s,
+  moving at 5 to 7 mm/s.
+- It comes to rest about 0.6 s after the run ends, at up Z -0.787. Run for
+  30 s, it ends where the table puts it: inverted, on the wall.
+- A fall that slow is not physical: a quad on its side either stays or falls
+  in a fraction of a second. The likely cause is the floor's response,
+  quadmath's 0.85 scrub of the speed along the floor on every tick, which
+  this change does not touch. It damps the roll into a creep.
+- **The test is unchanged.** Lengthening the run so this case passes would
+  be a threshold change. The owner decides whether to lengthen it or track
+  the slow roll as an issue. CI fails on this assertion until then.
+- The release does not include tests, so v0.4.0's files are the same either
+  way.
+
+### Checks
+
+- `run-all --quick`: 14 pass, 5 fail, 2 skipped (#5, and the target, #10).
+  - **The wall-hit assertion above** is one of the five failures.
+  - **The other four stop before testing anything:** C1 C2 C3 config count,
+    C1 diff passthrough, X1, and gate-plant.
+    - They read a WebFPV clone at `C:\Users\Risfo\webfpv-upstream`, which is
+      gone from this machine. With 302 MB free on C: it was not cloned again.
+    - CI clones its own copy, so CI runs them.
+    - None of them reads `ductHeight`, and `hullBelow` is unchanged.
+  - **plant-world passes** (127 s) with the measured airframe.
+- The module is unchanged: the one PR #11 committed, sha256 `369c5d82…`.
+
+### v0.4.0
+
+- **Tag.** v0.4.0 is tagged on this commit, on branch
+  `airframe/air65-duct-measured`, the way v0.3.0 was tagged on its branch
+  commit. The sim-core PR takes it to main.
+- **Release.** `scripts/release.sh v0.4.0` writes `release/`. That is
+  vendored into quadmath `vendor/sim-core/` byte for byte.
+- **quadmath,** on branch `sim/core-v0.4.0`:
+  - `SIM_CORE_VERSION` is v0.4.0;
+  - `PHYS_VER`, `PHYSICS_VER` and the pace bot's default are 5;
+  - the per-version board tests cover phys 4 rows as well as phys 3;
+  - `DEPLOY.md` is updated.
+- **Worker.** It bundles `PHYS_VER`, so it needs a deploy in step with the
+  page. Nothing was deployed.
+
+### Open, for the owner
+
+- **The wall-hit run's length:** see "The wall-hit test fails one
+  assertion" above.
+- **The target:** issue #10 stays open. The miss holds for any CG height
+  from 7 to 12 mm.
+- **The CG:** a balance or pendulum reading would replace the estimate. The
+  sweep above shows how much it moves the matrix.
