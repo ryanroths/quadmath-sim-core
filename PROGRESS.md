@@ -6890,3 +6890,315 @@ It now lists the three patches, and links 0003 to the issue.
 
 - the human-override label on quadmath #274;
 - the turtle log, and then a band for X4.
+
+## 2026-10-28 | Phase 2 step 3 | wall contact: the ducts' sides, wall friction and restitution
+
+Owner, after flying the Rig: "I stick to walls and flip on most hits, turtle
+every time." Three items:
+1. "Contact friction: duct-on-wall coefficient low (~0.2), restitution ~0.3.
+   Hit a wall at 4 m/s at 30 degrees, expect to glance and drop, not stop."
+2. "Duct contact as a ring per motor, not points, so a wall hit rolls off the
+   duct instead of catching a corner. Floor contact unchanged."
+3. "Test: wall hits at 2, 4, 8 m/s at 15/30/60/90 degrees. Report end state
+   each: upright / inverted / wedged, and velocity after. Target: upright
+   after any hit under 60 degrees and 6 m/s."
+
+### What was there
+
+- **The wall's response was quadmath's duct hit** (`ductHit`) on every
+  footprint point: restitution 0.325 (0.10 above the crash speed), and 0.82
+  of the speed along the face kept (0.55 on a crash), on every tick in
+  contact. Pressed on a wall by thrust, a quad lost 18 % of its speed along it
+  each millisecond and stopped in a few ticks. That is "stick to walls".
+- **The ducts met walls at four points:** the rims on the arm diagonals, at
+  the duct bottom, 10 mm under the CG. A wall's push there pitched the quad
+  over the wall, and the point on the diagonal caught like a corner.
+- **Baseline** (`tests/node/wall-hit.test.mjs` on main, the same protocol as
+  below): flown, 1 of 12 hits ended upright (7 wedged on the wall, 4
+  inverted); motors off, 2 of 12. 250 ms after a 4 m/s hit at 15 degrees the
+  quad's speed along the wall was 0.
+
+### What changed (sim-core, physical model only)
+
+- **Airframe** (`airframes/air65.json`), three new values (the plant block
+  grows to 54 doubles):
+  - `ductHeight` 14.5 mm: BetaFPV's Air65 vs Meteor65 frame table, as a
+    retailer reproduces it (BetaFPV's own page refused the fetch).
+    Confidence medium, not measured on this Air65. 0 turns the ducts' sides
+    off (the footprint alone, as before).
+  - `wallFriction` 0.2 and `wallRestitution` 0.3: the owner's numbers.
+    Confidence low, not measured.
+- **The ducts' sides** (plant.c). Each duct is a tube round its motor, its
+  bottom rim `hullBelow` under the CG and its top rim `ductHeight` above
+  that. Boxes are axis-aligned, so the side meets them at a few points per
+  rim, recomputed every tick as the quad turns (so a wall rolls the duct off
+  it rather than catching a fixed point):
+  - **axis points:** for each wall normal (+-x, +-y), each rim's point
+    furthest toward it, met only by faces with that normal. The top rim's
+    points, and its highest point, also meet box undersides;
+  - **level points:** where a box's top or bottom cuts a tilted duct, just
+    above the top and just below the bottom (heights from the solids, so a
+    shelf in pieces gives the same levels);
+  - **edge points:** a convex vertical box edge (a post's corner, a door
+    jamb) inside a rim's reach. The rim is solved exactly against both faces
+    (a rim's coordinate along an axis is a cos t + b sin t + c), and the
+    point deepest past both is pushed out through the face that clears the
+    whole rim with the least push (or down, for a top rim risen under a box).
+    Seams of solids in pieces are never corners.
+- **The rules a duct's side point follows in world.c** (each from a case
+  that broke, in the code comments):
+  - only the boxes near the quad (`sc_world_near`);
+  - out through the box's shallowest surface, only if it is one of the
+    point's face kinds; seams (a hair past one included) and a standing
+    box's bottom are not surfaces;
+  - no deeper than the point came into the box this tick plus a band, R (1 -
+    cos 45 degrees) = 5.3 mm (the side the rims on the diagonals leave),
+    plus `ductHeight` times the lean for a top rim. Deeper is a pose's
+    overlap and stays the footprint's;
+  - what came in this tick goes out whole; an overlap from before the tick
+    creeps out 1 mm a tick (one budget over the passes). A point that came
+    into the box this tick through its other side face (a corner) goes out
+    whole too, up to that face's travel: only through the face itself (not
+    across a seam's plane, nor its plane beside the face), and only out
+    through the nearer of the solid's two faces on that axis;
+  - under the floor it meets boxes at floor level, the lift undone; the
+    floor wins over a side point's push down;
+  - a point already leaving a face is not held at its leaving speed.
+- **Walls answer every point of the quad** (the footprint and the ducts'
+  sides) with `wallRestitution` along the normal (`wallBounce`), and Coulomb
+  friction in plant.c's sweeps: the friction impulse at a contact is at most
+  `wallFriction` times its normal impulse so far.
+- **Unchanged:** the floor, box tops, the hull's contacts, quadmath's CG
+  point (the parity model) and the rest plant. Box undersides as before,
+  except that the ducts' top rims now meet them too. The crash flag on a
+  CONTACT event still uses quadmath's crash speed.
+
+### The wall-hit test (owner's matrix)
+
+`tests/node/wall-hit.test.mjs`: the Air65 flies into a wall nose first,
+pitched into its direction of travel as steady flight at that speed holds it
+(4.8, 18.6 and 53.4 degrees at 2, 4 and 8 m/s), the CG 1 m up. Two pilots:
+
+- **flown:** Betaflight armed in acro on the owner's diff, sticks centred,
+  the steady-flight throttle held through the hit and 250 ms past it (a
+  reaction), then zero (the drop), and a disarm 300 ms after it lands;
+- **off:** motors off, the plant alone.
+
+End state at rest on the floor: upright (up Z above 0.9), inverted (below
+-0.5), wedged (anything else). Velocity 50 ms after the first wall contact.
+
+| pilot | m/s | deg | into the wall, m/s | 50 ms after: away / along / up, m/s | tilt rate 50 ms after, deg/s | along the wall 250 ms after, m/s | end |
+|---|---|---|---|---|---|---|---|
+| flown | 2 | 15 | 0.52 | 0.06 / 1.82 / -0.05 | 13 | 1.81 | upright |
+| flown | 2 | 30 | 1.00 | 0.30 / 1.47 / -0.16 | 0 | 1.49 | upright |
+| flown | 2 | 60 | 1.73 | 0.31 / 1.00 / 0.14 | 81 | 0.99 | upright |
+| flown | 2 | 90 | 2.00 | 0.58 / 0.00 / 0.02 | 25 | 0.00 | upright |
+| flown | 4 | 15 | 1.04 | -0.03 / 3.81 / 0.24 | 57 | 4.03 | upright |
+| flown | 4 | 30 | 2.00 | 0.02 / 3.01 / -0.25 | 943 | 2.19 | inverted, on the wall |
+| flown | 4 | 60 | 3.46 | 0.05 / 1.50 / -0.40 | 1378 | 1.00 | upright |
+| flown | 4 | 90 | 4.00 | 0.62 / 0.00 / 0.80 | 209 | 0.00 | upright |
+| flown | 8 | 15 | 2.07 | -0.24 / 7.16 / -0.80 | 1121 | 5.34 | upright |
+| flown | 8 | 30 | 4.00 | 0.25 / 5.44 / -0.48 | 568 | 4.26 | inverted |
+| flown | 8 | 60 | 6.93 | 1.50 / 2.37 / -0.04 | 1140 | 0.45 | inverted |
+| flown | 8 | 90 | 8.00 | 1.22 / 0.00 / 0.08 | 756 | 0.00 | inverted |
+| off | 2 | 15 | 0.52 | 0.05 / 1.78 / -0.58 | 199 | 1.61 | upright |
+| off | 2 | 30 | 1.00 | 0.32 / 1.44 / -0.54 | 11 | 1.32 | upright |
+| off | 2 | 60 | 1.73 | 0.31 / 0.99 / -0.52 | 236 | 0.92 | upright |
+| off | 2 | 90 | 2.00 | 0.59 / 0.00 / -0.52 | 280 | 0.00 | upright |
+| off | 4 | 15 | 1.04 | 0.10 / 3.49 / -0.53 | 305 | 2.99 | upright |
+| off | 4 | 30 | 2.00 | 0.46 / 2.87 / -0.51 | 1229 | 2.53 | inverted |
+| off | 4 | 60 | 3.46 | 0.42 / 1.93 / -0.42 | 1734 | 1.75 | upright |
+| off | 4 | 90 | 4.00 | 1.00 / 0.00 / 0.37 | 732 | 0.00 | upright |
+| off | 8 | 15 | 2.07 | 0.52 / 6.65 / -0.45 | 356 | 5.13 | upright |
+| off | 8 | 30 | 4.00 | 0.86 / 5.58 / -0.40 | 396 | 4.41 | inverted |
+| off | 8 | 60 | 6.93 | 1.63 / 2.88 / 0.17 | 1986 | 2.49 | inverted |
+| off | 8 | 90 | 8.00 | 1.66 / 0.00 / 0.44 | 1361 | 0.00 | upright |
+
+- **Upright:** flown 8 of 12 (main 1), off 9 of 12 (main 2); none wedged.
+- **Restitution:** a 2 m/s head-on hit comes back at 0.294 of its speed
+  (`wallRestitution` 0.3).
+- **Glance, not stop:** every 15 and 30 degree hit keeps at least 75 % of
+  its speed along the wall (asserted; the least is 78 %). Flown, 250 ms on
+  (still pressed by the thrust), 4 m/s at 15 degrees slides at 4.03 m/s
+  (main: 0).
+- **Friction acts:** with the motors off, every glance loses at least half
+  of what one Coulomb contact takes, `wallFriction` (1 + `wallRestitution`)
+  times the speed into the wall (asserted).
+- **The owner's target: 3 of 4 met.** Flown, 4 m/s at 30 degrees ends
+  inverted. Issue #10
+  (https://github.com/ryanroths/quadmath-sim-core/issues/10); `run-all`
+  runs the target as its own entry, skipped as known failing, so the miss
+  stays visible.
+
+### Why 4 m/s at 30 degrees still flips
+
+- **The lever.** At 18.6 degrees nose down the leading duct is lowered by the
+  pitch, so its top rim, which leads, meets the wall 5.8 mm under the CG. The
+  2 m/s into the wall, at restitution 0.3, is a 0.064 N s push; at Ixx about
+  1.0e-5 kg m^2 that is about 2200 deg/s of tilt in one tick.
+- **Betaflight's catch.** It slows that at about 470 rad/s^2: the quad turns
+  past 90 degrees before the rate is gone, acro holds that attitude, and it
+  lands inverted.
+- **What sets the lever, unmeasured:**
+  - where the CG sits up the duct (`hullBelow`, WebFPV's 10 mm). A component
+    estimate (motors and the pack in the bottom slot) puts it nearer 4 to
+    6 mm above the duct bottom;
+  - the pitch at speed (quadmath's tuned frontal drag);
+  - the inertia (the flat-box rule).
+- **No tuning to pass.** The CG height is also the rest height, so a what-if
+  moves the floor too. At 8 and 7.25 mm the case still ends inverted, and
+  other cases flip on the landing. What would settle it is a measurement:
+  the Air65 balanced on its side on an edge gives the CG height in the duct.
+
+### Review
+
+Four review rounds on the contact model, each finding reproduced by a
+script before it was fixed:
+- **Round 1** (14 confirmed): among them a side point under a box top pushed
+  out through the nearest side (a 1 m shove), a seam met as a wall, a 5 m
+  shove from a deep pose, a 1 um gap passed through.
+- **Round 2** (19 confirmed): corners cut by a tilted rim (now the exact
+  edge solve), a split wall differing from one piece, a T-join and a cut
+  shelf (now the level points), a ledge shove (now the top rims meet
+  undersides), a 17 m/s solver blow-up (now leaving points are not held), a
+  9.6 mm push (now the creep), a slot pinch carrying rims into the floor
+  (now the floor wins), and the cost of walking every box (now `nearWalk`).
+- **Round 3** checked round 2's fixes: the creep was per pass (2 mm a tick
+  between two faces; now one budget), the band ignored the top rim's lean,
+  a rounding hair let an edge point miss its box, seam corners filled the
+  edge slots. Then section 57 caught a regression from the budget: a rim
+  that swung into a post's corner through one face, already past the other
+  face's plane beside it, was treated as an old overlap and ended a tick
+  0.57 mm in.
+- **Round 4** tested the first fix for that (any start outside the box's
+  other side face counted as coming in) against the build without it, three
+  ways, about 52,000 scenarios on each build. It was refuted:
+  - a duct glancing a 10 or 20 mm post at 4.5 to 8 m/s was pushed out
+    through the post's far face, across it, the wrong way: up to 8.7 mm,
+    ending the tick 2.4 mm in (42 of 480 cases; the build without it, 0),
+    with one-tick energy gains up to 375 mJ;
+  - a point crossing a seam's plane while coming down through a split
+    table's top, out of a 1 um gap, or from under the floor was pushed out
+    whole where one piece crept: pieces differed from one piece;
+  - in a squeeze (a door or slot narrower than the quad) one jamb's overlap
+    pushed out whole drove the other duct deeper into the other jamb.
+
+  The rule now counts only a crossing of the face itself (`crossedInside`,
+  as the footprint's rules use), only out through the nearer of the solid's
+  two faces, and admits the point as before (no deeper than it came in
+  along its way out, plus the band). Re-run: the 480 level thin-post cases
+  0 wrong-way; no one-tick energy gain over 20 mJ that the build without it
+  doesn't also have (7,000 random glances); pieces equal to one piece in
+  every seam script; the post-corner sweep (200 hits) 0 mm. Then the sweep
+  again, final build against the build without the rule (40,728
+  scenarios): in every family, ticks end shallower in more runs than
+  deeper (post corners 1,334 against 29, thin posts 394 against 129, gaps
+  382 against 170, doors 406 against 90). What remains is in the gaps
+  below.
+
+### Gaps found and left (not part of this change)
+
+- **Horizontal box edges** (a shelf's end, a box top's edge) are not
+  answered for the ducts' sides: a duct can go up to 12.5 mm past one before
+  the rims or a wall meet it. Follow-up.
+- **Box tops meet the rims only** (the floor's contact, unchanged): a duct
+  coming down past a box's edge, or into a gap narrower than the ducts, sinks
+  into the side up to the band on the way (section 57: 4.7 mm past an edge,
+  4.5 mm in a gap, both 0 at the end). Off-centre drops into a narrow gap
+  can end 1 to 3 mm in. Dropped yawed 5 degrees and 2 mm off centre into a
+  gap 1 mm narrower than the ducts, the quad falls through to the floor, a
+  duct 10.4 mm into a wall on the way (the same without the corner rule).
+- **Posts thinner than about twice a duct's overlap** are resolved point by
+  point, so a duct can be pushed toward the post's middle: tilted 0.3 to
+  0.6 rad into a 15 to 20 mm post at 4 to 8 m/s, up to 2.7 mm on the tick it
+  meets it (0.8 mm without the corner rule), ending at most 1.1 mm in
+  (1.05 mm without it, which ends deeper in more of those cases). On 5 to
+  40 mm posts a post passes through a duct's hub in 54 runs only with the
+  rule and 38 only without it, of 5,400.
+- **Squeezes:** in a door or slot narrower than the quad, a jamb's corner
+  overlap goes out whole and can drive the other duct deeper into the other
+  jamb. Replayed from the same state, a tick in an 85 mm slot at 6 m/s ends
+  2.65 mm into the other post, 1.10 mm without the rule, and a tick in a
+  70 mm door 3.63 mm into the other jamb, 1.47 mm without it. Over 7,745
+  door runs, ticks end deeper in 90 runs (at most 3.2 mm) and shallower in
+  406. Both ways end ticks 4 to 5 mm into a jamb at 4 to 6 m/s.
+- **Poses:** a pose that puts a duct's side deeper than the band inside a
+  wall is not pushed out; poses stay the footprint's.
+- **Cost:** `sc_world_near` takes solids in order of min x, so one long
+  solid sorted early defeats it.
+
+### Test changes (requirement-driven)
+
+The ducts' sides now meet walls ahead of the rims: by 5.3 mm level, more
+pitched. So plant-world checks that judged a wall contact by a rim now judge
+it by the duct's side or the outline (the footprint and the ducts' sides).
+No threshold was loosened. Where a check is about world.c's rules for a
+footprint point, which a duct's side now keeps the rim from reaching, it
+runs on `BARE` (the airframe with `ductHeight` 0, the footprint alone), its
+assertions as on main.
+
+- 19, 22, 35 (a box on the floor plane): kept on `BARE` as on main, and
+  copied with the sides on: posed by the duct's side (the rims' pose put a
+  top rim 7 mm inside the box), judged by it. 19's ducts-on copy asks for
+  exactly 2 ducts at the foot (main: at least 2 rims). 22 gains a level case
+  at the foot of the side.
+- 21: the slide posed and judged by the ducts' sides; under Coulomb
+  friction it now slides down to the floor (it crept 20 mm/s under the old
+  0.82). The garage fall is aimed by the leading point of the ducts' sides.
+- 26:
+  - garage and room corners judged on the outline;
+  - room corner: presses every 15 degrees instead of 30, each backed off
+    until the ducts' sides start clear (under the walls' friction a press
+    slides out of the corner sooner: 24 presses gave 633 ms, under the 1 s
+    asked; 48 meet it);
+  - slab and deck edges judged on the outline;
+  - crate and lintel aimed by the duct's side, the lintel's first contact by
+    the leading duct;
+  - T-join: on `BARE` as on main, plus a ducts-on run aimed by the duct's
+    side, judged above the table top.
+- 27: "met at the wall face" measured at the duct's side; the through check
+  on the outline.
+- 28: split wall aimed by the duct's side. The overlap case counts points
+  past the face below the wall's top only, and gains a no-point-inside check:
+  at restitution 0.3 the quad comes back off and, open loop near hover,
+  climbs over the 2 m wall in the 2 s.
+- 29: the footprint runs on `BARE`; a ducts-on run climbs past the split as
+  past one piece, with an 8 mm proud ledge as the control.
+- 34, 36, 52, the gym pose: on `BARE` (a duct pressed into the corner holds
+  rim 3 5.3 mm off both walls; the poses put a post through the ducts).
+- 37: on `BARE` as on main, plus the ducts-on T-join split vs one piece.
+- 57 (new): a post's corner (48 hits, 0.5 to 3 m/s, four yaws, three
+  approaches; no rim point ends a tick 0.15 mm past both faces), a 10 or
+  20 mm post glanced at 4.5 to 8 m/s (pushed off the near way, never ending
+  a tick in it; it fails on round 4's first fix, 8.7 mm the wrong way), a
+  box's edge with a duct over it, and gaps narrower than the ducts.
+- `abi-surface`: the three new slots; `ocvOverDischarge` is no longer the
+  last. `gate-plant`: the parity airframe carries the three new fields
+  (unused there).
+- `run-all`: the wall-hit test (asserting) and its `--target` (skipped,
+  #10).
+
+### Cost
+
+- **Tick cost,** on a map of 1064 boxes: open air 13.0 to 14.9 us; on the
+  floor against a wall 26.5 to 33.1 us; sliding along a wall 1 m up 13.2 to
+  17.1 us.
+- **plant-world** runs about 130 s locally (68 s on main); on CI, where main
+  takes about 100 s, expect about 190 s of its 300 s limit.
+
+### Checks
+
+`run-all --quick`: 19 pass, 2 skips (#5, and the wall-hit target, #10).
+Headless Chrome tests included; no browser left running. The review rounds'
+repro scripts (in the session scratchpad, not committed) re-run clean on the
+final build, apart from what the gaps above list.
+
+### Open, for the owner
+
+- **Measure:** the CG's height above the duct bottom, and the duct height.
+- **To fly it in the sim:** tag v0.4.0, release, re-vendor into quadmath and
+  bump `PHYS_VER` (the contact model changed). All of these are yours.
+- **The target issue:** #10.
+- **Follow-up:** the ducts' sides against horizontal box edges (and with
+  them box tops, which the thin-gap fall-through and the descents past an
+  edge come from).
