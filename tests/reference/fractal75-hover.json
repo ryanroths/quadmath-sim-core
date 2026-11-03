@@ -1,0 +1,96 @@
+{
+  "source": "BTFL_BLACKBOX_LOG_CHOP_CHOP_20261103_111727_BETAFPVG473.BBL",
+  "flown": "0000-01-01T00:00:00.000+00:00, CHOP CHOP, BEFH BETAFPVG473, Betaflight 4.5.0 (c155f5830) STM32G47X",
+  "log": {
+    "frames": 416343,
+    "duration_s": 209.1,
+    "rate_hz": 1991,
+    "logs_in_file": 1,
+    "corrupt_frames_dropped": 3368
+  },
+  "window_s": [
+    10,
+    58
+  ],
+  "window_note": "given with --window",
+  "header": {
+    "motorOutput": [
+      168,
+      2047
+    ],
+    "motor_poles": 12,
+    "dshot_bidir": 1,
+    "vbat_scale": 110,
+    "currentSensor": [
+      -600,
+      750
+    ],
+    "thrust_linear": 0,
+    "vbat_sag_compensation": 0,
+    "throttle_boost": 0,
+    "rates_type": 3,
+    "thr_mid": 65,
+    "thr_expo": 35,
+    "dyn_idle_min_rpm": 0,
+    "dshot_idle_value": 600,
+    "motor_output_limit": 100,
+    "throttle_limit_type": 0,
+    "throttle_limit_percent": 100,
+    "vbatcellvoltage": [
+      330,
+      345,
+      440
+    ],
+    "blackbox_high_resolution": 0
+  },
+  "measured": {
+    "hover_throttle_rc": 1289,
+    "hover_stick": 0.289,
+    "hover_motor_duty": 0.332,
+    "hover_erpm_logged_mean": 1429,
+    "hover_rpm": 23812,
+    "hover_omega_rad_s": 2494,
+    "vbat_mean_v": 4.07,
+    "amps_mean_a": 2.81,
+    "power_mean_w": 11.44,
+    "first_10s": {
+      "vbat": 4.126,
+      "amps": 2.75,
+      "duty": 0.326,
+      "rpm": 23746
+    },
+    "last_10s": {
+      "vbat": 4.022,
+      "amps": 2.86,
+      "duty": 0.337,
+      "rpm": 23915
+    },
+    "idle_prearm_bin0": {
+      "vbat": 4.26,
+      "amps": 1.1
+    },
+    "vbat_rest_before": 4.41,
+    "vbat_rest_after": null,
+    "cells": 1,
+    "pack": "weBLEEDfpv 450 mAh 1S HV",
+    "auw_g": 35.98
+  },
+  "derived": {
+    "static_load_fraction_hover": 0.706,
+    "static_load_fraction_note": "hover_rpm / (KV 25000 x vbat_mean x hover_motor_duty)",
+    "kt_prop_from_hover_N_per_rad2": 1.4191e-8,
+    "kt_note": "m g / (4 omega^2) at m = 0.03598 kg (auw_g), g = 9.81",
+    "plant_load_fraction_for_hover_ratio": 0.5083,
+    "plant_load_fraction_note": "the plant's loadFraction (its full-throttle point at 4.35 V per cell) at which its own hover ratio equals static_load_fraction_hover",
+    "tmax_N_at_load_fraction": {
+      "0.52": 0.49766,
+      "0.5083": 0.4756
+    },
+    "tmax_note": "kt x (lf x Kv x vRefCell)^2: the airframe tmax that carries the measured kt at that loadFraction",
+    "cell_ir_start_ohm": 0.0819,
+    "cell_ir_start_note": "(4.26 - 4.14) V / (2.58 - 1.1) A: bin 0 (before take-off) against the window's first second; state of charge moves in between",
+    "cell_ir_end_ohm": null,
+    "cell_ir_end_note": "needs --rest-after",
+    "current_sensor_note": "currentSensor -600, 750 as logged; not corrected"
+  }
+}

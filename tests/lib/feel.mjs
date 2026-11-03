@@ -64,8 +64,10 @@ export function webfpvSim(module, diff, scenario, { lenScale = 1, name = 'WebFPV
 
 // sim-core with a plant: each run is a fresh flight instance, armed on a
 // floor far below, then put level and still at the origin (as WebFPV's reset
-// is) on a 4 ms RX-grid boundary, so frame timing matches WebFPV's.
-export async function simCoreSim(SimCore, module, { diff, airframe, floorZ = -100, name = 'sim-core' }) {
+// is) on a 4 ms RX-grid boundary, so frame timing matches WebFPV's. Each run
+// starts on a fresh pack, or on battery ({ soc, vbatFiltered }, as reinit
+// takes it) when given: a log's pack.
+export async function simCoreSim(SimCore, module, { diff, airframe, floorZ = -100, name = 'sim-core', battery = null }) {
   const core = await SimCore.load(module, { trace: false });
   const report = core.configure({ diff, plant: airframe, world: { floorZ } });
   const channels = (c, arm = 2000) => [1500 + q500(c.r), 1500 - q500(c.p), 1500 + q500(c.y), 1000 + q1000(c.t), arm];
@@ -74,7 +76,7 @@ export async function simCoreSim(SimCore, module, { diff, airframe, floorZ = -10
     core,
     config: report,
     fly(stick, durMs, onStep) {
-      core.reinit({ freshPack: true });
+      core.reinit(battery ? { battery } : { freshPack: true });
       // One step a millisecond whatever the loop rate (one tick at 1 kHz).
       const ticksPerMs = 1000 / core.tickUs;
       if (!Number.isInteger(ticksPerMs)) throw new Error(`feel needs whole ticks a millisecond; a ${core.tickUs} us tick gives ${ticksPerMs}`);

@@ -12,6 +12,7 @@
     "test:quick": "node tests/run-all.mjs --quick",
     "gate": "node tests/gate-arm-motor.mjs --build",
     "gate:plant": "node tests/gate-plant.mjs",
+    "gate:fractal75": "node tests/gate-fractal75.mjs",
     "fly": "node tests/browser/fly-serve.mjs"
   }
 }

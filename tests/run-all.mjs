@@ -9,8 +9,9 @@
 // config-count, diff-passthrough, blackbox-webfpv and gate-plant read WebFPV's
 // module and diffs from a WebFPV clone (tests/lib/webfpv.mjs). node-vs-chrome
 // and the fly harness test need Chrome. gate-plant fails on an X3 band miss the owner has not signed
-// off or put under investigation in tests/x3-signoff.json; plant-world fails
-// on an open check unless it is under investigation there.
+// off or put under investigation in tests/x3-signoff.json, and gate-fractal75
+// on a row miss alike ("Fractal75 <row>"); plant-world fails on an open check
+// unless it is under investigation there.
 // A test that runs past its time limit is stopped and counts as failed. A
 // test marked skip names its issue and is not run; SC_RUN_KNOWN_FAILING=1
 // runs it with the rest.
@@ -39,6 +40,8 @@ const TESTS = [
     { skip: 'known failing, issue #5 https://github.com/ryanroths/quadmath-sim-core/issues/5' }],
   ['M4 bench hover and turtle flips from a blackbox log (tools/hover-from-log.mjs, synthetic frames)', 'tests/node/hover-from-log.test.mjs'],
   ['M4 plant: P1-P8, F6, F9, X2/F3, X3 feel bands (log, bench, WebFPV), X4 turtle vs log (reported)', 'tests/gate-plant.mjs'],
+  ['Fractal75 airframe: sources and flags, HV curve, values from its log, punch-inflow (synthetic frames; the owner\'s logs with QUADMATH_DIR)', 'tests/node/fractal75.test.mjs'],
+  ['Fractal75 plant against its own log (owner, 2026-11-03): props out, hover stick, P6 thrust law, P7 current, P8, punches flown by the log\'s duty', 'tests/gate-fractal75.mjs'],
   ['D2 Node vs headless Chrome, console clean', 'tests/browser/node-vs-chrome.test.mjs'],
   ['P2 fly harness: radio map, calibration port, input clock, Air65 arms on AUX1', 'tests/node/fly-radio.test.mjs'],
   ['P2 turtle: crash flip on AUX3 (owner diff), inverted to upright within 500 ms of full roll, rests upright', 'tests/node/crash-flip.test.mjs'],
