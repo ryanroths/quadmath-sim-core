@@ -2,7 +2,7 @@
   "source": "BTFL_BLACKBOX_LOG_AIR65_RYFLY_20261023_143354_BETAFPVG473.BBL",
   "log_index": 0,
   "mode": "full-duty plateau",
-  "rule": "50 ms bins with mean duty > 0.9; runs less than 100 ms apart are one punch; steady values leave out the first 100 ms (the rotors spinning up); onset accZ is the highest bin in the first 150 ms",
+  "rule": "50 ms bins with mean duty > 0.9; runs less than 100 ms apart are one punch; steady values leave out the first 100 ms (the rotors spinning up); onset accZ is the highest bin in the first 150 ms, and, from the frames, the highest 20 ms mean in the same 150 ms (the onset for the thrust exponent, owner decision 2026-11-03)",
   "flown": "0000-01-01T00:00:00.000+00:00, AIR65 RYFLY, BEFH BETAFPVG473, Betaflight 4.5.0 (c155f5830) STM32G47X",
   "log": {
     "frames": 114502,
@@ -54,6 +54,8 @@
         "amps": 15.43
       },
       "onset_accZ_g": 3.85,
+      "onset_accZ_20ms_g": 4.969,
+      "onset_20ms_at_s": 6.239,
       "before": {
         "duty": 0.335,
         "vbat": 4.092,
@@ -72,6 +74,8 @@
         "amps": 15.55
       },
       "onset_accZ_g": 1.74,
+      "onset_accZ_20ms_g": 2.104,
+      "onset_20ms_at_s": 22.251,
       "before": {
         "duty": 0.723,
         "vbat": 3.693,
@@ -89,6 +93,8 @@
         "amps": 15.3
       },
       "onset_accZ_g": 3.73,
+      "onset_accZ_20ms_g": 4.001,
+      "onset_20ms_at_s": 36.585,
       "before": {
         "duty": 0.343,
         "vbat": 3.931,
@@ -103,6 +109,7 @@
     "vbat_v": 3.504,
     "amps_a": 15.37,
     "onset_accZ_g": 3.85,
+    "onset_accZ_20ms_g": 4.969,
     "omega_rad_s": 6682
   },
   "current_vs_rpm": [
@@ -258,7 +265,14 @@
       "omega_hover_rad_s": 3389,
       "predicted_onset_accZ_g": 3.887,
       "measured_onset_accZ_g": 3.85,
-      "note": "thrust = kt w^2 with kt from the hover (m g / (4 w_hover^2)): at the plateau rpm, thrust / weight = (w / w_hover)^2, the specific force at onset before the quad gains speed"
+      "note": "thrust = kt w^2 with kt from the hover (m g / (4 w_hover^2)): at the plateau rpm, thrust / weight = (w / w_hover)^2, the specific force at onset before the quad gains speed",
+      "rpm_over_hover": 1.9719,
+      "exponent_from_onset": 1.9853,
+      "measured_onset_accZ_20ms_g": 4.969,
+      "exponent_from_onset_20ms": 2.3611,
+      "airframe_exponent": 2,
+      "predicted_onset_accZ_g_at_airframe_exponent": 3.889,
+      "exponent_note": "n = ln(onset g) / ln(plateau rpm / hover rpm), the law kt w^n through the hover and the onset, rpm from the plateau tool and the hover tool"
     },
     "cell_ir_ohm": [
       0.0438,

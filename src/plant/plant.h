@@ -105,7 +105,13 @@ enum {
     PB_DUCT_HEIGHT = 51,        // m, duct bottom to duct top; 0: no sides, the footprint alone
     PB_WALL_FRICTION = 52,      // friction impulse / normal impulse, at most
     PB_WALL_RESTITUTION = 53,   // speed out / speed in, along the face normal
-    PB_LEN = 54,
+    // Thrust law (physical model): each prop's thrust kt |w|^n and its drag
+    // torque kq |w|^n, signed as w, with kt fixed by PB_TMAX at the
+    // full-throttle speed and kq by PB_KQ_RATIO on kt (yaw torque in
+    // proportion to thrust, at every speed). 2 is rpm squared, evaluated
+    // exactly as before the exponent existed
+    PB_THRUST_EXP = 54,         // n, 1..3
+    PB_LEN = 55,
 };
 
 // The lowest state of charge a physical pack reaches (the last

@@ -6,17 +6,20 @@
  * "QP", "H" and "W" below). The physical motor and pack are the owner's M4
  * model (PROGRESS.md 2026-10-22 decisions):
  *
- *   motor   J dw/dt = Kt (u V - w / Kv) / R - kq w|w|      (KV x effective
+ *   motor   J dw/dt = Kt (u V - w / Kv) / R - kq w|w|^(n-1)  (KV x effective
  *           voltage, first-order lag, loaded by prop drag torque)
- *   prop    thrust = kt w|w|, reaction torque on the frame
- *           = -spin (kq w|w| + J dw/dt): the prop's drag and the rotor's own
- *           acceleration (owner decision 2026-10-23)
+ *   prop    thrust = kt w|w|^(n-1), reaction torque on the frame
+ *           = -spin (kq w|w|^(n-1) + J dw/dt): the prop's drag and the
+ *           rotor's own acceleration (owner decision 2026-10-23). n is the
+ *           airframe's thrustExponent (owner decision 2026-11-03: fitted per
+ *           airframe from its hover and punch onset); 2 is rpm squared
  *   pack    V = OCV(SoC) - I x cell IR, I = bench current x duty / reference
  *           duty, the reference being the hover duty on a full pack that sags
  *           at the bench current
  *
  * kt is fixed by the airframe's full thrust tmax at w_full = loadFraction x KV
- * x vRefCell, kq by kqRatio on that thrust (yaw torque at full speed), R by
+ * x vRefCell, kq by kqRatio on that thrust (yaw torque in proportion to
+ * thrust, so the drag torque follows the same exponent), R by
  * loadFraction taken as the static full-throttle point, and J by the motor
  * time constant tau at hover. airframes/air65.json cites where each input
  * comes from (for the Air65, tmax carries the thrust coefficient measured in
@@ -175,6 +178,16 @@ static double ocvCell(double soc)
     return blk[PB_OCV + 6];
 }
 
+// k x the prop's law at rotor speed w: k |w|^n signed as w (PB_THRUST_EXP),
+// for thrust (kt) and drag torque (kq). At n 2 it is k w |w|, the expression
+// the plant had before the exponent, so an rpm-squared airframe runs bit for
+// bit as it did.
+static double propLaw(double k, double w)
+{
+    const double n = blk[PB_THRUST_EXP];
+    return n == 2 ? k * w * fabs(w) : k * copysign(pow(fabs(w), n), w);
+}
+
 static void derive(void)
 {
     const double m = blk[PB_MASS], wb = blk[PB_WHEELBASE], h = wb * blk[PB_BOX_HEIGHT_RATIO];
@@ -192,14 +205,19 @@ static void derive(void)
     const double vRef = blk[PB_V_REF_CELL] * cells;
     const double lf = blk[PB_LOAD_FRACTION];
     const double wFull = lf * kv * vRef;
-    const double ktProp = blk[PB_TMAX] / (wFull * wFull);
+    // n 2 keeps the rpm-squared expressions exactly (propLaw).
+    const double n = blk[PB_THRUST_EXP];
+    const bool squared = n == 2;
+    const double ktProp = squared ? blk[PB_TMAX] / (wFull * wFull) : blk[PB_TMAX] / pow(wFull, n);
     const double kqProp = blk[PB_KQ_RATIO] * (wb / 2) * ktProp;
     // At full throttle the motor torque Kt (V - w/Kv) / R meets the prop's
-    // kq w^2 at w = lf x Kv x V.
-    const double r = ktMotor * vRef * (1 - lf) / (kqProp * wFull * wFull);
-    const double wHover = sqrt(m * blk[PB_GRAVITY] / (4 * ktProp));
-    // Small-signal time constant of J dw/dt = Kt (V - w/Kv) / R - kq w^2 at hover.
-    const double j = blk[PB_TAU] * (ktMotor / (r * kv) + 2 * kqProp * wHover);
+    // kq w^n at w = lf x Kv x V.
+    const double r = squared ? ktMotor * vRef * (1 - lf) / (kqProp * wFull * wFull)
+                             : ktMotor * vRef * (1 - lf) / (kqProp * pow(wFull, n));
+    const double wHover = squared ? sqrt(m * blk[PB_GRAVITY] / (4 * ktProp)) : pow(m * blk[PB_GRAVITY] / (4 * ktProp), 1 / n);
+    // Small-signal time constant of J dw/dt = Kt (V - w/Kv) / R - kq w^n at
+    // hover: d(kq w^n)/dw = n kq w^(n-1).
+    const double j = blk[PB_TAU] * (ktMotor / (r * kv) + (squared ? 2 * kqProp * wHover : n * kqProp * pow(wHover, n - 1)));
     derived[PD_KV_RAD] = kv;
     derived[PD_KT_MOTOR] = ktMotor;
     derived[PD_OMEGA_FULL] = wFull;
@@ -208,7 +226,7 @@ static void derive(void)
     derived[PD_R_WINDING] = r;
     derived[PD_J_ROTOR] = j;
     derived[PD_OMEGA_HOVER] = wHover;
-    const double vHover = wHover / kv + r * kqProp * wHover * wHover / ktMotor;
+    const double vHover = wHover / kv + (squared ? r * kqProp * wHover * wHover : r * kqProp * pow(wHover, n)) / ktMotor;
     derived[PD_DUTY_HOVER] = vHover / vRef;
     derived[PD_AMPS_FULL] = blk[PB_I_QUIESCENT] + blk[PB_I_HOVER] * pow(wFull * RPM_PER_RAD_S / blk[PB_RPM_HOVER], blk[PB_CURRENT_EXP]);
     delayTicks = (int)lround(blk[PB_MOTOR_DELAY] * SC_LOOP_HZ);
@@ -331,7 +349,8 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_OCV_OVER + 1] >= 0 && block[PB_OCV_OVER + 1] <= block[PB_OCV_OVER]
                                         && block[PB_OCV_OVER + 2] >= 0 && block[PB_OCV_OVER + 2] <= block[PB_OCV_OVER + 1]
                                         && block[PB_DUCT_HEIGHT] >= 0 && block[PB_WALL_FRICTION] >= 0
-                                        && block[PB_WALL_RESTITUTION] >= 0 && block[PB_WALL_RESTITUTION] <= 1)) {
+                                        && block[PB_WALL_RESTITUTION] >= 0 && block[PB_WALL_RESTITUTION] <= 1
+                                        && block[PB_THRUST_EXP] >= 1 && block[PB_THRUST_EXP] <= 3)) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -514,10 +533,10 @@ static void stepPhysical(const double cmd[SC_MOTOR_COUNT], double dt)
         const double before = omegaMotor[i];
         double w = before;
         // Back-EMF term implicit (it is the stiff part), prop drag explicit.
-        w = (w + dt * (a * duty[i] * volts - kqProp * w * fabs(w) / j)) / (1 + dt * a / kv);
+        w = (w + dt * (a * duty[i] * volts - propLaw(kqProp, w) / j)) / (1 + dt * a / kv);
         omegaMotor[i] = w;
         motorAccel[i] = (w - before) / dt;
-        const double t = ktProp * w * fabs(w);
+        const double t = propLaw(ktProp, w);
         thrust[i] = w < 0 ? t * blk[PB_REVERSE_SCALE] : t;
         sc_plant.motorOut[i] = w / derived[PD_OMEGA_FULL];
         sc_plant.rpm[i] = fabs(w) * RPM_PER_RAD_S;
@@ -1655,7 +1674,7 @@ void sc_plant_step(double dt)
             // The motor's torque on its rotor is the prop's drag plus what
             // accelerates the rotor; the frame takes the opposite.
             const double w = omegaMotor[i];
-            yaw = -spin(i) * (derived[PD_KQ_PROP] * w * fabs(w) + derived[PD_J_ROTOR] * motorAccel[i]);
+            yaw = -spin(i) * (propLaw(derived[PD_KQ_PROP], w) + derived[PD_J_ROTOR] * motorAccel[i]);
         } else {
             yaw = -spin(i) * blk[PB_KQ_RATIO] * thrust[i] * (blk[PB_WHEELBASE] * 0.5);
         }

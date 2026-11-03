@@ -1,0 +1,277 @@
+{
+  "source": "BTFL_BLACKBOX_LOG_CHOP_CHOP_20261103_111727_BETAFPVG473.BBL",
+  "log_index": 0,
+  "mode": "full-duty plateau",
+  "rule": "50 ms bins with mean duty > 0.9; runs less than 100 ms apart are one punch; steady values leave out the first 100 ms (the rotors spinning up); onset accZ is the highest bin in the first 150 ms, and, from the frames, the highest 20 ms mean in the same 150 ms (the onset for the thrust exponent, owner decision 2026-11-03)",
+  "flown": "0000-01-01T00:00:00.000+00:00, CHOP CHOP, BEFH BETAFPVG473, Betaflight 4.5.0 (c155f5830) STM32G47X",
+  "log": {
+    "frames": 416343,
+    "duration_s": 209.1,
+    "rate_hz": 1991,
+    "logs_in_file": 1,
+    "corrupt_frames_dropped": 3368
+  },
+  "current_scale": 1,
+  "header": {
+    "motorOutput": [
+      168,
+      2047
+    ],
+    "motor_poles": 12,
+    "dshot_bidir": 1,
+    "vbat_scale": 110,
+    "currentSensor": [
+      -600,
+      750
+    ],
+    "thrust_linear": 0,
+    "vbat_sag_compensation": 0,
+    "throttle_boost": 0,
+    "rates_type": 3,
+    "thr_mid": 65,
+    "thr_expo": 35,
+    "dyn_idle_min_rpm": 0,
+    "dshot_idle_value": 600,
+    "motor_output_limit": 100,
+    "throttle_limit_type": 0,
+    "throttle_limit_percent": 100,
+    "vbatcellvoltage": [
+      330,
+      345,
+      440
+    ],
+    "blackbox_high_resolution": 0
+  },
+  "punches": [
+    {
+      "start_s": 61.75,
+      "end_s": 62.05,
+      "bins": 6,
+      "steady": {
+        "duty": 0.943,
+        "rpm": 47340,
+        "vbat": 3.52,
+        "amps": 18.58
+      },
+      "onset_accZ_g": 2.97,
+      "onset_accZ_20ms_g": 3.079,
+      "onset_20ms_at_s": 61.774,
+      "before": {
+        "duty": 0.595,
+        "vbat": 3.783,
+        "amps": 8.07
+      }
+    },
+    {
+      "start_s": 93.9,
+      "end_s": 95.15,
+      "bins": 25,
+      "steady": {
+        "duty": 0.943,
+        "rpm": 47085,
+        "vbat": 3.441,
+        "amps": 17.5
+      },
+      "onset_accZ_g": 2.62,
+      "onset_accZ_20ms_g": 2.675,
+      "onset_20ms_at_s": 93.94,
+      "before": {
+        "duty": 0.723,
+        "vbat": 3.712,
+        "amps": 11.31
+      }
+    },
+    {
+      "start_s": 138.3,
+      "end_s": 139.85,
+      "bins": 31,
+      "steady": {
+        "duty": 0.953,
+        "rpm": 46522,
+        "vbat": 3.36,
+        "amps": 17.25
+      },
+      "onset_accZ_g": 3.1,
+      "onset_accZ_20ms_g": 3.346,
+      "onset_20ms_at_s": 138.331,
+      "before": {
+        "duty": 0.624,
+        "vbat": 3.624,
+        "amps": 8.49
+      }
+    },
+    {
+      "start_s": 186.75,
+      "end_s": 188.3,
+      "bins": 31,
+      "steady": {
+        "duty": 0.955,
+        "rpm": 45876,
+        "vbat": 3.258,
+        "amps": 16.71
+      },
+      "onset_accZ_g": 2.55,
+      "onset_accZ_20ms_g": 2.721,
+      "onset_20ms_at_s": 186.848,
+      "before": {
+        "duty": 0.712,
+        "vbat": 3.492,
+        "amps": 10.32
+      }
+    }
+  ],
+  "measured": {
+    "duty": 0.951,
+    "rpm": 46493,
+    "vbat_v": 3.355,
+    "amps_a": 17.2,
+    "onset_accZ_g": 3.1,
+    "onset_accZ_20ms_g": 3.346,
+    "omega_rad_s": 4869
+  },
+  "current_vs_rpm": [
+    {
+      "krpm": [
+        20,
+        22
+      ],
+      "bins": 121,
+      "rpm": 21066,
+      "amps": 2.35
+    },
+    {
+      "krpm": [
+        22,
+        24
+      ],
+      "bins": 2250,
+      "rpm": 23582,
+      "amps": 2.86
+    },
+    {
+      "krpm": [
+        24,
+        26
+      ],
+      "bins": 1227,
+      "rpm": 24440,
+      "amps": 3.11
+    },
+    {
+      "krpm": [
+        26,
+        28
+      ],
+      "bins": 116,
+      "rpm": 26965,
+      "amps": 4.07
+    },
+    {
+      "krpm": [
+        28,
+        30
+      ],
+      "bins": 66,
+      "rpm": 28801,
+      "amps": 5.02
+    },
+    {
+      "krpm": [
+        30,
+        32
+      ],
+      "bins": 35,
+      "rpm": 30711,
+      "amps": 5.76
+    },
+    {
+      "krpm": [
+        32,
+        34
+      ],
+      "bins": 10,
+      "rpm": 32846,
+      "amps": 6.57
+    },
+    {
+      "krpm": [
+        34,
+        36
+      ],
+      "bins": 12,
+      "rpm": 34944,
+      "amps": 7.93
+    },
+    {
+      "krpm": [
+        36,
+        38
+      ],
+      "bins": 6,
+      "rpm": 36925,
+      "amps": 8.21
+    },
+    {
+      "krpm": [
+        38,
+        40
+      ],
+      "bins": 6,
+      "rpm": 38947,
+      "amps": 11.04
+    },
+    {
+      "krpm": [
+        40,
+        42
+      ],
+      "bins": 5,
+      "rpm": 40838,
+      "amps": 13.02
+    },
+    {
+      "krpm": [
+        42,
+        44
+      ],
+      "bins": 6,
+      "rpm": 43040,
+      "amps": 14.47
+    },
+    {
+      "krpm": [
+        44,
+        46
+      ],
+      "bins": 28,
+      "rpm": 45454,
+      "amps": 16.49
+    },
+    {
+      "krpm": [
+        46,
+        48
+      ],
+      "bins": 67,
+      "rpm": 46768,
+      "amps": 17.39
+    }
+  ],
+  "derived": {
+    "load_fraction_full": 0.5829,
+    "load_fraction_note": "rpm / (KV 25000 x vbat x duty) on the steady plateau",
+    "thrust_law": {
+      "omega_hover_rad_s": 2494,
+      "predicted_onset_accZ_g": 3.811,
+      "measured_onset_accZ_g": 3.1,
+      "note": "thrust = kt w^2 with kt from the hover (m g / (4 w_hover^2)): at the plateau rpm, thrust / weight = (w / w_hover)^2, the specific force at onset before the quad gains speed",
+      "rpm_over_hover": 1.9525,
+      "exponent_from_onset": 1.6909,
+      "measured_onset_accZ_20ms_g": 3.346,
+      "exponent_from_onset_20ms": 1.805,
+      "airframe_exponent": 1.805,
+      "predicted_onset_accZ_g_at_airframe_exponent": 3.346,
+      "exponent_note": "n = ln(onset g) / ln(plateau rpm / hover rpm), the law kt w^n through the hover and the onset, rpm from the plateau tool and the hover tool"
+    }
+  }
+}

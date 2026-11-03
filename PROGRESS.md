@@ -7767,3 +7767,456 @@ Owner (2026-10-29): "Two sim-core follow-ups in one PR: add bladeCount and the O
 - `scripts/release.sh v0.5.0` writes `release/`.
 - quadmath re-vendors it into PR 283, the sound PR.
 - Nothing was deployed.
+
+---
+
+## 2026-11-03 | Phase 2 step 3 | the Fractal75 plant from its own log; the punch's missing thrust is the climb, not the rpm
+
+Owner (2026-11-03): "Fractal75 plant, sim-core. [...] Same recipe as the Air65: hover-from-log and the punch plateau tool, airframes/fractal75.json with a source per value. yaw_motors_reversed ON (props out). HV pack: OCV curve to 4.35 V per cell full. Known finding: rpm^2 from hover predicts 3.98 g at punch, the log measures ~3.1 g peak. Don't force rpm^2: report what thrust law fits both points (an exponent, or a kt that falls with rpm), and whether the Air65 also fits it. Also report thrust decay during the punch vs climb speed (inflow), for both quads. Propose, don't implement the inflow model. Gate rows banded against this log, not WebFPV."
+
+### Inputs
+
+- **The diff** was not in `configs/`; it was in `D:/IGOW6` beside the BBL. It is committed as `configs/fractal75-ryfly-2026-11-03.txt`, with its CRLF line ends made LF and nothing else changed. `tools/config-from-log.mjs` compares it with the log's header: 117 settings, none differ (`pid_process_denom` 2 kept at 1 by sim policy), so `configs/fractal75-ryfly-2026-11-03.from-header.txt` adds no lines.
+- **The BBL** (`BTFL_BLACKBOX_LOG_CHOP_CHOP_20261103_111727_BETAFPVG473.BBL`, `D:/IGOW6`) is copied into `SIM_CORE_LOGS` (`D:/IGOW6/sim-core`) beside the Air65's logs, so the tests find it by name. It holds one log: 209.1 s at 1991 Hz, Betaflight 4.5.0, 3368 corrupt frames dropped. The file is 16 MiB, so the flash was full: the log ends at 209.1 s still hovering (3.68 V at 3.06 A).
+- **The step log** ("step log [file]") was not named, and no other log is beside the BBL or inside it. Nothing here uses one; the step-response rows are not run.
+- **Placeholders:** the CoG takes the owner's estimate (3 mm above the duct bottom); the charger's mAh is missing. The log's own total is 192.7 mAh (owner: 193).
+- **quadmath:** `scripts/derive-fractal75.mjs` runs against quadmath origin/main `992a046`, which has the `fractal75` build preset and its bench file (`data/bench/fractal75-analog-rcinpower0802-25k.json`: Gemfan 1610 2-blade, RCinPower GTS V3 0802 25k, 35.72 g on a kitchen scale, current sensor uncalibrated). The Air65's pin, `de9b15d`, predates the preset. The blackbox decoder is quadmath's, by path, as for the Air65.
+
+### What the log gives
+
+`tools/hover-from-log.mjs` over the owner's window, 10-58 s (`tests/reference/fractal75-hover.json`):
+
+| | |
+|---|---|
+| hover stick (rcCommand) | 0.289 |
+| duty | 0.332 |
+| rpm | 23,812 (2493.6 rad/s) |
+| pack | 4.070 V, 2.81 A logged |
+| kt = m g / (4 w^2) at 35.98 g | 1.4191e-8 N/(rad/s)^2 |
+| rpm / (KV x V x duty) | 0.706 |
+
+The tool's own window search gives 9-60 s.
+
+`--plateau` (`tests/reference/fractal75-punch.json`) finds the owner's four punches:
+
+| punch | steady duty, rpm, V, A | onset accZ |
+|---|---|---|
+| 61.75-62.05 s | 0.943, 47,340, 3.520, 18.58 | 2.97 g |
+| 93.9-95.15 s | 0.943, 47,085, 3.441, 17.50 | 2.62 g |
+| 138.3-139.85 s | 0.953, 46,522, 3.360, 17.25 | 3.10 g |
+| 186.75-188.3 s | 0.955, 45,876, 3.258, 16.71 | 2.55 g |
+| all four | 0.951, 46,493, 3.355, 17.2 | 3.10 g |
+
+- **rpm squared at the plateau predicts 3.811 g.** The owner's 3.98 g is the same law at about 47,500 rpm, the top of punches 1 and 2.
+- **The plateau tool gives no IR here.** Its rule needs the 300..100 ms before the plateau to be hover, and these punches were run up over 0.4-0.6 s.
+
+### The thrust law
+
+**Through the two points, as asked.** Hover is 1 g at 23,812 rpm, and the onset is 3.10 g at the plateau's 46,493 rpm.
+
+- **As an exponent,** thrust ∝ rpm^n with n = ln 3.10 / ln(46,493 / 23,812) = **1.69**. On the owner's figures, 3.98 g predicted against 3.1 measured, n is 1.64.
+- **As a kt that falls with rpm,** kt at the plateau is **0.81** of the hover's.
+- **The Air65 does not fit either.** Its own two points give n = 1.99 (3.85 g at onset against 3.887 g predicted, gate-plant P6). n = 1.69 would predict 3.15 g for it, 18 % under what it measured.
+
+**The log does not support either form.** `tools/punch-inflow.mjs` (new) follows each punch from the hover before its run-up:
+
+- It integrates the climb speed from the accelerometer, with the attitude from the gyro, starting at rest and level.
+- In 10 ms bins, it compares accZ with p = (w / w_hover)^2. The rpm squared goes through the accelerometer's own 25 Hz PT2 (`acc_lpf_hz`), so both lag alike.
+
+The result:
+
+- **Below 1 m/s of climb, accZ is 0.994 of rpm squared.** That is 58 bins at 1.15-1.36 x hover rpm, n = 1.97 bin by bin. The Air65 gives 0.984 (n = 1.94).
+- **The thrust law is rpm squared at rest on both quads.**
+- **The shortfall grows with the climb speed.** Any law in rpm alone fits badly. The best static exponent over all the driven bins is n = 1.0, rms 0.745 g on the Fractal75 and 0.837 g on the Air65.
+
+**What is left of rpm squared, by axial climb speed** (`speed_bands`, accZ / p, the bins with the rotors above hover rpm and duty above 0.3, pooled over the punches):
+
+| climb, m/s | Fractal75 | Air65 |
+|---|---|---|
+| 0-1 | 0.992 | 0.987 |
+| 1-2 | 0.966 | 0.951 |
+| 2-3 | 0.920 | 1.049 |
+| 3-4 | 0.895 | 1.004 |
+| 4-5 | 0.875 | 0.943 |
+| 5-6 | 0.815 | 0.980 |
+| 6-7 | 0.755 | 0.858 |
+| 7-8 | 0.717 | 0.838 |
+| 8-9 | 0.660 | 0.775 |
+| 9-10 | 0.619 | 0.744 |
+| 10-11 | 0.486 | 0.647 |
+| 11-12 | 0.422 | 0.600 |
+| 12-13 | 0.345 | 0.556 |
+| 13-14 | 0.276 | 0.498 |
+| 14-15 | 0.261 | 0.447 |
+| 15-19 | | 0.432, 0.402, 0.311, 0.351 |
+
+The accZ here is thrust less drag. The terminal climbs are 13-14.7 m/s for the Fractal75 and 17.8-18.4 m/s for the Air65.
+
+**Why the two quads' onsets differ.** The run-up from hover to full duty took different times on each:
+
+| | run-up | climb speed at the plateau's start | peak accZ (50 ms) and the climb speed there | max climb speed | climb in the run-up's first second |
+|---|---|---|---|---|---|
+| Fractal75 61.75 s | 0.43 s | 4.47 m/s | 3.00 g at 7.3 m/s | 11.2 m/s | 5.62 m |
+| Fractal75 93.9 s | 0.60 s | 6.50 m/s | 2.65 g at 5.9 m/s | 14.7 m/s | 4.78 m |
+| Fractal75 138.3 s | 0.42 s | 3.80 m/s | 3.18 g at 5.9 m/s | 13.5 m/s | 5.48 m |
+| Fractal75 186.75 s | 0.58 s | 5.53 m/s | 2.62 g at 6.7 m/s | 13.9 m/s | 4.34 m |
+| Air65 6.2 s | 0.11 s | 1.37 m/s | 4.14 g at 2.8 m/s | 18.4 m/s | 9.33 m |
+| Air65 22.15 s | 1.14 s (climbing at duty 0.72 first) | 12.47 m/s | 2.79 g at 5.0 m/s | 15.3 m/s | 6.35 m |
+| Air65 36.5 s | 0.05 s | 0.35 m/s | 3.95 g at 5.3 m/s | 17.8 m/s | 9.25 m |
+
+- **The Fractal75 was already climbing at 4-6.5 m/s when its rotors reached the plateau.** At that speed it keeps 0.82-0.88 of rpm squared, and 3.81 g x 0.82-0.88 is the 3.1-3.3 g it measured.
+- **The Air65's step reached the plateau at 0.35-1.4 m/s,** which is why its P6 passed.
+- **At the same climb speed, the Fractal75 keeps less thrust.** At 9-10 m/s it keeps 0.62 against the Air65's 0.74. At their plateaus the advance ratio for a given speed is nearly the same (n D = 31 m/s against 33 m/s). So the difference is the prop or the drag, per airframe.
+
+**Inflow or drag.** One vertical punch hardly tells them apart (`fits`, least squares over the same bins):
+
+| model | Fractal75 | Air65 |
+|---|---|---|
+| rpm squared alone | rms 1.875 g | 1.830 g |
+| static exponent | n 1.00, 0.745 g | n 1.08, 0.837 g |
+| inflow, p (1 - J / J0), J = V / (n_rev D) | J0 0.655, 0.315 g | J0 0.841, 0.401 g |
+| drag alone, cdA | 0.0085 m^2, 0.274 g | 0.0037 m^2, 0.364 g |
+| both | J0 1.71 and cdA 0.0053, 0.246 g | J0 2.38 and cdA 0.0024, 0.347 g |
+| inflow at a fixed cdA of 0, 0.002, 0.004, 0.006 | J0 0.655, 0.854, 1.224, 2.16 | J0 0.841, 1.816, none, none |
+| inflow at the airframe's cdAPlan | 0.0172: none (rms 0.507 g) | 0.0097: none (0.699 g) |
+
+"None" means the drag alone takes more than the whole shortfall, so the fit would need thrust to grow with the climb.
+
+**Both airframes' plan drag is beyond what their own punch logs allow,** even with no inflow at all:
+
+- Fractal75: 0.0172 m^2 (quadmath's tuned value, scaled by prop area), against at most 0.0085.
+- Air65: 0.0097 m^2, against at most 0.0037.
+
+Both stay as the recipe takes them, flagged.
+
+**The prop also unloads in the climb.** On punch 3 the rpm rises from 44,879 at 3.8 m/s to about 46,800 at 12 m/s, at the same duty (0.95) and about the same pack (3.38 to 3.36 V). The torque falls with the climb, as the thrust does.
+
+### Proposed: an inflow term (not implemented)
+
+1. **Thrust per rotor:** `T = kt w|w| (1 - J / J0)`, where:
+   - `J = 2 pi V_ax / (|w| D)`;
+   - `V_ax` is the airspeed along body +Z, positive climbing. The CG's velocity is enough to start; each rotor's own `omega x r` can come later;
+   - J is clamped at 0 in descent, until a descent log says how the thrust behaves there (vortex ring is not modelled);
+   - T is floored at 0 beyond J0.
+   Hover is unchanged (V = 0), so kt from the hover stays as it is.
+2. **Torque per rotor:** `kq w|w| (1 - J / J0q)`, with J0q = J0 to start, set from the plateau's rpm rise. With the torque unloading in the plant, `loadFraction` can go back to the hover's own value (0.508 here). The plateau's extra rpm would then come from the climb, not from a winding compromise.
+3. **Airframe values:** `inflowJ0` and `inflowJ0Torque`, and `cdAPlan` refit with them. The data trade one against the other (the table above), so the drag needs its own measurement first. Two candidates: a level top-speed pass, or a coast with the motors at idle. Then J0 is read from `tools/punch-inflow.mjs` `inflow_at_cdA` at that cdA.
+   - For scale: at cdA 0.004 the Fractal75 takes J0 1.22, rms 0.250 g.
+   - The Air65 gets its own pair from its punch log.
+4. **Gate rows with it:**
+   - P6 at the onset's measured climb speed, not at rest.
+   - The punch's maximum climb speed, banded beside K1's climb.
+5. **The change is in `src/plant/plant.c`:** in `stepPhysical`, the thrust and kq lines, with `V_ax` from the body velocity. It needs two new plant-block fields, so `PLANT_LEN` and the ABI's plant block change.
+
+### The airframe
+
+`airframes/fractal75.json`: every value has a source and a confidence. Every value not measured on this quad or from its log is `measured: false` and carries a `flag`. `tests/node/fractal75.test.mjs` enforces both.
+
+**From this log:**
+
+| value | | from |
+|---|---|---|
+| `tmax` | 0.49767 N | the hover's kt x (0.52 x 25,000 KV x 4.35 V)^2. T/W 5.64 at full, not measured |
+| `rpmHover` | 23,812 rpm | the hover |
+| `iHover` | 2.381 A | |
+| `iQuiescent` | 0.429 A | |
+| `currentExponent` | 2.93 | fitted through the idle bin before take-off (6,420 rpm, 0.48 A) and the hover, in amps over the 2 krpm bands and the plateau. Fitted and gated on the same log |
+| `cellIR` | 32.5 mOhm | the mean of 29.6, 36.1, 30.8 and 33.6 from the hover before each run-up to the plateau |
+
+All the currents are as logged, uncorrected. The charger's mAh is missing, so there is no correction like the Air65's 1.24.
+
+**`loadFraction` is 0.52**, between the hover's 0.508 and the plateau's 0.530 (both are the plant's own ratio, `derive()`). The Air65's 0.62 sits between its two the same way. A scan, flown on the pack the log had at each point:
+
+| loadFraction | hover stick (log 0.289) | rpm at the plateau duty (log 46,493) |
+|---|---|---|
+| 0.505 | 0.292 | 44,897 |
+| 0.510 | 0.290 | 45,214 |
+| 0.515 | 0.287 | 45,527 |
+| 0.520 | 0.286 | 45,837 (-1.4 %) |
+| 0.525 | 0.280 | 46,144 |
+| 0.530 | 0.278 | 46,446 |
+
+**From the owner:**
+
+- mass 35.98 g;
+- KV 25,000;
+- 40 mm 2-blade props (Gemfan 1610 in the bench file);
+- a 450 mAh 1S pack;
+- `vRefCell` 4.35 (HV full);
+- `ductHeight` 16.87 mm;
+- canopy 19.5 mm above the duct bottom;
+- `propsOut` true. It is not a plant field: the plant follows Betaflight's `yaw_motors_reversed`, and F7 checks it.
+
+**The HV curve:**
+
+- quadmath has no HV table, so its LiPo table is stretched above its SoC-0 point to end at 4.35 V: [3.30, 3.533, 3.65, 3.825, 3.965, 4.175, 4.35].
+- SoC 0 stays at Betaflight's min cell (3.30 V, header).
+- Over discharge takes the Air65's shape, flagged.
+- Against this log: the hover window's 4.07 V at 2.81 A puts the curve at SoC 0.89, where the logged mAh say 0.94.
+- The owner's 4.41 V rest before the flight is 60 mV above the curve's full.
+
+**Estimated, flagged "estimated, measure with pack before #15":**
+
+- `hullBelow` 3 mm, the owner's CoG estimate;
+- `hullAbove` 16.5 mm, the canopy less that;
+- `measured.packBottom`, unknown.
+
+The Air65 holds 10 mm against its measured 4.8 mm, because the rigid contact model flips it on every wall hit at the low CG (#15). This quad ships the lower estimate, as the owner asked, so expect the same on wall hits until #15. A pack hanging below the ducts would be what the quad rests on, and the footprint has no point for it.
+
+**Estimated by rule:**
+
+- `ductOuterRadius` 22.6 mm: the Air65's 1 mm tip gap plus 1.6 mm wall, around the 40 mm prop;
+- `wheelbase` 75 mm: the frame size.
+
+**quadmath's class and feel constants** (the derive script, flagged not measured):
+
+- `kqRatio`, `tau`, `tauDownMult`, `reverseScale` (UNMEASURED: no turtle log);
+- `cdAFront`, `cdAPlan` (beyond the log's bound, see above), `aeroB`, `aeroC`, `discEnd`;
+- `groundK`, `bounceScale`, `crashScale`, `spinScale`;
+- the parity-only `sagDrop`, `hoverSeconds`, `sagScale`.
+
+**Carried from the Air65's owner decisions:** `wallFriction`, `wallRestitution`, and `motorDelay` and `electricalTau` (both off).
+
+### Gate rows against this log (`tests/gate-fractal75.mjs`, in `run-all`)
+
+The bands are the Air65 gate's own for each row; none is new. A miss is keyed "Fractal75 <row>" in `tests/x3-signoff.json`.
+
+| row | sim-core | log | band | |
+|---|---|---|---|---|
+| C1 the diff applies | 67 lines applied, 57 warnings (OSD, VTX, board identity, calibration, `ibata_offset`, `pid_process_denom`) | | | ok |
+| F7 props out | `yaw_motors_reversed` reads ON; acro yaw right from hover: setpoint -33, gyro -33 deg/s | | | ok |
+| P4 at rest | +1.00000 g | | +-1 % | ok |
+| H1 hover stick (rcCommand, on the log's pack) | 0.286 | 0.289 | +-0.02 | pass |
+| P6 thrust law, onset | 3.813 g | 3.100 g | 10 % | **MISS (+23 %)** |
+| P7 current, worst band from hover rpm up | 4.59 A | 5.02 A | 10 % | pass (-8.6 % at 28.8 krpm; 21 krpm, below hover, -11 %, reported) |
+| P8 plateau duty on the log's pack (reported) | 45,837 rpm, 3.370 V, 16.65 A | 46,493, 3.355, 17.2 | | |
+| K1 punch 61.75 s, climb in 1 s | 5.12 m | 5.62 m | +-15 % | pass |
+| K1 punch 93.9 s | 5.34 m | 4.78 m | +-15 % | pass |
+| K1 punch 138.3 s | 5.36 m | 5.48 m | +-15 % | pass |
+| K1 punch 186.75 s | 4.80 m | 4.34 m | +-15 % | pass |
+| S1 step response | | | | not run: no step log |
+
+**K1 passes because two errors cancel.**
+
+- The plant has no inflow, so it pushes too hard as the climb builds.
+- Its derived plan drag is twice what the log allows, so it brakes too hard.
+- The result is a near-right climb distance on the wrong curve. The plant tops out at 8.8-9.8 m/s against the log's 11.2-14.7. Its peak accZ is 2.37-2.91 g against 2.77-3.41.
+- Both are printed beside each K1 row. No climb-speed band exists to gate them on; the inflow proposal adds one.
+
+**`gate-fractal75` fails on P6 alone.** That is the finding, and nothing is re-banded. `npm test`, and CI, fail on it until the owner decides. Three ways out:
+
+- put "Fractal75 P6 thrust law, onset (g)" under investigation in `tests/x3-signoff.json`;
+- sign it off;
+- take the inflow model.
+
+### Also changed
+
+- **`tests/lib/feel.mjs`:** `simCoreSim` takes an optional `battery` (a log's pack); without it, as before, a fresh pack. The Fractal75 runs with `vbat_sag_compensation` 0, so its hover stick needs the log's voltage.
+- **`package.json`:** `npm run gate:fractal75`.
+
+### Tests
+
+**Run here, all passing:**
+
+- `abi-surface`, `arm-and-motor`, `config-policy`, `hover-from-log`, `fractal75`, `crash-flip`, `beeper`, `pack-empty`, `fly-radio`, `determinism-repeat`.
+- `fractal75` ran with `QUADMATH_DIR` and the logs. The hover tool, the plateau tool and `punch-inflow` re-run on the owner's Fractal75 log equal their references exactly, and so does `punch-inflow` on the Air65's punch log.
+- `gate-fractal75`: everything but P6.
+
+**Not run here:**
+
+- the four WebFPV tests (`config-count`, `diff-passthrough`, `blackbox-webfpv`, `gate-plant`): there is no WebFPV clone on this machine;
+- the two Chrome tests;
+- the byte-exact build.
+
+No C changed and `dist/` is untouched. CI runs the whole list.
+
+**Not done:** the release. `scripts/release.sh` ships the Air65's airframe and diff only; whether the Fractal75 ships, and quadmath's side of flying it, is the owner's call. Nothing was deployed.
+
+---
+
+## 2026-11-03 | Phase 2 step 3 | a per-airframe thrust exponent: the Fractal75 at n 1.805, the Air65 kept at 2
+
+Owner (2026-11-03): "Don't sign P6 off yet. Add a per-airframe thrust exponent: thrust = kt * omega^n, n fitted from hover and punch-onset (peak 20 ms accZ) on the same log. Fractal75 n from its log (~1.64 by my arithmetic, use yours), Air65 n from its log (~1.96, or keep exactly 2 if that changes nothing within the band). Cite each. kt re-derived from hover with the new n. Re-run P6 on both quads and the full suite; Air65 gate rows must not move outside their bands. If torque also scales, apply the same exponent to kq and say so. Inflow stays proposed, not implemented. Push, stop."
+
+### The fits
+
+The rule: n = ln(onset) / ln(plateau rpm / hover rpm).
+
+- **The onset** is the highest 20 ms mean of accZ inside the plateau tool's onset window (the first 150 ms of a full-duty run). Over the punches the highest is taken, as the tool pools its onset.
+- **The rpm** is the plateau's steady rpm over all punches, as P6 takes it.
+
+`tools/hover-from-log.mjs --plateau` now prints both onsets per punch and `derived.thrust_law.exponent_from_onset_20ms`.
+
+| punch | onset, 50 ms bin | onset, 20 ms mean (from) |
+|---|---|---|
+| Fractal75 61.75 s | 2.97 g | 3.079 g (61.774 s) |
+| Fractal75 93.9 s | 2.62 g | 2.675 g (93.940 s) |
+| Fractal75 138.3 s | 3.10 g | **3.346 g** (138.331 s) |
+| Fractal75 186.75 s | 2.55 g | 2.721 g (186.848 s) |
+| Air65 6.2 s | 3.85 g | **4.969 g** (6.239 s) |
+| Air65 22.15 s | 1.74 g | 2.104 g (22.251 s) |
+| Air65 36.5 s | 3.73 g | 4.001 g (36.585 s) |
+
+- **Fractal75:** n = ln 3.346 / ln(46,493 / 23,812) = **1.805**.
+  - The 50 ms onset gives 1.691; the owner's figures give 1.64.
+  - Shipped as `thrustExponent` 1.805, cited.
+- **Air65:** the same rule gives ln 4.969 / ln(63,810 / 32,359) = **2.361**.
+  - That window sits 39 ms into punch 1, while the rotors are still spinning up from 59k rpm: a transient.
+  - Punch 3 alone gives 2.04. The 50 ms onset gives 1.985 (the owner's ~1.96 is the same at the owner's 64,400 rpm). Below 1 m/s its punches are 0.984 of rpm squared.
+  - **Kept at exactly 2,** as the owner allowed. It changes nothing: the plant runs bit for bit as before (below), and P6 stays at 3.887 g against its gated 3.85 g (+1.0 %).
+  - At 2.361, P6 would be +29 %.
+
+### Torque scales too: the same n on kq
+
+- **In the plant,** kq is kqRatio on kt (yaw torque in proportion to thrust, quadmath's rule). The prop's drag torque is therefore kq |w|^n, in the motor equation and in the reaction on the frame.
+- **The log agrees.** With one winding resistance:
+  - At rpm squared, the Fractal75's hover ratio rpm / (KV x V x duty), 0.706, wants loadFraction 0.508, and its plateau's, 0.583, wants 0.530.
+  - At n 1.805 for thrust and torque, they want 0.5379 and 0.5375.
+  - The motor alone gives a torque exponent of 1.81. The Air65's motor gives 2.17, near its 2.
+
+### The plant
+
+- **New field `thrustExponent`:** plant block slot 54 (`PB_THRUST_EXP`, `PB_LEN` 55). Plant block v1 is appended, as when it grew from 51 to 54. `sim-core.js` `PLANT_FIELDS`, `abi-surface` and gate-plant's parity model (n 2) follow.
+- **`propLaw(k, w)`** returns k |w|^n signed as w. It is used for thrust, the motor's prop load and the yaw reaction.
+- **`derive()`** takes kt = tmax / w_full^n, R from kq w_full^n, w_hover = (m g / 4 kt)^(1/n), and J from n kq w_hover^(n-1).
+- **n 2 runs the old expressions exactly,** branch for branch. The physical model refuses n outside 1..3.
+- **Bit for bit at n 2:** the Air65 was flown on the committed module (`367b3670…`) and on this one, 11,300 ticks. The script covered arm, hover, a punch, rolls, pitch and yaw, a wall, landing, and a crash flip on reverse thrust. The state and FC blocks were identical on every tick, and so were the derived constants.
+- **Module:** `d02ec53c…`, 238,086 bytes, emsdk 3.1.61 in WSL. The byte-exact gate's two clean builds reproduce it.
+
+### The Fractal75 at n 1.805
+
+| value | was (rpm squared) | now |
+|---|---|---|
+| kt | 1.4191e-8 N/(rad/s)^2 | 6.5223e-8 N/(rad/s)^1.805 (`at_thrust_exponent` in `tests/reference/fractal75-hover.json`) |
+| loadFraction | 0.52 | 0.5377 (the midpoint of 0.5379 and 0.5375) |
+| tmax | 0.49767 N | 0.44661 N (T/W 5.06 at full, not measured) |
+
+**Gate rows (`tests/gate-fractal75.mjs`):**
+
+| row | sim-core | log | band | |
+|---|---|---|---|---|
+| H1 hover stick | 0.290 | 0.289 | +-0.02 | pass |
+| P6 thrust law, onset | 3.346 g | 3.100 g | 10 % | pass (+7.9 %) |
+| P7 current, worst band | 4.59 A | 5.02 A | 10 % | pass (unchanged) |
+| P8 plateau duty (reported) | 46,451 rpm, 3.349 V, 17.30 A | 46,493, 3.355, 17.2 | | |
+| K1 punch 61.75 s, climb in 1 s | 4.59 m | 5.62 m | +-15 % | **MISS (-18.4 %)** |
+| K1 punch 93.9 s | 4.78 m | 4.78 m | +-15 % | pass |
+| K1 punch 138.3 s | 4.80 m | 5.48 m | +-15 % | pass (-12.4 %) |
+| K1 punch 186.75 s | 4.28 m | 4.34 m | +-15 % | pass (-1.3 %) |
+
+**P6 passes by construction.** n is fitted from this log's hover and onset, so the row checks that the plant flies the law, not the law.
+
+**The K1 miss is the drag the earlier entry flagged.**
+
+- Before, K1 passed because two errors cancelled: thrust too strong as the climb built, plan drag too strong.
+- With the thrust now right at the onset, the drag is what remains. The plant tops out at 8.0-9.1 m/s against the log's 11.2-14.7, and its peak accZ is 2.27-2.73 g against 2.77-3.41.
+- `cdAPlan` (0.0172 m^2) is still quadmath's derived value, twice what the log allows. It was not changed: it is not in this instruction.
+- Nothing was re-banded. `gate-fractal75` now fails on K1 punch 61.75 s alone.
+
+**The exponent is a stand-in for the climb.** It is fitted where the quad already climbs (3.8 m/s at punch 3's plateau), and below 1 m/s the punches are rpm squared. So it carries the inflow's shortfall as a static law. The inflow model stays proposed (previous entry), not implemented. With it, n would go back towards 2 and the drag would be refit.
+
+### Also changed
+
+- **`tools/hover-from-log.mjs`:** the plateau mode's rule and output gain the 20 ms onset and the exponents (`tests/reference/air65-punch.json` and `fractal75-punch.json` regenerated; existing values unchanged, additions only). The hover mode gains `derived.at_thrust_exponent` (kt, the plant's loadFraction and tmax at n) for an airframe whose n is not 2. The Air65's hover reference is untouched.
+- **P6 in gate-plant and gate-fractal75** flies the airframe's n, gates against the 50 ms onset as before, and prints the 20 ms fit beside it.
+- **`tests/node/fractal75.test.mjs`:**
+  - n is the 20 ms fit;
+  - tmax carries kt at n;
+  - loadFraction is the midpoint of the two fits, which agree to 0.001;
+  - the compiled plant hovers at the log's rpm, and its thrust and drag torque follow w^1.805 at a fixed duty;
+  - n outside 1..3 is refused;
+  - the Air65 keeps 2.
+
+### Tests
+
+**The full list ran here** (`node tests/run-all.mjs`, with WebFPV fetched at 518846c as CI fetches it, and the decoder and logs at hand): 21 of 22 pass, 2 skipped (#5, the #15 target).
+
+- **B1 B2:** two clean builds byte-identical, equal to the committed `d02ec53c…`.
+- **gate-plant:** PASS. Every Air65 row is in its band, and the plant is bit for bit as before. P6 is 3.887 g against 3.85 g, with n 2.
+- **fractal75:** PASS.
+- **gate-fractal75:** FAIL on K1 punch 61.75 s alone.
+
+Nothing was deployed.
+
+---
+
+## 2026-11-03 | Phase 2 step 3 | the Fractal75's plan drag fitted to its four punches; a gap bug in the punch traces fixed
+
+Owner (2026-11-03): "Refit Fractal75 cdAPlan from its log: least-squares on all four punches' altitude tracks (61.75, 93.9, 138.3, 186.8 s), not one. Report per-punch residuals before and after. Flag the value 'effective plan drag, absorbs inflow, refit when the inflow model lands'. Report whether the Air65's cdAPlan was derived or fitted, and flag it the same if derived. No band changes. Push, stop."
+
+### A bug first: the punch traces skipped dropped frames
+
+- **Symptom.** The Fractal75 log drops corrupt frames (3,368 over the log). During punches it loses up to 32 ms at a time: 1, 13, 12 and 16 of the 10 ms bins in the four punches have no frames.
+- **Cause.** `climbBins` (`tools/punch-inflow.mjs`) emitted only bins with frames, so a trace's index stopped being its time. K1 and any fit therefore flew a duty schedule squeezed by the missing slices, against log speeds out of step with it. `climb_1s_m` left the missing slices out of its sum.
+- **Visible in the reference:** `climb_1s_m` disagreed with its own trace's sum on three punches. The Air65 punch log has no such gaps.
+- **Fix.**
+  - `climbBins` now emits every 10 ms bin. One without frames is filled in time from its measured neighbours and marked `filled`; the velocity integrates across the gap as before.
+  - Averages (the hover before the run-up, the steady plateau, the 50 ms peak) and the pooled fits use measured bins only.
+  - Each trace lists its filled bins.
+- **What moved.** The Fractal75's `climb_1s_m` went 5.622 to 5.701, 4.776 to 5.319, 5.479 to 5.573 and 4.339 to 4.662 m. Every fit, speed band, peak and IR is unchanged. The Air65's reference is unchanged but for the rule text and its empty `filled` lists.
+- **Test.** A synthetic run with 32 ms of frames dropped checks that the bins stay one every 10 ms, three are filled, and the climb speed after the gap is the quad's.
+
+### The fit
+
+`tools/fit-plan-drag.mjs` (new) flies the plant through each punch, as the gate's K1 does (the gate now uses its `flyPunch`):
+
+- the pack at the state of charge where the plant's loaded voltage at the log's current before the run-up is the log's voltage;
+- held on the trace's first duty for 500 ms;
+- then the logged mean duty, 10 ms at a time.
+
+Its altitude at every bin's end is compared with the log's, which is the accelerometer's climb speed summed. A golden-section search finds the `cdAPlan` with the least summed squared error over every sample of all four punches (848 samples). Every other value is as the airframe has it, so the plant is at `thrustExponent` 1.805 with no inflow term.
+
+- **Result:** `cdAPlan` **0.00752 m^2**. The sum of squares is 37.3 m^2, against 4918 m^2 at quadmath's derived 0.0172. At 0.98 and 1.02 times the value it is 40.5 and 40.4 m^2 (`tests/node/fractal75.test.mjs` checks the minimum).
+
+Per punch, at 0.0172 and at 0.00752 (both on the fixed traces):
+
+| punch | altitude rms | track's end against the log | climb in 1 s (K1) | top climb speed |
+|---|---|---|---|---|
+| 61.75 s | 0.307 to 0.055 m | -1.05 to -0.10 m | -18.0 % to -1.2 % | 8.06 to 10.34 m/s (log 11.17) |
+| 93.9 s | 2.509 to 0.274 m | -6.21 to -0.74 m | -10.1 % to +7.3 % | 9.08 to 13.49 (log 14.66) |
+| 138.3 s | 2.598 to 0.119 m | -5.98 to +0.01 m | -13.9 % to +3.5 % | 8.87 to 13.34 (log 13.54) |
+| 186.75 s | 2.660 to 0.251 m | -6.48 to -0.21 m | -8.1 % to +8.3 % | 8.71 to 13.07 (log 13.85) |
+
+**On the traces as they were before the fix** the same fit gave 0.007278 m^2. That fit left K1 at +20.1 % and +16.9 % on punches 93.9 and 186.75 s: their log values were the low, gap-shortened ones. This is how the bug showed.
+
+- **Flag:** "effective plan drag, absorbs inflow, refit when the inflow model lands". The value is fitted with a plant that has no inflow term, so it takes in what the plant lacks in a climb.
+- **For scale:** `tools/punch-inflow.mjs` at rpm squared puts drag alone at 0.0085 m^2 and drag with inflow at 0.0053.
+
+### The Air65's cdAPlan: derived, not fitted
+
+- **0.00966 m^2** is quadmath's tuned drag (`CDA_Z0` x floatiness `cdMul` x the build's drag multiplier, `scripts/derive-air65.mjs`).
+- **Flagged the same, value unchanged.** The plant stays bit for bit as before.
+- **For information** (not applied), its punch log by the same tool:
+  - It fits 0.00427 m^2: sum of squares 50.6 against 5403 m^2 over 630 samples.
+  - Altitude rms per punch goes from 2.550, 1.509 and 3.919 m to 0.344, 0.148 and 0.310 m.
+  - K1-style climb in 1 s goes from -14.9, -14.5 and -16.0 % to +6.7, +1.8 and +5.1 %.
+  - No Air65 gate row uses it.
+
+### Gate rows (no band changed)
+
+**`gate-fractal75`: PASS.** H1, P6, P7 and P8 are unchanged. K1 at 0.00752:
+
+| punch | sim-core | log | band |
+|---|---|---|---|
+| 61.75 s | 5.633 m | 5.701 m | +-15 %, pass |
+| 93.9 s | 5.708 m | 5.319 m | pass |
+| 138.3 s | 5.771 m | 5.573 m | pass |
+| 186.75 s | 5.047 m | 4.662 m | pass |
+
+Each K1 row now also prints its altitude track's rms and end.
+
+### Tests
+
+**Run here, passing:**
+
+- `fractal75`, with the decoder and logs: punch-inflow re-run equals both regenerated references, the drag minimum holds, and the gap fill is checked.
+- `gate-fractal75`.
+- `abi-surface`, `hover-from-log`, `determinism-repeat`.
+
+**Not run here:**
+
+- `gate-plant`: no WebFPV clone now. The Air65's plant is unchanged: only a flag and a note on its `cdAPlan`.
+- the other WebFPV and Chrome tests;
+- the builds: no C changed.
+
+CI runs the full list. Nothing was deployed.
