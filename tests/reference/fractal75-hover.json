@@ -83,7 +83,7 @@
     "plant_load_fraction_for_hover_ratio": 0.5083,
     "plant_load_fraction_note": "the plant's loadFraction (its full-throttle point at 4.35 V per cell) at which its own hover ratio equals static_load_fraction_hover",
     "tmax_N_at_load_fraction": {
-      "0.52": 0.49766,
+      "0.5377": 0.53211,
       "0.5083": 0.4756
     },
     "tmax_note": "kt x (lf x Kv x vRefCell)^2: the airframe tmax that carries the measured kt at that loadFraction",
@@ -91,6 +91,17 @@
     "cell_ir_start_note": "(4.26 - 4.14) V / (2.58 - 1.1) A: bin 0 (before take-off) against the window's first second; state of charge moves in between",
     "cell_ir_end_ohm": null,
     "cell_ir_end_note": "needs --rest-after",
-    "current_sensor_note": "currentSensor -600, 750 as logged; not corrected"
+    "current_sensor_note": "currentSensor -600, 750 as logged; not corrected",
+    "at_thrust_exponent": {
+      "n": 1.805,
+      "kt_prop_from_hover": 6.5221e-8,
+      "kt_note": "m g / (4 omega^n), N/(rad/s)^n, at m = 0.03598 kg",
+      "plant_load_fraction_for_hover_ratio": 0.5379,
+      "tmax_N_at_load_fraction": {
+        "0.5377": 0.4466,
+        "0.5379": 0.44697
+      },
+      "tmax_note": "kt x (lf x Kv x vRefCell)^n"
+    }
   }
 }

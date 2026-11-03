@@ -17,7 +17,9 @@
 //       hover current is the window's mean), within +-0.02 of the log's
 //       (the Air65's hover-stick band)
 //   P6  thrust law: kt from the hover predicts the punches' onset accZ at
-//       their plateau rpm, within 10% (gate-plant P6's band)
+//       their plateau rpm, within 10% (gate-plant P6's band), thrust kt w^n
+//       at the airframe's thrustExponent. n is fitted on this log's hover and
+//       20 ms onset, so the row checks the plant against its own law
 //   P7  pack current model within 10% of the logged current on the log's
 //       2 krpm bands of at least 8 bins, from the hover rpm up (gate-plant
 //       P7's band and bins rule); the bands below hover reported. The law was
@@ -174,10 +176,13 @@ console.log('   H1 hover stick on the log\'s pack, P6 thrust law, P7 current, P8
   core.configure({ diff, plant: f75 });
   const d = core.plantDerived;
   const w = punch.measured.omega_rad_s;
-  const predicted = (4 * d.ktProp * w * w) / (V.mass.value * V.gravity.value);
+  const n = V.thrustExponent.value;
+  const predicted = (4 * d.ktProp * (n === 2 ? w * w : w ** n)) / (V.mass.value * V.gravity.value);
   const measured = punch.measured.onset_accZ_g;
+  const law = punch.derived.thrust_law;
   row('P6 thrust law, onset (g)', '10%', predicted, measured, Math.abs(predicted / measured - 1) <= 0.1,
-    `kt ${d.ktProp.toExponential(4)} at the plateau's ${punch.measured.rpm} rpm; onsets ${punch.punches.map((p) => `${p.start_s} s ${p.onset_accZ_g}`).join(', ')}`);
+    `n ${n}, kt ${d.ktProp.toExponential(4)} at the plateau's ${punch.measured.rpm} rpm; onsets (50 ms) ${punch.punches.map((p) => `${p.start_s} s ${p.onset_accZ_g}`).join(', ')}`);
+  console.log(`   (P6: n was fitted on this log's hover and 20 ms onset, ${law.measured_onset_accZ_20ms_g} g: n ${law.exponent_from_onset_20ms}, so the row checks that the plant flies the law, not the law; the 50 ms onset gives n ${law.exponent_from_onset}; at n 2 the hover's kt predicts ${law.predicted_onset_accZ_g} g)`);
   const low = inflow.fits.below_1_m_s;
   console.log(`   (P6 reported beside it: below 1 m/s of climb, at ${low.w_over_w_hover.join('-')} x hover rpm, accZ is ${low.accZ_over_p} of rpm squared (${low.bins} bins of 10 ms); by climb speed: ${inflow.speed_bands.filter((b) => b.v_m_s[0] % 3 === 0).map((b) => `${b.v_m_s[0]}-${b.v_m_s[1]} m/s ${b.accZ_over_p}`).join(', ')})`);
 }

@@ -23,7 +23,7 @@ const close = (a, b, rel) => Math.abs(a / b - 1) <= rel;
 
 // ---- Sources and flags ----
 {
-  assert.equal(plantBlock(f75).length, 54, 'every plant field present and finite');
+  assert.equal(plantBlock(f75).length, 55, 'every plant field present and finite');
   for (const [k, v] of Object.entries(V)) {
     assert.ok(typeof v.source === 'string' && v.source.trim().length > 0, `${k} has a source`);
     assert.ok(['high', 'medium', 'low'].includes(v.confidence), `${k} has a confidence`);
@@ -67,22 +67,42 @@ const close = (a, b, rel) => Math.abs(a / b - 1) <= rel;
   const m = hover.measured;
   assert.deepEqual(hover.window_s, [10, 58], 'the owner\'s hover window');
   assert.equal(m.auw_g, 35.98);
+  // The thrust exponent: the hover and the 20 ms onset at the plateau rpm
+  // (owner decision 2026-11-03), as the plateau tool fits it.
+  const n = V.thrustExponent.value;
+  const fit = punch.derived.thrust_law;
+  assert.equal(n, Number(fit.exponent_from_onset_20ms.toFixed(3)), `thrustExponent ${n} is the 20 ms onset's (${fit.exponent_from_onset_20ms})`);
+  assert.ok(Math.abs(Math.log(fit.measured_onset_accZ_20ms_g) / Math.log(punch.measured.rpm / m.hover_rpm) - fit.exponent_from_onset_20ms) < 1e-4, 'n = ln(onset) / ln(rpm ratio)');
+  assert.equal(fit.airframe_exponent, n);
   const omega = (m.hover_rpm * TWO_PI) / 60;
-  const kt = (V.mass.value * V.gravity.value) / (4 * omega * omega);
+  const kt = (V.mass.value * V.gravity.value) / (4 * omega ** n);
   const wFull = V.loadFraction.value * ((V.kv.value * TWO_PI) / 60) * V.vRefCell.value * V.cells.value;
-  assert.ok(close(V.tmax.value / (wFull * wFull), kt, 1e-9), 'tmax carries the hover\'s kt');
-  assert.ok(close(kt, hover.derived.kt_prop_from_hover_N_per_rad2, 1e-4), 'and the hover tool\'s');
+  assert.ok(close(V.tmax.value / wFull ** n, kt, 1e-9), 'tmax carries the hover\'s kt at n');
+  assert.ok(close(kt, hover.derived.at_thrust_exponent.kt_prop_from_hover, 1e-4), 'and the hover tool\'s');
   assert.equal(V.rpmHover.value, m.hover_rpm);
   assert.ok(Math.abs(V.iHover.value + V.iQuiescent.value - m.amps_mean_a) < 1e-9, 'iHover + iQuiescent is the hover\'s current');
-  // loadFraction between the hover's and the plateau's (the plant's ratio
-  // 1 / (1 + (1 - lf) w / (lf^2 Kv Vref)), src/plant/plant.c derive()).
+  // loadFraction: the plant's ratio at hover and at the plateau,
+  // 1 / (1 + (1 - lf) / lf x (w / w_full)^(n - 1)) with thrust and drag
+  // torque at n (src/plant/plant.c derive()), meets the log's at each; the
+  // airframe takes their midpoint.
   const lfFor = (ratio, w) => {
-    const c = ((1 / ratio - 1) * ((V.kv.value * TWO_PI) / 60) * V.vRefCell.value) / w;
-    return (-1 + Math.sqrt(1 + 4 * c)) / (2 * c);
+    let lo = 0.01;
+    let hi = 0.99;
+    for (let k = 0; k < 100; k++) {
+      const lf = (lo + hi) / 2;
+      if (((1 - lf) / lf) * (w / (lf * ((V.kv.value * TWO_PI) / 60) * V.vRefCell.value)) ** (n - 1) > 1 / ratio - 1) lo = lf;
+      else hi = lf;
+    }
+    return (lo + hi) / 2;
   };
-  const lfHover = lfFor(hover.derived.static_load_fraction_hover, omega);
-  const lfPlateau = lfFor(punch.derived.load_fraction_full, punch.measured.omega_rad_s);
-  assert.ok(lfHover < V.loadFraction.value && V.loadFraction.value < lfPlateau, `loadFraction ${V.loadFraction.value} between ${lfHover} and ${lfPlateau}`);
+  // The hover's is the hover tool's, from its unrounded bins (the reference
+  // rounds duty to 0.001, worth 0.001 in lf); this bisection on the tool's
+  // rounded ratio agrees with it to that.
+  const lfHover = hover.derived.at_thrust_exponent.plant_load_fraction_for_hover_ratio;
+  assert.ok(Math.abs(lfFor(hover.derived.static_load_fraction_hover, omega) - lfHover) < 0.001, 'the hover tool\'s lf at n');
+  const lfPlateau = lfFor(punch.derived.load_fraction_full, (punch.measured.rpm * TWO_PI) / 60);
+  assert.ok(Math.abs(lfHover - lfPlateau) < 0.001, `at n the hover and the plateau want one loadFraction (${lfHover}, ${lfPlateau.toFixed(4)})`);
+  assert.ok(Math.abs(V.loadFraction.value - (lfHover + lfPlateau) / 2) < 1e-4, `loadFraction ${V.loadFraction.value} is their midpoint`);
   // cellIR: the mean of the four punches' sag from hover.
   const irs = inflow.punches.filter((p) => p.from_hover).map((p) => p.cell_ir_ohm);
   assert.equal(irs.length, 4);
@@ -92,19 +112,53 @@ const close = (a, b, rel) => Math.abs(a / b - 1) <= rel;
   // least 8 bins and the plateau.
   const idle = { rpm: 6420, amps: 0.48 };
   const pts = [...punch.current_vs_rpm.filter((b) => b.bins >= 8), { rpm: punch.measured.rpm, amps: punch.measured.amps_a }];
-  const law = (n) => {
-    const iH = (m.amps_mean_a - idle.amps) / (1 - (idle.rpm / m.hover_rpm) ** n);
+  const ampLaw = (e) => {
+    const iH = (m.amps_mean_a - idle.amps) / (1 - (idle.rpm / m.hover_rpm) ** e);
     return { iQ: m.amps_mean_a - iH, iH };
   };
-  const rms = (n) => {
-    const { iQ, iH } = law(n);
-    return Math.sqrt(pts.reduce((s, b) => s + (iQ + iH * (b.rpm / m.hover_rpm) ** n - b.amps) ** 2, 0) / pts.length);
+  const rms = (e) => {
+    const { iQ, iH } = ampLaw(e);
+    return Math.sqrt(pts.reduce((s, b) => s + (iQ + iH * (b.rpm / m.hover_rpm) ** e - b.amps) ** 2, 0) / pts.length);
   };
   let best = 2;
-  for (let n = 2; n <= 3.5; n += 0.001) if (rms(n) < rms(best)) best = n;
+  for (let e = 2; e <= 3.5; e += 0.001) if (rms(e) < rms(best)) best = e;
   assert.ok(Math.abs(best - V.currentExponent.value) < 0.005, `currentExponent ${V.currentExponent.value} (fit ${best.toFixed(3)})`);
-  assert.ok(Math.abs(law(V.currentExponent.value).iQ - V.iQuiescent.value) < 0.002, 'iQuiescent from the same fit');
-  console.log(`log values: kt ${kt.toExponential(4)}, loadFraction ${V.loadFraction.value} in [${lfHover.toFixed(4)}, ${lfPlateau.toFixed(4)}], cellIR ${V.cellIR.value} (${irs.join(', ')}), exponent ${best.toFixed(3)}`);
+  assert.ok(Math.abs(ampLaw(V.currentExponent.value).iQ - V.iQuiescent.value) < 0.002, 'iQuiescent from the same fit');
+  console.log(`log values: n ${n}, kt ${kt.toExponential(4)}, loadFraction ${V.loadFraction.value} (hover ${lfHover.toFixed(4)}, plateau ${lfPlateau.toFixed(4)}), cellIR ${V.cellIR.value} (${irs.join(', ')}), current exponent ${best.toFixed(3)}`);
+}
+
+// ---- The plant flies the law: thrust kt |w|^n and drag torque kq |w|^n ----
+{
+  const wasm = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', root)));
+  const { SimCore } = await import('../../src/js/sim-core.js');
+  const core = await SimCore.load(wasm, { trace: false });
+  core.configure({ diff: '', plant: f75, world: { floorZ: -100 } });
+  const d = core.plantDerived;
+  const n = V.thrustExponent.value;
+  const wHover = (hover.measured.hover_rpm * TWO_PI) / 60;
+  assert.ok(close(d.omegaHover, wHover, 1e-9), `the plant hovers at the log's rpm (${(d.omegaHover * 60) / TWO_PI})`);
+  assert.ok(close(d.kqProp, V.kqRatio.value * (V.wheelbase.value / 2) * d.ktProp, 1e-12), 'kq is kqRatio on kt');
+  core.teleport({ pos: [0, 0, 0] });
+  core.motorOverride(-1, 0.8);
+  core.step(600);
+  const s = core.state;
+  for (let i = 0; i < 4; i++) {
+    const w = (s.rpm[i] * TWO_PI) / 60;
+    assert.ok(close(s.thrustN[i], d.ktProp * w ** n, 1e-9), `motor ${i}: thrust ${s.thrustN[i]} is kt w^n`);
+    // Steady: the motor's torque Kt (u V - w / Kv) / R meets the prop's kq w^n.
+    const motor = (d.ktMotor * (0.8 * s.vbatLoaded - w / d.kvRad)) / d.rWinding;
+    assert.ok(close(motor, d.kqProp * w ** n, 1e-3), `motor ${i}: drag torque is kq w^n (${motor} against ${d.kqProp * w ** n})`);
+  }
+  // The plant refuses an exponent outside 1..3 (src/plant/plant.c).
+  for (const bad of [0.5, 3.5]) {
+    const c = await SimCore.load(wasm, { trace: false });
+    const air = JSON.parse(JSON.stringify(f75));
+    air.values.thrustExponent.value = bad;
+    assert.throws(() => c.configure({ diff: '', plant: air }), /plant block refused/, `thrustExponent ${bad} refused`);
+  }
+  console.log(`plant: hovers at ${((d.omegaHover * 60) / TWO_PI).toFixed(1)} rpm; at duty 0.8 thrust and drag torque follow w^${n}; exponents 0.5 and 3.5 refused`);
+  // The Air65 stays rpm squared.
+  assert.equal(JSON.parse(await readFile(new URL('airframes/air65.json', root), 'utf8')).values.thrustExponent.value, 2, 'the Air65 keeps n 2');
 }
 
 // ---- tools/punch-inflow.mjs on synthetic frames ----
@@ -175,7 +229,8 @@ if (qm) {
     const { hoverFromLog, plateauFromLog } = await import('../../tools/hover-from-log.mjs');
     const { punchInflow } = await import('../../tools/punch-inflow.mjs');
     const again = await hoverFromLog(f75Log, qm, V, { window: '10,58', 'auw-g': '35.98', 'rest-before': '4.41', cells: '1', pack: 'weBLEEDfpv 450 mAh 1S HV' });
-    const strip = (o) => { const c = plain(o); delete c.derived.tmax_N_at_load_fraction; return c; };
+    // tmax is keyed by the airframe's loadFraction of the day.
+    const strip = (o) => { const c = plain(o); delete c.derived.tmax_N_at_load_fraction; delete c.derived.at_thrust_exponent.tmax_N_at_load_fraction; return c; };
     assert.deepEqual(strip(again), strip(hover), 'the hover tool on the log gives the committed reference');
     assert.deepEqual(plain(await plateauFromLog(f75Log, qm, V, hover, {})), punch, 'the plateau tool on the log gives the committed reference');
     assert.deepEqual(plain(await punchInflow(f75Log, qm, { punch, hover, airframe: f75 })), inflow, 'punch-inflow on the log gives the committed reference');

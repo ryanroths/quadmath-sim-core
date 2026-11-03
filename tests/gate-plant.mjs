@@ -194,18 +194,23 @@ console.log('\n== P1 single-motor step, Air65 plant, from rest in free air (benc
 const punch = JSON.parse(await readFile(new URL('tests/reference/air65-punch.json', root), 'utf8'));
 const CURRENT_CORRECTION = 1.24;   // the Air65 bench's current-sensor correction (AJ:44-46), as iHover
 
-console.log('\n== P6 thrust law: kt from the hover predicts the punch (thrust from rpm squared), within 10%');
+console.log('\n== P6 thrust law: kt from the hover predicts the punch (thrust kt w^n, the airframe\'s thrustExponent), within 10%');
 {
-  // The plant's kt, from the airframe (it carries the hover's m g / 4 w^2),
+  // The plant's kt, from the airframe (it carries the hover's m g / 4 w^n),
   // at the punch's steady plateau rpm: thrust / weight is the specific force
   // the accelerometer reads at the punch's onset, before the quad has speed.
+  // The onset gated is the plateau tool's 50 ms one; the 20 ms one the
+  // exponent is fitted on (owner decision 2026-11-03) is printed beside it.
   const core = await SimCore.load(module, { trace: false });
   core.configure({ diff, plant: air65 });
   const d = core.plantDerived;
   const w = punch.measured.omega_rad_s;
-  const predicted = (4 * d.ktProp * w * w) / (air65.values.mass.value * air65.values.gravity.value);
+  const n = air65.values.thrustExponent.value;
+  const predicted = (4 * d.ktProp * (n === 2 ? w * w : w ** n)) / (air65.values.mass.value * air65.values.gravity.value);
   const measured = punch.measured.onset_accZ_g;
-  console.log(`   kt ${d.ktProp.toExponential(4)} at ${punch.measured.rpm} rpm (${w} rad/s): thrust / weight ${f(predicted, 3)}; measured at onset ${f(measured, 2)} g (${punch.punches.map((p) => `${p.start_s} s: ${p.onset_accZ_g}`).join(', ')}) -> ${check(Math.abs(predicted / measured - 1) <= 0.1, 'P6 thrust law')}`);
+  const law = punch.derived.thrust_law;
+  console.log(`   n ${n}; kt ${d.ktProp.toExponential(4)} at ${punch.measured.rpm} rpm (${w} rad/s): thrust / weight ${f(predicted, 3)}; measured at onset ${f(measured, 2)} g (${punch.punches.map((p) => `${p.start_s} s: ${p.onset_accZ_g}`).join(', ')}) -> ${check(Math.abs(predicted / measured - 1) <= 0.1, 'P6 thrust law')}`);
+  console.log(`   (reported: the 20 ms onset ${law.measured_onset_accZ_20ms_g} g gives n ${law.exponent_from_onset_20ms}, the 50 ms onset ${law.exponent_from_onset}; airframes/air65.json keeps n 2, see its thrustExponent)`);
 }
 
 // The owner's freestyle log, replayed by tools/sim-vs-log.mjs on the Air65
@@ -280,7 +285,7 @@ function parityModel(quadCfg, { battery }) {
       sagDrop: v(pack.sagDrop), hoverSeconds: v(battery ? pack.hoverS : 0), sagScale: v(1),
       bounceScale: v(1), crashScale: v(1), spinScale: v(1),
       ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0), iQuiescent: v(0), motorDelay: v(0), electricalTau: v(0),
-      ductHeight: v(0), wallFriction: v(0), wallRestitution: v(0),
+      ductHeight: v(0), wallFriction: v(0), wallRestitution: v(0), thrustExponent: v(2),
     },
   };
 }

@@ -53,6 +53,7 @@ const PB_NAME = {
   crashScale: 'CRASH_SCALE', spinScale: 'SPIN_SCALE', ductOuterRadius: 'DUCT_RADIUS', hullBelow: 'HULL_BELOW',
   hullAbove: 'HULL_ABOVE', rpmHover: 'RPM_HOVER', currentExponent: 'CURRENT_EXP', iQuiescent: 'I_QUIESCENT', motorDelay: 'MOTOR_DELAY', electricalTau: 'ELEC_TAU',
   ocvOverDischarge: 'OCV_OVER', ductHeight: 'DUCT_HEIGHT', wallFriction: 'WALL_FRICTION', wallRestitution: 'WALL_RESTITUTION',
+  thrustExponent: 'THRUST_EXP',
 };
 assert.deepEqual([...PLANT_FIELDS].sort(), Object.keys(PB_NAME).sort(), 'every airframe field has a PB_ name');
 assert.equal(Object.keys(PB).length, PLANT_FIELDS.length + 1, 'plant.h has a PB_ entry per field, plus PB_LEN');
@@ -72,7 +73,8 @@ block.forEach((v, k) => {
 assert.equal(block[PB.MODEL], 2, 'model slot');
 assert.equal(PB.OCV + 7, PB.SAG_DROP, 'ocv fills seven slots');
 assert.equal(PB.OCV_OVER + 3, PB.DUCT_HEIGHT, 'ocvOverDischarge fills three slots');
-assert.equal(PB.WALL_RESTITUTION + 1, PB.LEN, 'wallRestitution is the last slot');
+assert.equal(PB.WALL_RESTITUTION + 1, PB.THRUST_EXP, 'thrustExponent follows wallRestitution');
+assert.equal(PB.THRUST_EXP + 1, PB.LEN, 'thrustExponent is the last slot');
 
 const core = await SimCore.load(module);
 core.configure('');

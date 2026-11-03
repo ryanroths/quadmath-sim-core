@@ -185,6 +185,35 @@ export function analyse(bins, window, header, air, opts = {}) {
     cell_ir_end_note: opts.restAfter ? `(${opts.restAfter} - ${round(last.vbat, 2)}) V / ${round(last.amps, 2)} A: rest after landing against the window's last second` : 'needs --rest-after',
     current_sensor_note: `currentSensor ${header.currentSensor ? header.currentSensor.join(', ') : 'not in header'} as logged; not corrected`,
   };
+  // An airframe whose thrust law is not rpm squared (thrustExponent n, thrust
+  // and drag torque kt |w|^n and kq |w|^n): the same three at n. The plant's
+  // hover ratio is then 1 / (1 + (1 - lf) / lf x (w_hover / w_full)^(n - 1)),
+  // solved for lf by bisection (it falls as lf rises).
+  const n = air.thrustExponent ? air.thrustExponent.value : 2;
+  if (n !== 2) {
+    const ktN = (massKg * g) / (4 * omega ** n);
+    const excess = 1 / ratio - 1;
+    let lo = 0.01;
+    let hi = 0.99;
+    for (let k = 0; k < 100; k++) {
+      const lf = (lo + hi) / 2;
+      if (((1 - lf) / lf) * (omega / (lf * kvRad * vRef)) ** (n - 1) > excess) lo = lf;
+      else hi = lf;
+    }
+    const lfN = (lo + hi) / 2;
+    const tmaxN = (lf) => ktN * (lf * kvRad * vRef) ** n;
+    derived.at_thrust_exponent = {
+      n,
+      kt_prop_from_hover: Number(ktN.toExponential(4)),
+      kt_note: `m g / (4 omega^n), N/(rad/s)^n, at m = ${massKg} kg`,
+      plant_load_fraction_for_hover_ratio: round(lfN, 4),
+      tmax_N_at_load_fraction: {
+        [String(air.loadFraction.value)]: round(tmaxN(air.loadFraction.value), 5),
+        [String(round(lfN, 4))]: round(tmaxN(lfN), 5),
+      },
+      tmax_note: 'kt x (lf x Kv x vRefCell)^n',
+    };
+  }
   return { measured, derived };
 }
 
@@ -325,7 +354,28 @@ export async function hoverFromLog(logPath, quadmathDir, air, opts = {}, print =
 }
 
 // ---- Full-duty plateau mode (--plateau): the punches of a punch-out log.
-const PLATEAU_RULES = '50 ms bins with mean duty > 0.9; runs less than 100 ms apart are one punch; steady values leave out the first 100 ms (the rotors spinning up); onset accZ is the highest bin in the first 150 ms';
+const PLATEAU_RULES = '50 ms bins with mean duty > 0.9; runs less than 100 ms apart are one punch; steady values leave out the first 100 ms (the rotors spinning up); onset accZ is the highest bin in the first 150 ms, and, from the frames, the highest 20 ms mean in the same 150 ms (the onset for the thrust exponent, owner decision 2026-11-03)';
+
+// The highest mean of fn(row) over a window of width s lying in [t0, t1].
+export function peakMean(rows, t0, t1, width, fn) {
+  let best = null;
+  let k = rows.findIndex((r) => r.t >= t0 - 1e-9);
+  if (k < 0) return null;
+  let sum = 0;
+  let n = 0;
+  let j = k;
+  for (let i = k; i < rows.length && rows[i].t + width <= t1 + 1e-9; i++) {
+    while (j < rows.length && rows[j].t < rows[i].t + width - 1e-9) {
+      sum += fn(rows[j]);
+      n++;
+      j++;
+    }
+    if (n && (!best || sum / n > best.value)) best = { value: sum / n, t: rows[i].t };
+    sum -= fn(rows[i]);
+    n--;
+  }
+  return best;
+}
 
 // 50 ms bins of the rows: duty, rpm, pack, accZ (g).
 export function binRows50(rows, acc1G, motorPoles) {
@@ -388,6 +438,10 @@ export function analysePlateau(bins, air, hover, opts = {}) {
         vbat: round(mean(steady, 'vbat'), 3), amps: round(mean(steady, 'amps') * scale, 2),
       },
       onset_accZ_g: round(Math.max(...onset.map((b) => b.accZ)), 2),
+      ...(opts.peak20 ? (() => {
+        const pk = opts.peak20(t0, t0 + 0.15);
+        return { onset_accZ_20ms_g: round(pk.value, 3), onset_20ms_at_s: round(pk.t, 3) };
+      })() : {}),
       before: pre.length ? { duty: round(mean(pre, 'duty'), 3), vbat: round(mean(pre, 'vbat'), 3), amps: round(mean(pre, 'amps') * scale, 2) } : null,
     };
     // From hover: the pack's sag over the step in current is its IR.
@@ -405,6 +459,7 @@ export function analysePlateau(bins, air, hover, opts = {}) {
     amps_a: round(mean(steadyBins, 'amps') * scale, 2),
     onset_accZ_g: Math.max(...punches.map((p) => p.onset_accZ_g)),
   };
+  if (opts.peak20) m.onset_accZ_20ms_g = Math.max(...punches.map((p) => p.onset_accZ_20ms_g));
   m.omega_rad_s = Math.round((m.rpm * TWO_PI) / 60);
   const bands = currentBands(bins, scale);
   const derived = {
@@ -419,6 +474,21 @@ export function analysePlateau(bins, air, hover, opts = {}) {
       measured_onset_accZ_g: m.onset_accZ_g,
       note: 'thrust = kt w^2 with kt from the hover (m g / (4 w_hover^2)): at the plateau rpm, thrust / weight = (w / w_hover)^2, the specific force at onset before the quad gains speed',
     };
+    // The exponent n of thrust = kt w^n through the hover (1 g at w_hover)
+    // and the onset at the plateau rpm: n = ln(onset) / ln(w / w_hover)
+    // (owner decision 2026-11-03: the onset's highest 20 ms mean). And the
+    // airframe's own n, as the plant flies it.
+    const span = Math.log(m.rpm / hover.measured.hover_rpm);
+    const n = air.thrustExponent ? air.thrustExponent.value : 2;
+    derived.thrust_law.rpm_over_hover = round(m.rpm / hover.measured.hover_rpm, 4);
+    derived.thrust_law.exponent_from_onset = round(Math.log(m.onset_accZ_g) / span, 4);
+    if (opts.peak20) {
+      derived.thrust_law.measured_onset_accZ_20ms_g = m.onset_accZ_20ms_g;
+      derived.thrust_law.exponent_from_onset_20ms = round(Math.log(m.onset_accZ_20ms_g) / span, 4);
+    }
+    derived.thrust_law.airframe_exponent = n;
+    derived.thrust_law.predicted_onset_accZ_g_at_airframe_exponent = round((m.rpm / hover.measured.hover_rpm) ** n, 3);
+    derived.thrust_law.exponent_note = 'n = ln(onset g) / ln(plateau rpm / hover rpm), the law kt w^n through the hover and the onset, rpm from the plateau tool and the hover tool';
   }
   const irs = punches.filter((p) => p.cell_ir_ohm !== undefined).map((p) => p.cell_ir_ohm);
   if (irs.length) {
@@ -433,7 +503,10 @@ export async function plateauFromLog(logPath, quadmathDir, air, hover, opts = {}
   const log = await readLog(logPath, quadmathDir, li);
   const bins = binRows50(log.rows, log.acc1G, log.header.motor_poles);
   const scale = opts['current-scale'] == null ? 1 : Number(opts['current-scale']);
-  const a = analysePlateau(bins, air, hover, { currentScale: scale });
+  const a = analysePlateau(bins, air, hover, {
+    currentScale: scale,
+    peak20: (t0, t1) => peakMean(log.rows, t0, t1, 0.02, (r) => r.acc[2] / log.acc1G),
+  });
   const dur = log.rows[log.rows.length - 1].t;
   return {
     source: basename(logPath),
