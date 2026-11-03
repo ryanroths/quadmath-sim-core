@@ -34,6 +34,10 @@ const close = (a, b, rel) => Math.abs(a / b - 1) <= rel;
   }
   for (const k of ['hullBelow', 'hullAbove']) assert.equal(V[k].flag.startsWith('estimated, measure with pack before #15'), true, `${k}: the owner's flag`);
   for (const k of ['cgHeight', 'packBottom']) assert.equal(f75.measured[k].flag, 'estimated, measure with pack before #15', `measured.${k}: the owner's flag`);
+  // The plan drag on both airframes (owner decision 2026-11-03).
+  const PLAN_FLAG = 'effective plan drag, absorbs inflow, refit when the inflow model lands';
+  assert.equal(V.cdAPlan.flag, PLAN_FLAG, 'Fractal75 cdAPlan (fitted): the owner flag');
+  assert.equal((await json('airframes/air65.json')).values.cdAPlan.flag, PLAN_FLAG, 'Air65 cdAPlan (derived): the same flag');
   assert.equal(f75.measured.packBottom.value, null, 'the pack bottom is unknown');
   assert.equal(f75.measured.mahCharger.value, null, 'the charger mAh is missing');
   assert.ok(/missing/.test(f75.measured.mahCharger.flag));
@@ -161,6 +165,32 @@ const close = (a, b, rel) => Math.abs(a / b - 1) <= rel;
   assert.equal(JSON.parse(await readFile(new URL('airframes/air65.json', root), 'utf8')).values.thrustExponent.value, 2, 'the Air65 keeps n 2');
 }
 
+// ---- cdAPlan is the least-squares fit to the four punches' altitude ----
+// (tools/fit-plan-drag.mjs): 2 % either side, the summed squared altitude
+// error is larger, and every trace has one bin each 10 ms.
+{
+  const { trackResiduals } = await import('../../tools/fit-plan-drag.mjs');
+  const wasm = await WebAssembly.compile(await readFile(new URL('dist/sim-core.wasm', root)));
+  const diff = (await Promise.all(['configs/fractal75-ryfly-2026-11-03.txt', 'configs/fractal75-ryfly-2026-11-03.from-header.txt']
+    .map((f) => readFile(new URL(f, root), 'utf8')))).join('\n');
+  const punches = inflow.punches.filter((x) => x.from_hover);
+  assert.equal(punches.length, 4, 'all four punches');
+  for (const x of punches) {
+    const span = Math.round((x.end_s + 0.25 - x.trace.t0_s) / x.trace.dt_s);
+    assert.ok(Math.abs(x.trace.duty.length - span) <= 1, `punch ${x.start_s} s: one bin each 10 ms (${x.trace.duty.length} of ${span}, ${x.filled_bins} filled)`);
+  }
+  const sse = async (cdA) => {
+    const a = JSON.parse(JSON.stringify(f75));
+    a.values.cdAPlan.value = cdA;
+    return (await trackResiduals(wasm, { diff, airframe: a, punches })).reduce((t, r) => t + r.sse_m2, 0);
+  };
+  const at = await sse(V.cdAPlan.value);
+  const below = await sse(V.cdAPlan.value * 0.98);
+  const above = await sse(V.cdAPlan.value * 1.02);
+  assert.ok(at < below && at < above, `cdAPlan ${V.cdAPlan.value} is the minimum (${at.toFixed(2)} against ${below.toFixed(2)} and ${above.toFixed(2)} m^2)`);
+  console.log(`cdAPlan ${V.cdAPlan.value}: altitude sum of squares ${at.toFixed(2)} m^2, ${below.toFixed(2)} at -2 %, ${above.toFixed(2)} at +2 %`);
+}
+
 // ---- tools/punch-inflow.mjs on synthetic frames ----
 // 1 kHz: hover 1.5 s, the duty and rotor speed run up over 0.4 s to twice the
 // hover's, held 1.2 s, cut. Thrust kt w^2 (1 - J / J0), drag on the climb,
@@ -215,6 +245,18 @@ const close = (a, b, rel) => Math.abs(a / b - 1) <= rel;
   const bands = speedBands(driven, wH);
   assert.ok(bands.length >= 3 && bands.every((b, i) => i === 0 || b.accZ_over_p < bands[i - 1].accZ_over_p), 'what is left of rpm squared falls with the climb');
   console.log(`punch-inflow (synthetic): run-up at ${ramp} s, J0 ${fit.inflow_and_drag.J0} and cdA ${fit.inflow_and_drag.cdA_m2} back (built ${J0}, ${cdA}); bands ${bands.map((b) => `${b.v_m_s[0]}: ${b.accZ_over_p}`).join(', ')}`);
+  // Dropped frames (the log drops corrupt ones, up to 32 ms under a punch):
+  // the bins stay one every 10 ms, the empty ones filled and marked, and
+  // the climb speed after the gap is still the quad's.
+  const gappy = rows.filter((r) => !(r.t >= 2.2 && r.t < 2.232));
+  const gb = climbBins(gappy, 1.0, 3.3, { acc1G, motorPoles: poles, gravity: g, accLpfHz: 1e9 });
+  assert.equal(gb.length, bins.length, 'one bin every 10 ms across the gap');
+  assert.deepEqual(gb.flatMap((b, k) => (b.filled ? [Math.round(b.t * 100)] : [])), [220, 221, 222], 'the three empty bins filled and marked');
+  gb.forEach((b, k) => assert.ok(Math.abs(b.t - bins[k].t) < 1e-9, 'index is time'));
+  const after = gb.find((b) => Math.abs(b.t - 2.49) < 1e-6);
+  const seg = rows.filter((r) => r.t >= 2.49 - 1e-9 && r.t < 2.5 - 1e-9);
+  assert.ok(Math.abs(after.v - seg.reduce((s, r) => s + r.vTrue, 0) / seg.length) < 0.02, `climb speed after the gap ${after.v}`);
+  console.log('punch-inflow (synthetic, 32 ms of frames dropped): bins one every 10 ms, three filled, climb speed held');
 }
 
 // ---- The tools on the owner's logs ----

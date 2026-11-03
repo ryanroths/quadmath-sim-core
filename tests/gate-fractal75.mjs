@@ -40,6 +40,7 @@
 import { readFile } from 'node:fs/promises';
 import { SimCore, sticksToChannels as ch } from '../src/js/sim-core.js';
 import * as feel from './lib/feel.mjs';
+import { AUX_ARM, socFor as socAt, flyPunch, climbFirstSecond, logAltitude } from '../tools/fit-plan-drag.mjs';
 
 const root = new URL('..', import.meta.url);
 const json = async (p) => JSON.parse(await readFile(new URL(p, root), 'utf8'));
@@ -67,22 +68,8 @@ function row(key, band, ov, rv, pass, extra = '') {
   console.log(`   ${key.padEnd(34)} sim-core ${f(ov, 3).padStart(9)}  log ${f(rv, 3).padStart(9)}  band ${band.padEnd(10)} ${verdict}${extra ? `  ${extra}` : ''}`);
 }
 const f = (v, d = 4) => (v === null || v === undefined ? String(v) : Number(v).toFixed(d));
-// Aux channel values with the given boxes on: ARM on AUX1, ANGLE on AUX2
-// (the owner's aux lines).
-const AUX_ARM = [1900, 1000, 1000, 1000];
-
-// The state of charge at which the plant's pack, loaded with amps, reads volts
-// (src/plant/plant.c ocvCell, linear between the airframe's seven points).
-const SOC = [0, 0.05, 0.15, 0.40, 0.70, 0.90, 1];
-function socFor(volts, amps) {
-  const ocv = volts / V.cells.value + amps * V.cellIR.value;
-  const t = V.ocv.value;
-  if (ocv >= t[6]) return 1;
-  for (let i = 0; i < 6; i++) {
-    if (ocv >= t[i] && ocv <= t[i + 1]) return SOC[i] + ((ocv - t[i]) / (t[i + 1] - t[i])) * (SOC[i + 1] - SOC[i]);
-  }
-  return 0;
-}
+// The state of charge at which the plant's pack, loaded with amps, reads volts.
+const socFor = (volts, amps) => socAt(V, volts, amps);
 
 // A flight instance on this config, on the given pack, armed (throttle low)
 // in the air far above the floor, level and still at the origin.
@@ -210,36 +197,18 @@ console.log('   H1 hover stick on the log\'s pack, P6 thrust law, P7 current, P8
 }
 
 // ---------------------------------------------------------------------------
-// K1: the plant through each punch on the log's own duty.
+// K1: the plant through each punch on the log's own duty, as
+// tools/fit-plan-drag.mjs flies it (the pack at the log's voltage, held on
+// the first duty for 500 ms, then the logged duty 10 ms at a time).
 for (const p of inflow.punches.filter((x) => x.from_hover)) {
   const tr = p.trace;
-  const soc = socFor(p.before.vbat, p.before.amps);
-  const core = await airborne({ battery: { soc, vbatFiltered: p.before.vbat } });
-  // Held at the origin on the first duty for 500 ms, so the rotors settle
-  // where the log's were before the run-up; then free.
-  core.motorOverride(-1, tr.duty[0]);
-  for (let k = 0; k < 500; k++) {
-    core.teleport({ pos: [0, 0, 0] });
-    core.step(1);
-  }
-  const ticks = Math.round(tr.dt_s * 1000);
-  const vz = [];
-  const az = [];
-  for (const duty of tr.duty) {
-    core.motorOverride(-1, duty);
-    let a = 0;
-    for (let k = 0; k < ticks; k++) {
-      core.step(1);
-      a += core.fc.acc[2];
-    }
-    vz.push(core.state.vel[2]);
-    az.push(a / ticks);
-  }
-  const from = Math.round((p.ramp_start_s - tr.t0_s) / tr.dt_s);
-  const climb = vz.slice(from, from + Math.round(1 / tr.dt_s)).reduce((s, v) => s + v * tr.dt_s, 0);
+  const { soc, vz, z, az } = await flyPunch(module, { diff, airframe: f75, punch: p, aux: AUX_ARM });
+  const climb = climbFirstSecond(p, vz);
+  const log = logAltitude(p);
+  const rms = Math.sqrt(z.reduce((s, h, k) => s + (h - log[k]) ** 2, 0) / z.length);
   const peak = (xs) => Math.max(...xs.slice(0, Math.round((p.end_s - tr.t0_s) / tr.dt_s)));
   row(`K1 punch ${p.start_s} s climb in 1 s (m)`, '+-15%', climb, p.climb_1s_m, Math.abs(climb / p.climb_1s_m - 1) <= 0.15,
-    `pack SoC ${f(soc, 3)}; climb speed max ${f(Math.max(...vz), 2)} m/s (log ${p.v_max_m_s}); peak accZ ${f(peak(az), 2)} g (log ${f(peak(tr.accZ_g), 2)})`);
+    `pack SoC ${f(soc, 3)}; climb speed max ${f(Math.max(...vz), 2)} m/s (log ${p.v_max_m_s}); peak accZ ${f(peak(az), 2)} g (log ${f(peak(tr.accZ_g), 2)}); altitude track rms ${f(rms, 3)} m, at the end ${f(z.at(-1), 2)} m (log ${f(log.at(-1), 2)})`);
 }
 
 console.log('\n== S1 step response (rise, lag, overshoot against a log)');

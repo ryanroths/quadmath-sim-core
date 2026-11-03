@@ -27,7 +27,10 @@
 //   and the accelerometer, less gravity, gives the velocity in the world; the
 //   axial speed is its part along the thrust axis (body Z), the speed of the
 //   air through the props;
-// - 10 ms bins of duty, rpm, accZ (g) and axial speed, the climb over the
+// - 10 ms bins of duty, rpm, accZ (g) and axial speed, one every 10 ms (a
+//   bin the log dropped every frame of, up to 32 ms under a punch's current,
+//   is filled in time from its neighbours and left out of averages and
+//   fits), the climb over the
 //   first second of the run-up, and the cell IR from the 200 ms of hover
 //   before the run-up to the steady plateau (as the plateau tool's, which
 //   needs its own 300..100 ms before the plateau to be hover).
@@ -62,7 +65,7 @@ const BIN = 0.01;
 const RAMP_DUTY = 0.1;
 const PRE_S = 0.2;
 const AFTER_S = 0.25;
-export const INFLOW_RULES = 'run-up: the 10 ms bins before the plateau with duty above hover + 0.1; from hover: the 200 ms before it within 0.1 of the hover duty and 0.3 g of 1 g; climb speed integrated from rest and level 200 ms before the run-up (gyro attitude, accelerometer less gravity), axial = along body Z; pooled bins: rotors above hover rpm, duty above 0.3, from the run-up to 250 ms after the plateau';
+export const INFLOW_RULES = 'run-up: the 10 ms bins before the plateau with duty above hover + 0.1; from hover: the 200 ms before it within 0.1 of the hover duty and 0.3 g of 1 g; climb speed integrated from rest and level 200 ms before the run-up (gyro attitude, accelerometer less gravity), axial = along body Z; a 10 ms bin the log has no frames for is filled in time from its neighbours, so a trace has one bin every 10 ms, and is left out of every average and fit; pooled bins: rotors above hover rpm, duty above 0.3, from the run-up to 250 ms after the plateau';
 
 const round = (v, d) => (Number.isFinite(v) ? Number(v.toFixed(d)) : null);
 const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -132,10 +135,27 @@ export function climbBins(rows, t0, t1, { acc1G, motorPoles, gravity = 9.81, cur
     bin.amps += r.amps * currentScale;
     v = v.map((x, j) => x + aw[j] * dt);
   }
-  return bins.map((b) => ({
-    t: t0 + b.k * BIN, duty: b.duty / b.n, rpm: b.rpm / b.n, w2f: b.w2f / b.n, accZ: b.accZ / b.n,
+  const measured = bins.map((b) => ({
+    k: b.k, t: t0 + b.k * BIN, duty: b.duty / b.n, rpm: b.rpm / b.n, w2f: b.w2f / b.n, accZ: b.accZ / b.n,
     v: b.v / b.n, vz: b.vz / b.n, tilt: b.tilt / b.n, vbat: b.vbat / b.n, amps: b.amps / b.n,
   }));
+  // A bin with no frames (the log drops corrupt frames: up to 32 ms at a
+  // time under a punch's current) is filled in time between the measured
+  // bins either side and marked, so the bins stay one every 10 ms: a trace's
+  // index is its time. The velocity integrates across the gap as it is.
+  const out = [];
+  measured.forEach((b, i) => {
+    const a = measured[i - 1];
+    for (let k = a ? a.k + 1 : b.k; k < b.k; k++) {
+      const u = (k - a.k) / (b.k - a.k);
+      const fill = { t: t0 + k * BIN, filled: true };
+      for (const key of ['duty', 'rpm', 'w2f', 'accZ', 'v', 'vz', 'tilt', 'vbat', 'amps']) fill[key] = a[key] + (b[key] - a[key]) * u;
+      out.push(fill);
+    }
+    const { k, ...rest } = b;
+    out.push(rest);
+  });
+  return out;
 }
 
 // The start of the run-up into a plateau beginning at start (s): bins are
@@ -260,7 +280,7 @@ export async function punchInflow(logPath, quadmathDir, { punch, hover, airframe
   const punches = punch.punches.map((pp) => {
     const lead = climbBins(log.rows, pp.start_s - 2, pp.start_s + BIN, binOpts);
     const ramp = rampStart(lead, pp.start_s, hoverDuty);
-    const pre = lead.filter((b) => b.t >= ramp - PRE_S - 1e-9 && b.t < ramp - 1e-9);
+    const pre = lead.filter((b) => !b.filled && b.t >= ramp - PRE_S - 1e-9 && b.t < ramp - 1e-9);
     const preDuty = pre.length ? mean(pre.map((b) => b.duty)) : null;
     const preAcc = pre.length ? mean(pre.map((b) => b.accZ)) : null;
     const fromHover = pre.length > 0 && Math.abs(preDuty - hoverDuty) <= RAMP_DUTY && Math.abs(preAcc - 1) <= 0.3;
@@ -272,15 +292,15 @@ export async function punchInflow(logPath, quadmathDir, { punch, hover, airframe
     if (!fromHover) return out;
     const t0 = ramp - PRE_S;
     const bins = climbBins(log.rows, t0, pp.end_s + AFTER_S, binOpts);
-    const steady = bins.filter((b) => b.t >= pp.start_s + 0.1 - 1e-9 && b.t < pp.end_s - 1e-9);
+    const steady = bins.filter((b) => !b.filled && b.t >= pp.start_s + 0.1 - 1e-9 && b.t < pp.end_s - 1e-9);
     const at = (t) => bins.reduce((best, b) => (Math.abs(b.t - t) < Math.abs(best.t - t) ? b : best));
-    // The peak specific force over 50 ms (five bins, centred), as the plateau
-    // tool's 50 ms onset bins read it.
+    // The peak specific force over 50 ms (five bins, centred, the measured
+    // ones in them), as the plateau tool's 50 ms onset bins read it.
     const smooth = bins.map((b, k) => {
-      const set = bins.slice(Math.max(0, k - 2), k + 3);
+      const set = bins.slice(Math.max(0, k - 2), k + 3).filter((x) => !x.filled);
       return { ...b, accZ: mean(set.map((x) => x.accZ)), w2f: mean(set.map((x) => x.w2f)), rpm: mean(set.map((x) => x.rpm)), v: mean(set.map((x) => x.v)) };
     });
-    const peak = smooth.filter((b) => b.t < pp.end_s).reduce((x, b) => (b.accZ > x.accZ ? b : x));
+    const peak = smooth.filter((b) => !b.filled && b.t < pp.end_s).reduce((x, b) => (b.accZ > x.accZ ? b : x));
     const climb1s = bins.filter((b) => b.t >= ramp - 1e-9 && b.t < ramp + 1 - 1e-9).reduce((s, b) => s + b.v * BIN, 0);
     if (steady.length) {
       const sv = mean(steady.map((b) => b.vbat));
@@ -294,15 +314,19 @@ export async function punchInflow(logPath, quadmathDir, { punch, hover, airframe
     out.v_max_m_s = round(Math.max(...bins.map((b) => b.v)), 2);
     out.climb_1s_m = round(climb1s, 3);
     out.tilt_max_deg = round(Math.max(...bins.filter((b) => b.t < pp.end_s).map((b) => b.tilt)), 1);
-    // The trace a plant can be flown through (tests/gate-fractal75.mjs):
-    // 10 ms bins from t0 (rest, 200 ms before the run-up).
+    // The trace a plant can be flown through (tests/gate-fractal75.mjs,
+    // tools/fit-plan-drag.mjs): 10 ms bins from t0 (rest, 200 ms before the
+    // run-up), one every 10 ms; filled lists the bins the log has no frames
+    // for, filled in time from their neighbours.
+    out.filled_bins = bins.filter((b) => b.filled).length;
     out.trace = {
       t0_s: round(t0, 3), dt_s: BIN,
+      filled: bins.flatMap((b, k) => (b.filled ? [k] : [])),
       duty: bins.map((b) => round(b.duty, 4)), rpm: bins.map((b) => Math.round(b.rpm)),
       accZ_g: bins.map((b) => round(b.accZ, 3)), v_m_s: bins.map((b) => round(b.v, 3)),
       vbat: bins.map((b) => round(b.vbat, 3)),
     };
-    for (const b of bins) if (b.t >= ramp - 1e-9 && b.duty > 0.3 && (b.rpm * TWO_PI) / 60 > omegaH) pooled.push(b);
+    for (const b of bins) if (!b.filled && b.t >= ramp - 1e-9 && b.duty > 0.3 && (b.rpm * TWO_PI) / 60 > omegaH) pooled.push(b);
     return out;
   });
   // The pack's charge at each run-up, from the logged current: mAh drawn

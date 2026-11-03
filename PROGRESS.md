@@ -8137,3 +8137,86 @@ The rule: n = ln(onset) / ln(plateau rpm / hover rpm).
 - **gate-fractal75:** FAIL on K1 punch 61.75 s alone.
 
 Nothing was deployed.
+
+---
+
+## 2026-11-03 | Phase 2 step 3 | the Fractal75's plan drag fitted to its four punches; a gap bug in the punch traces fixed
+
+Owner (2026-11-03): "Refit Fractal75 cdAPlan from its log: least-squares on all four punches' altitude tracks (61.75, 93.9, 138.3, 186.8 s), not one. Report per-punch residuals before and after. Flag the value 'effective plan drag, absorbs inflow, refit when the inflow model lands'. Report whether the Air65's cdAPlan was derived or fitted, and flag it the same if derived. No band changes. Push, stop."
+
+### A bug first: the punch traces skipped dropped frames
+
+- **Symptom.** The Fractal75 log drops corrupt frames (3,368 over the log). During punches it loses up to 32 ms at a time: 1, 13, 12 and 16 of the 10 ms bins in the four punches have no frames.
+- **Cause.** `climbBins` (`tools/punch-inflow.mjs`) emitted only bins with frames, so a trace's index stopped being its time. K1 and any fit therefore flew a duty schedule squeezed by the missing slices, against log speeds out of step with it. `climb_1s_m` left the missing slices out of its sum.
+- **Visible in the reference:** `climb_1s_m` disagreed with its own trace's sum on three punches. The Air65 punch log has no such gaps.
+- **Fix.**
+  - `climbBins` now emits every 10 ms bin. One without frames is filled in time from its measured neighbours and marked `filled`; the velocity integrates across the gap as before.
+  - Averages (the hover before the run-up, the steady plateau, the 50 ms peak) and the pooled fits use measured bins only.
+  - Each trace lists its filled bins.
+- **What moved.** The Fractal75's `climb_1s_m` went 5.622 to 5.701, 4.776 to 5.319, 5.479 to 5.573 and 4.339 to 4.662 m. Every fit, speed band, peak and IR is unchanged. The Air65's reference is unchanged but for the rule text and its empty `filled` lists.
+- **Test.** A synthetic run with 32 ms of frames dropped checks that the bins stay one every 10 ms, three are filled, and the climb speed after the gap is the quad's.
+
+### The fit
+
+`tools/fit-plan-drag.mjs` (new) flies the plant through each punch, as the gate's K1 does (the gate now uses its `flyPunch`):
+
+- the pack at the state of charge where the plant's loaded voltage at the log's current before the run-up is the log's voltage;
+- held on the trace's first duty for 500 ms;
+- then the logged mean duty, 10 ms at a time.
+
+Its altitude at every bin's end is compared with the log's, which is the accelerometer's climb speed summed. A golden-section search finds the `cdAPlan` with the least summed squared error over every sample of all four punches (848 samples). Every other value is as the airframe has it, so the plant is at `thrustExponent` 1.805 with no inflow term.
+
+- **Result:** `cdAPlan` **0.00752 m^2**. The sum of squares is 37.3 m^2, against 4918 m^2 at quadmath's derived 0.0172. At 0.98 and 1.02 times the value it is 40.5 and 40.4 m^2 (`tests/node/fractal75.test.mjs` checks the minimum).
+
+Per punch, at 0.0172 and at 0.00752 (both on the fixed traces):
+
+| punch | altitude rms | track's end against the log | climb in 1 s (K1) | top climb speed |
+|---|---|---|---|---|
+| 61.75 s | 0.307 to 0.055 m | -1.05 to -0.10 m | -18.0 % to -1.2 % | 8.06 to 10.34 m/s (log 11.17) |
+| 93.9 s | 2.509 to 0.274 m | -6.21 to -0.74 m | -10.1 % to +7.3 % | 9.08 to 13.49 (log 14.66) |
+| 138.3 s | 2.598 to 0.119 m | -5.98 to +0.01 m | -13.9 % to +3.5 % | 8.87 to 13.34 (log 13.54) |
+| 186.75 s | 2.660 to 0.251 m | -6.48 to -0.21 m | -8.1 % to +8.3 % | 8.71 to 13.07 (log 13.85) |
+
+**On the traces as they were before the fix** the same fit gave 0.007278 m^2. That fit left K1 at +20.1 % and +16.9 % on punches 93.9 and 186.75 s: their log values were the low, gap-shortened ones. This is how the bug showed.
+
+- **Flag:** "effective plan drag, absorbs inflow, refit when the inflow model lands". The value is fitted with a plant that has no inflow term, so it takes in what the plant lacks in a climb.
+- **For scale:** `tools/punch-inflow.mjs` at rpm squared puts drag alone at 0.0085 m^2 and drag with inflow at 0.0053.
+
+### The Air65's cdAPlan: derived, not fitted
+
+- **0.00966 m^2** is quadmath's tuned drag (`CDA_Z0` x floatiness `cdMul` x the build's drag multiplier, `scripts/derive-air65.mjs`).
+- **Flagged the same, value unchanged.** The plant stays bit for bit as before.
+- **For information** (not applied), its punch log by the same tool:
+  - It fits 0.00427 m^2: sum of squares 50.6 against 5403 m^2 over 630 samples.
+  - Altitude rms per punch goes from 2.550, 1.509 and 3.919 m to 0.344, 0.148 and 0.310 m.
+  - K1-style climb in 1 s goes from -14.9, -14.5 and -16.0 % to +6.7, +1.8 and +5.1 %.
+  - No Air65 gate row uses it.
+
+### Gate rows (no band changed)
+
+**`gate-fractal75`: PASS.** H1, P6, P7 and P8 are unchanged. K1 at 0.00752:
+
+| punch | sim-core | log | band |
+|---|---|---|---|
+| 61.75 s | 5.633 m | 5.701 m | +-15 %, pass |
+| 93.9 s | 5.708 m | 5.319 m | pass |
+| 138.3 s | 5.771 m | 5.573 m | pass |
+| 186.75 s | 5.047 m | 4.662 m | pass |
+
+Each K1 row now also prints its altitude track's rms and end.
+
+### Tests
+
+**Run here, passing:**
+
+- `fractal75`, with the decoder and logs: punch-inflow re-run equals both regenerated references, the drag minimum holds, and the gap fill is checked.
+- `gate-fractal75`.
+- `abi-surface`, `hover-from-log`, `determinism-repeat`.
+
+**Not run here:**
+
+- `gate-plant`: no WebFPV clone now. The Air65's plant is unchanged: only a flag and a note on its `cdAPlan`.
+- the other WebFPV and Chrome tests;
+- the builds: no C changed.
+
+CI runs the full list. Nothing was deployed.
