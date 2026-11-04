@@ -5,11 +5,13 @@
 #   scripts/release.sh v0.1.0     # a tag
 #
 # release/ holds what a consumer loads: the module, its JS wrapper
-# (sim-core.js and cli-policy.js, which sim-core.js imports), the Air65
-# airframe and the owner's Air65 Betaflight diff it flies with, NOTICE and
-# LICENSE, and VERSION (git describe of the ref). Every
-# file comes from the ref's tree, not the working tree, so a release is what
-# was committed; the module is checked against the ref's committed sha256.
+# (sim-core.js and cli-policy.js, which sim-core.js imports), each airframe
+# with the owner's Betaflight diff it flies with (the Air65, and from v0.6.0
+# the Fractal75), NOTICE and LICENSE, and VERSION (git describe of the ref).
+# Every file comes from the ref's tree, not the working tree, so a release is
+# what was committed; the module is checked against the ref's committed
+# sha256. A ref without one of the files fails: release a tag from before
+# v0.6.0 with that tag's own scripts/release.sh.
 # Nothing is built here: dist/ is scripts/build.sh's.
 #
 # This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
@@ -31,6 +33,8 @@ FILES=(
   "cli-policy.js:src/js/cli-policy.js"
   "airframes/air65.json:airframes/air65.json"
   "configs/air65-ryfly-2026-10-23.txt:configs/air65-ryfly-2026-10-23.txt"
+  "airframes/fractal75.json:airframes/fractal75.json"
+  "configs/fractal75-ryfly-2026-11-03.txt:configs/fractal75-ryfly-2026-11-03.txt"
   "NOTICE:NOTICE"
   "LICENSE:LICENSE"
 )

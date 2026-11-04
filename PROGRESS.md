@@ -8220,3 +8220,27 @@ Each K1 row now also prints its altitude track's rms and end.
 - the builds: no C changed.
 
 CI runs the full list. Nothing was deployed.
+
+---
+
+## 2026-11-04 | Phase 2 step 3 | release.sh ships the Fractal75's airframe and diff; v0.6.0 reproduces quadmath's vendored folder
+
+v0.6.0 is tagged on 754266f, the merge of #17, which added `airframes/fractal75.json` and `configs/fractal75-ryfly-2026-11-03.txt`. `scripts/release.sh` at that tag still listed only the Air65's airframe and diff. So quadmath PR 305 (`sim/bf-core-fractal75`, c6036a3) vendored the v0.6.0 release byte for byte and added the two Fractal75 files straight from the v0.6.0 tree (`git show v0.6.0:<path>`).
+
+### The change
+
+- **`FILES`** gains `airframes/fractal75.json` and `configs/fractal75-ryfly-2026-11-03.txt`, each published at its tree path.
+- **The header comment** now says the release holds each airframe with the owner's diff it flies with: the Air65, and from v0.6.0 the Fractal75.
+- **No re-tag.** release.sh reads every file from the ref's tree, so v0.6.0 already holds both files. The tag stays on 754266f.
+- **Older tags.** The script now fails on a ref without the Fractal75's files (`release: v0.5.0 has no airframes/fractal75.json`). A tag from before v0.6.0 is released with its own `scripts/release.sh`; the header says so.
+
+### Checked
+
+`bash scripts/release.sh v0.6.0` with this change writes `release/` at VERSION `v0.6.0`, module sha256 `d02ec53c…`. It holds the same 10 files as quadmath's `vendor/sim-core/` at c6036a3, and each is byte-identical to `git show origin/sim/bf-core-fractal75:vendor/sim-core/<file>`:
+
+- `sim-core.wasm`, `sim-core.js`, `cli-policy.js`;
+- `airframes/air65.json`, `configs/air65-ryfly-2026-10-23.txt`;
+- `airframes/fractal75.json`, `configs/fractal75-ryfly-2026-11-03.txt`;
+- `NOTICE`, `LICENSE`, `VERSION`.
+
+`release/` was removed afterwards. No test was run: only the release script and this file changed. Nothing was deployed.
