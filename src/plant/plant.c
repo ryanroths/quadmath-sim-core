@@ -64,6 +64,15 @@
 #define CARRY_MIN 1e-4              // m (world.c ON_FACE_WU): a carry the next tick's resolution reaches
 #define CONTACT_SPIN_CAP 150.0      // rad/s, below the divergence guard (as world.c)
 #define ON_FACE_M 1e-4              // m (world.c ON_FACE_WU): on a face
+// #15: the floor and box tops meet the footprint's points through a spring and
+// a damper, not a rigid push. About 2 mm of crush at 4 m/s, a stiffness of
+// m w^2 at w = 2000 rad/s (318 Hz) on each point's own effective mass; the
+// damping ratio gives the floor the restitution world.c's ductHit gives a hard
+// landing (0.24 + 0.11 x 0.75 x bounceScale, x 0.55 on the floor). Solved as
+// an implicit soft constraint, stable at the 1 ms tick: a landing spreads over
+// a few ticks instead of reaching the gyro as one tick's spin.
+#define SOFT_CONTACT_W 2000.0       // rad/s
+#define SOFT_FLAT 0.999             // a push this close to straight up is a floor or a top
 
 sc_plant_state_t sc_plant;
 
@@ -905,7 +914,11 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     double pushAt[CONTACTS][3];             // a contact's push out (a point's), or zero
     double fromAt[CONTACTS][3];             // the CG's move it was pushed from
     double bias[CONTACTS];                  // speed out a pinched point is given
+    bool soft[CONTACTS];                    // #15: a floor or top contact, sprung
+    double depth[CONTACTS];                 // how far a sprung point is in, m
     const double pIn[3] = { p[0], p[1], p[2] };
+    memset(soft, 0, sizeof(soft));
+    memset(depth, 0, sizeof(depth));
     memset(pushAt, 0, sizeof(pushAt));
     memset(fromAt, 0, sizeof(fromAt));
     memset(bias, 0, sizeof(bias));
@@ -939,9 +952,19 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         for (int a = 0; a < 3; a++) {
             dp[a] = pt[a] - ptIn[a];
             dv[a] = vt[a] - vtIn[a];
-            pushHi[a] = fmax(pushHi[a], dp[a]);
-            pushLo[a] = fmin(pushLo[a], dp[a]);
-            pushAt[k][a] = dp[a];
+        }
+        // A point pushed straight up (the floor, a box top) stays in, sprung;
+        // any other push moves the CG out, as before.
+        const double dpLen = sqrt(dot3(dp, dp));
+        soft[k] = !wall && dpLen > 0 && dp[2] >= SOFT_FLAT * dpLen;
+        if (soft[k]) {
+            depth[k] = dpLen;
+        } else {
+            for (int a = 0; a < 3; a++) {
+                pushHi[a] = fmax(pushHi[a], dp[a]);
+                pushLo[a] = fmin(pushLo[a], dp[a]);
+                pushAt[k][a] = dp[a];
+            }
         }
         // The contact normal: the way the point was pushed out, or failing
         // that (a touch with no push) the way its velocity was turned.
@@ -1288,18 +1311,26 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         if (!(len > 0)) {
             continue;
         }
+        const bool flat = !wall && dp[2] >= SOFT_FLAT * len;
+        if (flat && soft[k]) {
+            continue;                   // already sprung on it
+        }
         const int c = contacts++;
         mu[c] = wall ? blk[PB_WALL_FRICTION] : -1;
+        soft[c] = flat;
+        depth[c] = flat ? len : 0;
         const double vin = dot3(vtIn, dp) / len;
         double sl[3];
         for (int a = 0; a < 3; a++) {
-            pushHi[a] = fmax(pushHi[a], dp[a]);
-            pushLo[a] = fmin(pushLo[a], dp[a]);
+            if (!flat) {
+                pushHi[a] = fmax(pushHi[a], dp[a]);
+                pushLo[a] = fmin(pushLo[a], dp[a]);
+            }
             rw[c][a] = rw[k][a];
             normal[c][a] = dp[a] / len;
             target[c][a] = vt[a];
             sl[a] = vtIn[a] - vin * normal[c][a];
-            pushAt[c][a] = dp[a];
+            pushAt[c][a] = flat ? 0 : dp[a];
             fromAt[c][a] = net[a];
         }
         const double slen = sqrt(dot3(sl, sl));
@@ -1436,15 +1467,25 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             double dp[3];
             for (int a = 0; a < 3; a++) {
                 dp[a] = pt[a] - ptIn[a];
-                reHi[a] = fmax(reHi[a], dp[a]);
-                reLo[a] = fmin(reLo[a], dp[a]);
             }
             const double len = sqrt(dot3(dp, dp));
             if (!(len > 0)) {
                 continue;
             }
+            const bool flat = !wall && dp[2] >= SOFT_FLAT * len;
+            if (flat && soft[k]) {
+                continue;                   // already sprung on it
+            }
+            for (int a = 0; a < 3; a++) {
+                if (!flat) {
+                    reHi[a] = fmax(reHi[a], dp[a]);
+                    reLo[a] = fmin(reLo[a], dp[a]);
+                }
+            }
             const int c = contacts++;
             mu[c] = wall ? blk[PB_WALL_FRICTION] : -1;
+            soft[c] = flat;
+            depth[c] = flat ? len : 0;
             const double vin = dot3(vtIn, dp) / len;
             double sl[3];
             for (int a = 0; a < 3; a++) {
@@ -1495,6 +1536,14 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     double rubbed[CONTACTS][3];
     memset(pushed, 0, sizeof(pushed));
     memset(rubbed, 0, sizeof(rubbed));
+    // The sprung rows' constants (Catto's soft step): bias speed per metre in,
+    // and the shares of the effective mass and the accumulated push.
+    const double floorRest = (0.24 + 0.11 * 0.75 * blk[PB_BOUNCE_SCALE]) * 0.55;
+    const double lnRest = log(fmin(0.9, fmax(0.01, floorRest)));
+    const double softZeta = -lnRest / sqrt(TWO_PI * TWO_PI / 4 + lnRest * lnRest);
+    const double softHw = dt * SOFT_CONTACT_W, softA = softHw * (2 * softZeta + softHw);
+    const double softBias = SOFT_CONTACT_W / (2 * softZeta + softHw);
+    const double softMass = softA / (1 + softA), softImpulse = 1 / (1 + softA);
     for (int sweep = 0; sweep < CONTACT_SWEEPS; sweep++) {
         for (int k = 0; k < contacts; k++) {
             if (!active[k]) {
@@ -1582,7 +1631,9 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             }
             vn = dot3(vp, n);
             contactResponse(q, rw[k], n, kn);
-            const double total = fmax(0, pushed[k] + (tnOut - vn) / dot3(kn, n));
+            const double total = soft[k]
+                ? fmax(0, pushed[k] + softMass * (softBias * depth[k] - vn) / dot3(kn, n) - softImpulse * pushed[k])
+                : fmax(0, pushed[k] + (tnOut - vn) / dot3(kn, n));
             const double dl = total - pushed[k];
             pushed[k] = total;
             for (int a = 0; a < 3; a++) {
