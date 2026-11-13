@@ -6,7 +6,9 @@
 //      the diff ratio is the srate ratio. Pairs: WebFPV's own check-12
 //      fixtures (srate 67 vs 84) and the 65 mm class diff with every roll
 //      rate line changed (srate 74 vs 92).
-//   2. dshot_bidir ON turns Betaflight's RPM filter on; OFF leaves it off.
+//   2. dshot_bidir ON brings the motors' rpm telemetry into Betaflight; OFF
+//      leaves it out. The RPM filter stays off either way: the sim's policy
+//      sets rpm_filter_harmonics = 0 (src/js/cli-policy.js POLICY_SETS).
 //   3. A P change moves the PID output for the same stick step.
 //
 // "Max roll rate" here is Betaflight's setpoint at full stick. The achieved
@@ -94,12 +96,21 @@ for (const p of pairs) {
   if (ra.errors.length) console.log(`  refused by Betaflight in both (not rates): ${ra.errors.join('; ')}`);
 }
 
-// 2. dshot_bidir reaches the RPM filter.
+// 2. dshot_bidir reaches Betaflight's rpm telemetry (debug DSHOT_RPM_TELEMETRY:
+// each motor's decoded telemetry, Betaflight drivers/dshot.c), armed at idle
+// on the Air65 plant, whose motors turn.
+const air65Plant = JSON.parse(await readFile(new URL('airframes/air65.json', root), 'utf8'));
 for (const bidir of ['OFF', 'ON']) {
   const core = await SimCore.load(module);
-  core.configure(`${air65}\nset dshot_bidir = ${bidir}`);
-  console.log(`dshot_bidir ${bidir}: get ${core.get('dshot_bidir')}, Betaflight RPM filter ${core.fc.rpmFilter ? 'on' : 'off'}`);
-  assert.equal(core.fc.rpmFilter, bidir === 'ON');
+  core.configure({ diff: `${air65}\nset dshot_bidir = ${bidir}\nset debug_mode = DSHOT_RPM_TELEMETRY`, plant: air65Plant });
+  core.input([1500, 1500, 1500, 1000, 2000]);
+  core.step(300);
+  const rpm = core.fc.debug.slice(0, 4);
+  console.log(`dshot_bidir ${bidir}: get ${core.get('dshot_bidir')}, armed ${core.fc.armed}, telemetry ${rpm.join(' ')}, Betaflight RPM filter ${core.fc.rpmFilter ? 'on' : 'off'}`);
+  assert.equal(core.get('dshot_bidir'), bidir);
+  assert.equal(core.fc.armed, true);
+  assert.ok(rpm.every((v) => (bidir === 'ON' ? v > 0 : v === 0)), `rpm telemetry ${bidir === 'ON' ? 'from every motor' : 'off'}`);
+  assert.equal(core.fc.rpmFilter, false, 'the RPM filter off (the sim\'s policy)');
 }
 
 // 3. P moves the PID output: same armed roll step, p_roll 54 vs 81.

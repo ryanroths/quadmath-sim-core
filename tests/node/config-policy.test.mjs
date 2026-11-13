@@ -240,4 +240,25 @@ ${extra}`);
   console.log(`comments: ${r.lines.map((l) => l.status).join(' ')}; p_roll ${core.get('p_roll')}`);
 }
 
+// 12. The sim's own settings (cli-policy.js POLICY_SETS): a diff line that
+//     sets one is rejected with the reason, the sim's value is in force after
+//     the boot with or without such a line, and the report lists it.
+//     Bidirectional DShot is left to the diff.
+for (const text of ['set dshot_bidir = ON\nset rpm_filter_harmonics = 3', 'set dshot_bidir = ON']) {
+  const core = await SimCore.load(module);
+  const r = core.configure(text);
+  accounted(r, text);
+  const line = r.lines.find((l) => l.text.startsWith('set rpm_filter_harmonics'));
+  if (line) {
+    assert.equal(line.status, 'rejected');
+    assert.match(line.msg, /RPM filter is off in the sim/);
+  }
+  assert.equal(r.lines[0].status, 'applied', 'dshot_bidir is the diff\'s');
+  assert.deepEqual(r.policy.map((p) => `${p.key} = ${p.value}`), ['rpm_filter_harmonics = 0']);
+  assert.equal(core.get('rpm_filter_harmonics'), '0');
+  assert.equal(core.get('dshot_bidir'), 'ON');
+  assert.equal(core.fc.rpmFilter, false);
+  console.log(`policy: ${text.replace('\n', '; ')}: ${line ? `${line.status} (${line.msg})` : 'nothing to reject'}; rpm_filter_harmonics ${core.get('rpm_filter_harmonics')}, dshot_bidir ${core.get('dshot_bidir')}`);
+}
+
 console.log('config-policy: PASS');
