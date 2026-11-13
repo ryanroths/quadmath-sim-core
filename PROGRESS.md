@@ -8244,3 +8244,65 @@ v0.6.0 is tagged on 754266f, the merge of #17, which added `airframes/fractal75.
 - `NOTICE`, `LICENSE`, `VERSION`.
 
 `release/` was removed afterwards. No test was run: only the release script and this file changed. Nothing was deployed.
+
+## 2026-11-13 | Phase 2 | landing hops: the sim's policy turns the RPM filter off (version B)
+
+Armed on the floor at zero throttle, both whoops hopped on every map and did not settle. The cause is a loop at the sim's 1 kHz loop rate:
+- A floor contact puts one sharp sample into the gyro.
+- Betaflight clamps every RPM notch above 480 Hz to 480 Hz (`rpm_filter.c:90`), next to Nyquist. The notches ring on that sample at 500 Hz; the raw gyro stays within ±5 °/s.
+- With air mode latched, the PID answers each sample. The motor commands alternate every tick, 48 against about 1,775, and the rpm telemetry moves the notches with them.
+- The quad lifts itself off the floor.
+
+### The change
+
+- **`cli-policy.js` `POLICY_SETS`:** settings the sim sets itself after the diff, whatever the diff says. The first is `rpm_filter_harmonics = 0`.
+  - A diff line that sets it is rejected, with the reason.
+  - `sim-core.js` applies it before save, checks the echo, and reads it back after the boot. The report lists it under `policy`.
+- **Bidirectional DShot stays.** The rpm telemetry still reaches Betaflight.
+- **No wasm change.**
+- **Version A is backed out.** Patch 0004 faded out the notches above 80 % of Nyquist. It stopped the lift-off but left the quad buzzing on the floor, and it failed the wall-hit guard.
+- **The dynamic notch:** Betaflight already turns it off below a 2 kHz loop (`dyn_notch_filter.c:163-167`). Adding `dyn_notch_count = 0` leaves all 12 determinism traces identical, so it is not committed.
+
+### Measured
+
+Numbers are main → B.
+
+- **Landings,** the page's adapter and maps:
+  - Motor-command jumps on the floor: 69–1,476 → 0–36.
+  - Floor gyro after the impact: 1,242–3,576 → 3–429 °/s.
+  - Hops: up to 7 and 1.5 m → at most 1, 13.5 mm.
+  - At rest: mostly never → 0.05–0.12 s in acro; 2.4–2.7 s in angle mode with drift (below).
+- **The raw-SimCore touch** (Fractal75, 0.05 m/s, 3°): 13 floor leaves and 517 mm → 1 leave, 2.2 mm.
+- **`tests/node/landing.test.mjs`,** the owner's target from log 143354: one hop of about 1 cm, then at rest. Main fails it (the Fractal75's touch: 9 hops, 519 mm); B passes.
+- **Step response** against 143354 log 1, on the Air65 config: every metric is the same.
+  - Lag at 50 %, roll / pitch / yaw: sim 5.3 / 6.6 / 0.4 ms, log 3.8 / 5.2 / 3.7.
+  - The X3 feel bands are identical.
+  - The replay moves only in the third decimal.
+- **Ringing in the air** (wall hits, a gate post): 1–9 ringing samples → 0.
+
+### The wall-hit guard, 8 m/s head on
+
+- **Main** rests only because the ringing chatter throws the quad off the wall: it lands inverted on the floor, 98 mm out.
+- **Without the chatter** (A and B) the held throttle flies it back into the wall. It lands propped on the wall, and after the disarm it creeps at about 10 °/s.
+  - A creeps past the test's 8 s.
+  - B rests at 5.07 s.
+  - The creep is #15's contact problem.
+
+### Left over
+
+- **Angle mode winds up on the floor.**
+  - After the contact, Betaflight's attitude estimate is 0.3–1.2° off the plant. The filtered gyro itself integrates to the plant's attitude change.
+  - The IMU's 100 Hz task samples a 200 Hz PT1 of the gyro, so a one-tick spike is aliased into the estimate.
+  - Angle mode levels toward that phantom tilt against the floor, and with air mode latched the I-term winds up.
+  - The next fix is the contact's one-tick spike (#20's proposal).
+
+### Tests changed by design
+
+- **diff-passthrough check 2:** now `dshot_bidir` brings the rpm telemetry in or leaves it out, and the RPM filter is off either way.
+- **The scenario matrix:** the rpm axis is bidirectional DShot, with the telemetry in the debug block. The rest plant's rpm-on twins, identical tick for tick, are gone, leaving 12 scenarios.
+- **blackbox-webfpv F4:** `rpm_filter_harmonics` is asserted at the sim's 0.
+- **config-policy 12** is added.
+
+### If it ships
+
+It needs a sim-core release (v0.7.0), quadmath with `PHYS_VER` 6 → 7, and the leaderboard Worker deployed. Nothing was deployed.

@@ -27,6 +27,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { SimCore } from '../../src/js/sim-core.js';
+import { POLICY_SETS } from '../../src/js/cli-policy.js';
 import { WebFpv, loadWebfpvModule } from '../lib/webfpv.mjs';
 
 const root = new URL('../../', import.meta.url);
@@ -151,6 +152,9 @@ const BETAFLIGHT_DEFAULTS_DIFFER = {
   // Betaflight 4.5.1 flight/pid.c pgResetTemplate: launchControlAngleLimit = 0.
   launch_angle_limit: '0',
 };
+// The sim's own settings (src/js/cli-policy.js POLICY_SETS): the sim's value
+// whatever the diff says, where WebFPV keeps the diff's.
+const SIM_POLICY = Object.fromEntries(POLICY_SETS.map((p) => [p.key, p.value]));
 for (const [name, diff] of [['65mm class diff', air65], ['F1 KISS rates, smoothing OFF', ratesDiff('KISS', 'OFF')]]) {
   const core = await SimCore.load(ours, { trace: false });
   core.configure(diff);
@@ -158,7 +162,7 @@ for (const [name, diff] of [['65mm class diff', air65], ['F1 KISS rates, smoothi
   const keys = w.keys();
   const got = core.get(keys);
   const notBetaflight = keys.filter((k) => got[k] === undefined);
-  const compared = keys.filter((k) => got[k] !== undefined && !(k in BETAFLIGHT_DEFAULTS_DIFFER));
+  const compared = keys.filter((k) => got[k] !== undefined && !(k in BETAFLIGHT_DEFAULTS_DIFFER) && !(k in SIM_POLICY));
   const diffs = compared.filter((k) => got[k] !== w.get(k));
   console.log(`F4 ${name}: WebFPV keys ${keys.length}, not in Betaflight 4.5.1 ${notBetaflight.length} (${notBetaflight.join(' ')}), string-equal ${compared.length - diffs.length} of ${compared.length}`);
   for (const k of diffs) console.log(`   ${k}: WebFPV '${w.get(k)}' sim-core '${got[k]}'`);
@@ -168,6 +172,11 @@ for (const [name, diff] of [['65mm class diff', air65], ['F1 KISS rates, smoothi
   assert.equal(core.get('rpm_filter_weights'), notBetaflight.map((k) => w.get(k)).join(','));
   for (const [k, v] of Object.entries(BETAFLIGHT_DEFAULTS_DIFFER)) {
     console.log(`   ${k}: WebFPV '${w.get(k)}', sim-core '${got[k]}' (Betaflight default ${v})`);
+    assert.equal(got[k], v);
+  }
+  for (const [k, v] of Object.entries(SIM_POLICY)) {
+    console.log(`   ${k}: WebFPV '${w.get(k)}', sim-core '${got[k]}' (the sim's policy ${v})`);
+    assert.ok(keys.includes(k), `${k} is a WebFPV key`);
     assert.equal(got[k], v);
   }
 }
