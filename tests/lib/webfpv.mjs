@@ -5,7 +5,11 @@
 // (WebFPV src/native/sim_abi.h, plus the sim_bf_* readouts in
 // src/native/bf/bf_glue.c).
 //
-//   WEBFPV_DIR   the clone (default ~/webfpv-upstream)
+// The clone, the first of these that is set:
+//   WEBFPV_DIR            the environment (CI sets it)
+//   webfpvDir             in local-settings.json at the repo root, gitignored
+//                         (tests/lib/local-settings.mjs; local-settings.example.json)
+//   ~/webfpv-upstream     the default
 //
 // This file is part of quadmath-sim-core, GPL-3.0-or-later. See LICENSE.
 import { execFileSync } from 'node:child_process';
@@ -13,15 +17,16 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { LOCAL_SETTINGS, localSetting } from './local-settings.mjs';
 
 export const WEBFPV_COMMIT = '518846c';
 export const WEBFPV_WASM_SHA256 = '08e995cb51e0cb95dc737daf4c5d57cce22c4959546fbdf234aa90ebea18ff69';
 
 export function webfpvDir() {
-  const dir = process.env.WEBFPV_DIR || join(homedir(), 'webfpv-upstream');
+  const dir = process.env.WEBFPV_DIR || localSetting('webfpvDir') || join(homedir(), 'webfpv-upstream');
   if (!existsSync(join(dir, '.git'))) {
     throw new Error(`WebFPV clone not found at ${dir}. Clone https://github.com/Mathew-Harvey/WebFPVSimulator `
-      + `there (it needs commit ${WEBFPV_COMMIT}) or set WEBFPV_DIR.`);
+      + `there (it needs commit ${WEBFPV_COMMIT}), or put its path in ${LOCAL_SETTINGS} as webfpvDir, or set WEBFPV_DIR.`);
   }
   return dir;
 }
