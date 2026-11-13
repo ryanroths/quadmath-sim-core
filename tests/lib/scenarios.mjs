@@ -26,16 +26,18 @@ export async function loadPresets(readText) {
   return out;
 }
 
-// Every class preset, acro and angle, RPM filter on and off, 3D off and on
-// (the D2 coverage in the Phase 1 plan). On the Air65 plant the gyro and
-// motor rpm are live, so the RPM filter path gets real input; on the rest
-// plant (75mm) an rpm-on trace differs from its rpm-off twin only in
-// Betaflight's RPM-filter-enabled flag.
+// Every class preset, acro and angle, bidirectional DShot on and off, 3D off
+// and on (the D2 coverage in the Phase 1 plan). The RPM filter is off in the
+// sim whatever the diff says (src/js/cli-policy.js POLICY_SETS); rpm-on is
+// the motors' rpm telemetry, which every scenario puts in Betaflight's debug
+// block (DSHOT_RPM_TELEMETRY), so the trace carries it. Only a plant whose
+// motors turn has rpm to report: on the rest plant (75mm) an rpm-on run is
+// its rpm-off twin tick for tick, so 75mm runs rpm-off only.
 export function matrix() {
   const out = [];
   for (const preset of Object.keys(CLASS_DIFFS)) {
     for (const angle of [false, true]) {
-      for (const rpm of [false, true]) {
+      for (const rpm of CLASS_AIRFRAMES[preset] ? [false, true] : [false]) {
         for (const mode3d of [false, true]) {
           const name = `${preset} ${angle ? 'angle' : 'acro'} rpm-${rpm ? 'on' : 'off'}${mode3d ? ' 3d' : ''}`;
           out.push({ name, preset, angle, rpm, mode3d });
@@ -48,7 +50,7 @@ export function matrix() {
 
 // The class diff plus the scenario's switches, as CLI lines.
 export function diffFor(scenario, presetText) {
-  const extra = [`set dshot_bidir = ${scenario.rpm ? 'ON' : 'OFF'}`];
+  const extra = [`set dshot_bidir = ${scenario.rpm ? 'ON' : 'OFF'}`, 'set debug_mode = DSHOT_RPM_TELEMETRY'];
   if (scenario.mode3d) extra.push('feature 3D');
   return `${presetText}\n${extra.join('\n')}\n`;
 }
