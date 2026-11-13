@@ -1,0 +1,51 @@
+--- a/src/main/flight/rpm_filter.c
++++ b/src/main/flight/rpm_filter.c
+@@ -52,6 +52,7 @@
+     float weights[RPM_FILTER_HARMONICS_MAX];
+     float minHz;
+     float maxHz;
++    float offHz;
+     float fadeRangeHz;
+     float q;
+ 
+@@ -88,6 +89,14 @@
+     rpmFilter.numHarmonics = config->rpm_filter_harmonics;
+     rpmFilter.minHz = config->rpm_filter_min_hz;
+     rpmFilter.maxHz = 0.48f * 1e6f / looptimeUs; // don't go quite to nyquist to avoid oscillations
++    // quadmath-sim-core: a notch whose frequency lands above 80 % of Nyquist
++    // (0.4 x the loop rate: 400 Hz in the sim's 1 kHz loop) is turned off, not
++    // clamped to maxHz. Clamped, the notches of every motor and harmonic above
++    // it sit together at 480 Hz, and with the motors' rpm moving every loop
++    // their coefficients change every loop: one sharp gyro step then rings
++    // there, and the IMU reads the ringing as a tilt. On a real quad's 4-8 kHz
++    // loop this is above any motor harmonic and never acts.
++    rpmFilter.offHz = 0.40f * 1e6f / looptimeUs;
+     rpmFilter.fadeRangeHz = config->rpm_filter_fade_range_hz;
+     rpmFilter.q = config->rpm_filter_q / 100.0f;
+     rpmFilter.looptimeUs = looptimeUs;
+@@ -132,7 +141,8 @@
+             // select current notch on ROLL
+             biquadFilter_t *template = &rpmFilter.notch[0][motorIndex][harmonicIndex];
+ 
+-            const float frequencyHz = constrainf((harmonicIndex + 1) * getMotorFrequencyHz(motorIndex), rpmFilter.minHz, rpmFilter.maxHz);
++            const float harmonicHz = (harmonicIndex + 1) * getMotorFrequencyHz(motorIndex);
++            const float frequencyHz = constrainf(harmonicHz, rpmFilter.minHz, rpmFilter.maxHz);
+             const float marginHz = frequencyHz - rpmFilter.minHz;
+             float weight = 1.0f;
+ 
+@@ -141,6 +151,15 @@
+                 weight *= marginHz / rpmFilter.fadeRangeHz;
+             }
+ 
++            // quadmath-sim-core: and above offHz (turn it off), faded over the
++            // same range below it, so a notch never switches in one step
++            const float headroomHz = rpmFilter.offHz - harmonicHz;
++            if (headroomHz <= 0.0f) {
++                weight = 0.0f;
++            } else if (headroomHz < rpmFilter.fadeRangeHz) {
++                weight *= headroomHz / rpmFilter.fadeRangeHz;
++            }
++
+             // attenuate notches per harmonics group
+             weight *= rpmFilter.weights[harmonicIndex];
+ 
