@@ -7,7 +7,8 @@
 // The builds need emsdk 3.1.61 (WSL on Windows) and compare against the
 // committed dist/sim-core.wasm.sha256, so run the full list on a committed tree.
 // config-count, diff-passthrough, blackbox-webfpv and gate-plant read WebFPV's
-// module and diffs from a WebFPV clone (tests/lib/webfpv.mjs). node-vs-chrome
+// module and diffs from a WebFPV clone (tests/lib/webfpv.mjs: its path from
+// WEBFPV_DIR, or webfpvDir in the gitignored local-settings.json). node-vs-chrome
 // and the fly harness test need Chrome. gate-plant fails on an X3 band miss the owner has not signed
 // off or put under investigation in tests/x3-signoff.json, and gate-fractal75
 // on a row miss alike ("Fractal75 <row>"); plant-world fails on an open check

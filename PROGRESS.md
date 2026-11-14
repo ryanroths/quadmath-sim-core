@@ -20,7 +20,9 @@ Standing rules (owner, 2026-10-21):
   black-box comparison is the test.
 
 Paths: `~` is `C:\Users\Risfo`. The WebFPV reference clone is `~/webfpv-upstream`
-(local branch `sim/bf-wasm-phase0`, never pushed). Phase 0 scratch is
+(local branch `sim/bf-wasm-phase0`, never pushed); the tests read its path from
+`WEBFPV_DIR` or from `webfpvDir` in the gitignored `local-settings.json`
+(2026-11-13: `D:\webfpv-upstream`, at 518846c). Phase 0 scratch is
 `~/webfpv-phase0`. Citations into WebFPV say "WebFPV" and give its repo-relative path.
 
 ---
