@@ -8308,3 +8308,43 @@ Numbers are main → B.
 ### If it ships
 
 It needs a sim-core release (v0.7.0), quadmath with `PHYS_VER` 6 → 7, and the leaderboard Worker deployed. Nothing was deployed.
+
+## 2026-11-16 | Phase 2 | spike: angle-mode wind-up on the floor (2 h, no fix)
+
+The owner's target is rest by 0.5 s after a landing in angle mode, with the acro hop limits. `tests/node/landing.test.mjs` on this branch adds a drift case: angle mode, pitch stick 0.25 for the last 0.6 s of the hover, then the cut with the sticks centred. It sweeps 11 cut moments 30 ms apart for each whoop, because whether a landing winds up depends on the cut.
+- It fails on B (main 8f6eca1): 11 of 22 cases rest at 0.75–1.01 s.
+- It fails on v0.6.0 too, mostly on the old RPM-filter hops.
+- Nothing on this branch fixes it. The branch is not for merging.
+
+### Found
+
+- **The accelerometer is not at fault.**
+  - On the floor it reads 1.000 g, pointing the right way, with no bias. It is quieter than the real Air65 on the ground (log 090813).
+  - The gate is off only through the impact, the hop's free fall and a few 1–3 ms blips.
+  - Betaflight's estimate then converges at its own Mahony gain, imu_dcm_kp 2500: τ = 4 s. That is the owner's config, the same on the real quad.
+  - The impact itself reads too hard: one tick of 284 g, which Betaflight clamps at 128 g (acc_1G 256), against the log's ~6 g filtered. It also lands flat, where the real quad lands tilted.
+- **A correction to 2026-11-13.** In angle and horizon mode Betaflight runs TASK_ATTITUDE at the acc rate ÷ imu_process_denom = 500 Hz (`fc/core.c:1003-1006`). The 100 Hz applies only in acro.
+- **The cause is the rigid contact solve ping-ponging between rims.**
+  - `footprintContact` answers only the points in contact at the end of the tick.
+  - On a near-level landing (Air65, cut at 2.62 s): the rear rims strike, and the body pitches from +0.35° to −2.64° in one tick (−3,065 °/s). Then the front rims strike (+1,564 °/s) and it swings to +1.92°, then −1.20°, over about 10 ms.
+  - Betaflight's attitude samples catch that swing and leave the estimate 1.4–2.2° off a level quad.
+  - Angle mode then asks for 10–20 °/s against the floor, air mode keeps the I-term live, and the motors split front against rear (up to ~990 against ~50).
+- **About 0.25° of the error is there before touchdown,** and that part is physical. During the drift the acc reads along the thrust axis, and the gate is off through the 0.26 s fall.
+
+### Tried (all reverted)
+
+- **What was tried:** a gyro feed that spreads the attitude's turn over up to 20 ticks after a contact.
+  - The integral stays exact; it is capped at 500 °/s, or 1/6 of the backlog if that is larger.
+  - Open air is byte-identical to B.
+- **What it fixed:** all 22 drift cases, with X3 and sim-vs-log identical.
+- **Why it is not a candidate:**
+  - crash-flip requires the gyro to equal the attitude's per-tick rate on every tick, floor included. A spread breaks that by construction, and the check was not changed.
+  - wall-hit's flown 8 m/s 30° hit no longer comes to rest.
+  - The page harness's Air65 living and Fractal75 rig landings in angle mode stay at 2.4 s.
+- **Boxcar spreads of 4 or 6 ticks:** they moved the failures between cut moments, or broke acro landings with a 2.5 ms lag in the PID's gyro.
+- **A leak found on the way:** `footprintContact` changes om by rounding on every tick (the world-frame round trip). A trigger written as "the contact changed om" therefore fires in the air too.
+
+### Next (not started)
+
+- **The plant-side fix:** a contact solve that answers both rim pairs within the tick, e.g. speculative contacts for footprint points that would cross the floor during the tick, so the body does not over-rotate past level. plant-world, wall-hit and crash-flip would have to accept it.
+- **Out of scope here:** the yaw step-lag gap, #20's sub-stepping, and fitting the contact to the log's impact.
