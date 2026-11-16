@@ -8335,3 +8335,9 @@ Owner, 2026-11-16: a pasted diff that sets `rpm_filter_harmonics` to any value m
   - fly: PASS. Its poll-rate row is skipped headless, as designed.
 
 Nothing was deployed.
+
+### Correction to 2026-11-13
+
+The 2026-11-13 entry says the IMU's task runs at 100 Hz. In angle and horizon mode Betaflight runs TASK_ATTITUDE at the acc rate ÷ imu_process_denom, which is 500 Hz here (`fc/core.c:1003-1006`). The 100 Hz applies only in acro.
+
+The angle-mode wind-up that entry describes comes from the rigid contact solve's rim-to-rim ping-pong on a landing: ±2–3° in single ticks, which those attitude samples catch. See branch `spike/angle-floor-windup` (PROGRESS, 2026-11-16).
