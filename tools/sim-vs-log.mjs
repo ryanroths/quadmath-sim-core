@@ -250,6 +250,11 @@ export async function simVsLog(file, quadmathDir, { diff, airframe, module, log:
   for (const l of report.lines.filter((x) => x.status === 'rejected' || x.status === 'error')) {
     print(`warning: config line ${l.n} ${l.status}: ${l.text} (${l.msg})`);
   }
+  // A setting the sim sets itself (cli-policy.js POLICY_SETS): the line is
+  // not sent; the replay flies the sim's value, which the log may not have.
+  for (const l of report.lines.filter((x) => x.status === 'overridden')) {
+    print(`note: config line ${l.n} overridden: ${l.text} (${l.msg})`);
+  }
   // The aux ranges Betaflight runs with: the diff's, and any sim-core added.
   const applied = [...report.lines.filter((x) => x.status === 'applied').map((x) => x.text), ...report.added.map((x) => x.text)];
   const ranges = auxRanges(applied.join('\n'));

@@ -2,7 +2,8 @@
 // diff in the corpus,
 //   - every line gets exactly the verdict the policy requires (pinned per
 //     line, not only as a sum), so lines in = applied + rejected + errors +
-//     comments, and a wrongly rejected tune line fails;
+//     comments + overridden (a setting the sim sets itself, cli-policy.js
+//     POLICY_SETS), and a wrongly rejected tune line fails;
 //   - every applied `set` that is not superseded by a later line in the same
 //     scope reads back from the saved, rebooted config, in the scope
 //     Betaflight gives the setting (master, profile N, rateprofile N), as the
@@ -104,13 +105,13 @@ const corpus = [
     SYNTHETIC.flatMap(([, , s], i) => (s ? [i + 1] : []))],
 ];
 
-console.log('diff                                            lines applied rejected errors comments | set keys readback-ok superseded');
+console.log('diff                                            lines applied rejected errors comments overridden | set keys readback-ok superseded');
 for (const [name, text, expect, supersededLines] of await Promise.all(corpus)) {
   const core = await SimCore.load(module);
   const r = core.configure(text);
   const n = text.split('\n').length;
   assert.equal(r.lines.length, n, `${name}: one verdict per line`);
-  assert.equal(r.applied + r.rejected + r.errors + r.comments, n, `${name}: lines in = applied + rejected + errors + comments`);
+  assert.equal(r.applied + r.rejected + r.errors + r.comments + r.overridden, n, `${name}: lines in = applied + rejected + errors + comments + overridden`);
   r.lines.forEach((l, i) => {
     assert.equal(l.status, expect[i], `${name} line ${l.n} '${l.text}': ${l.status} (${l.msg})`);
     if (l.status === 'rejected' || l.status === 'error') assert.ok(l.msg, `${name} line ${l.n}: a ${l.status} line says why`);
@@ -131,7 +132,7 @@ for (const [name, text, expect, supersededLines] of await Promise.all(corpus)) {
     if (got !== undefined && sameSettingValue(s.value, got)) ok++;
     else bad.push(`line ${l.n} ${s.key} (${s.scope}${s.index ?? ''}): set ${s.value}, reads ${got}`);
   }
-  console.log(`${name.padEnd(47)} ${String(n).padStart(5)} ${String(r.applied).padStart(7)} ${String(r.rejected).padStart(8)} ${String(r.errors).padStart(6)} ${String(r.comments).padStart(8)} | ${String(live.length).padStart(8)} ${String(ok).padStart(11)} ${String(superseded.length).padStart(10)}`);
+  console.log(`${name.padEnd(47)} ${String(n).padStart(5)} ${String(r.applied).padStart(7)} ${String(r.rejected).padStart(8)} ${String(r.errors).padStart(6)} ${String(r.comments).padStart(8)} ${String(r.overridden).padStart(10)} | ${String(live.length).padStart(8)} ${String(ok).padStart(11)} ${String(superseded.length).padStart(10)}`);
   for (const b of bad) console.log(`   MISMATCH ${b}`);
   for (const l of r.lines.filter((x) => x.status === 'error')) console.log(`   error line ${l.n}: ${l.text.trim().slice(0, 60)} -- ${l.msg}`);
   assert.equal(ok, live.length, `${name}: every applied set reads back`);

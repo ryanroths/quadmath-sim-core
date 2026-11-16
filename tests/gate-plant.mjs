@@ -584,6 +584,7 @@ const ref = feel.webfpvSim(await loadWebfpvModule(), classDiff, { airframe: 1, g
   const warned = ours.config.lines.filter((l) => l.status === 'rejected' || l.status === 'error');
   console.log(`\n== Air65 config ${AIR65_CONFIG.join(' + ')}: ${ours.config.applied} lines applied, ${warned.length} not (warnings, per the config rule)`);
   for (const l of warned) console.log(`   warning: line ${l.n} ${l.status}: ${l.text.trim()} (${l.msg})`);
+  for (const l of ours.config.lines.filter((x) => x.status === 'overridden')) console.log(`   note: line ${l.n} overridden: ${l.text.trim()} (${l.msg})`);
 }
 
 // The freestyle replay, where the decoder and the log are at hand.

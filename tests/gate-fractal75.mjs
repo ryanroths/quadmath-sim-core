@@ -100,6 +100,7 @@ console.log('== airframe airframes/fractal75.json');
   const warned = r.lines.filter((l) => l.status === 'rejected' || l.status === 'error');
   console.log(`\n== C1 config ${CONFIG.join(' + ')}: ${r.applied} lines applied, ${warned.length} not (warnings, per the config rule)`);
   for (const l of warned) console.log(`   warning: line ${l.n} ${l.status}: ${l.text.trim()} (${l.msg})`);
+  for (const l of r.lines.filter((x) => x.status === 'overridden')) console.log(`   note: line ${l.n} overridden: ${l.text.trim()} (${l.msg})`);
   const missing = ['motor_poles', 'yaw_motors_reversed', 'thr_mid', 'thr_expo', 'dshot_idle_value', 'vbat_warning_cell_voltage'].filter((k) => !r.lines.some((l) => l.status === 'applied' && l.text.includes(k)));
   console.log(`   the throttle path, poles and props-out lines applied: ${missing.length ? `MISSING ${missing.join(', ')}` : 'yes'}`);
   rows.push({ name: 'Fractal75 C1 config', ok: missing.length === 0 });
