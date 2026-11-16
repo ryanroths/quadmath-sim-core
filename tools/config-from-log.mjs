@@ -18,6 +18,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { POLICY_SETS } from '../src/js/cli-policy.js';
 import { SimCore } from '../src/js/sim-core.js';
 import { readLog } from './hover-from-log.mjs';
 import { logPath as findLog } from './logs.mjs';
@@ -46,10 +47,11 @@ const TABLES = {
 };
 // Header values Betaflight logs scaled (blackbox/blackbox.c:1541): name -> divisor.
 const SCALED = { acc_lpf_hz: 100 };
-// Settings sim-core's config policy refuses on purpose (src/js/cli-policy.js):
-// reported, never set.
+// Settings sim-core's config policy refuses on purpose, or sets itself
+// (src/js/cli-policy.js, POLICY_SETS): reported, never set.
 const SIM_POLICY = {
   pid_process_denom: 'the sim runs the PID on every gyro sample, at SC_LOOP_HZ',
+  ...Object.fromEntries(POLICY_SETS.map((p) => [p.key, p.note])),
 };
 // Header lines with several values: name -> the settings, in order.
 const SPLIT = {
@@ -98,7 +100,8 @@ export async function configFromLog(file, quadmathDir, diff, module, li = 0) {
       consider(key, value, key);
     }
   }
-  return { source: basename(file), lines, notCompared, policy, compared, rejected: report.lines.filter((l) => l.status === 'rejected' || l.status === 'error') };
+  return { source: basename(file), lines, notCompared, policy, compared, rejected: report.lines.filter((l) => l.status === 'rejected' || l.status === 'error'),
+    overridden: report.lines.filter((l) => l.status === 'overridden') };
 }
 
 async function main() {
@@ -113,6 +116,7 @@ async function main() {
   const module = await WebAssembly.compile(readFileSync(resolve(root, 'dist/sim-core.wasm')));
   const r = await configFromLog(findLog(a._[0]), qm, diff, module, Number(a.log ?? 0));
   for (const l of r.rejected) console.error(`warning: diff line ${l.n} ${l.status}: ${l.text} (${l.msg})`);
+  for (const l of r.overridden) console.error(`note: diff line ${l.n} overridden: ${l.text} (${l.msg})`);
   console.error(`${r.source}: ${r.compared} header settings compared with ${a.diff}; ${r.lines.length} differ${r.policy.length ? `; differ but kept by sim policy: ${r.policy.join('; ')}` : ''}; ${r.notCompared.length} not compared${r.notCompared.length ? `: ${r.notCompared.join('; ')}` : ''}`);
   const text = [
     `# Settings the log header records and ${a.diff} does not reproduce (tools/config-from-log.mjs).`,

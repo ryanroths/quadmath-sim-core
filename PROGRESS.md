@@ -8308,3 +8308,30 @@ Numbers are main → B.
 ### If it ships
 
 It needs a sim-core release (v0.7.0), quadmath with `PHYS_VER` 6 → 7, and the leaderboard Worker deployed. Nothing was deployed.
+
+## 2026-11-16 | Phase 2 | a pasted diff that sets rpm_filter_harmonics loads, with a note
+
+Owner, 2026-11-16: a pasted diff that sets `rpm_filter_harmonics` to any value must still load. The policy overrides it to 0 and returns a non-blocking note; the rest of the diff applies unchanged.
+
+### The change
+
+- **A new line status, `overridden`.** A diff line that sets one of the sim's own settings (`cli-policy.js` `POLICY_SETS`) is no longer `rejected`.
+  - It is not sent to Betaflight. Its `msg` is the policy's `note`: "rpm_filter_harmonics set to 0 in the sim (1 kHz loop can't track whoop motor rpm)".
+  - The report counts these lines under `overridden` and lists each note once under `notes`.
+  - The policy still sets 0 after the diff and reads it back after the boot, as before.
+- **Before,** the line was `rejected`. quadmath's CLI import counted it as "refused".
+- **Nothing in flight changes.** The line was never sent to Betaflight, before or now, and the sim sets 0 either way. The wasm is unchanged.
+
+### Tests
+
+- **config-policy 12:** the line is `overridden` with the note, `notes` lists it once, and nothing is refused.
+- **config-policy 13 (new):**
+  - The diff: the owner's Air65 `diff all` (Betaflight 4.5.0), with `set rpm_filter_harmonics = 3` inserted where Betaflight prints it (`cli/settings.c` order: after `vcd_video_system`, before `craft_name`).
+  - It loads with the line overridden. Every other line gets the verdict it gets without it: 99 applied, 22 refused, 39 not in the target, the same counts as without it.
+  - The saved config image is byte-identical to the one without the line.
+- **The verdict count** in config-policy and config-count now includes `overridden`: applied + rejected + errors + comments + overridden = lines in.
+- **The headless-Chrome tests** pass on this branch:
+  - node-vs-chrome: 12 scenarios identical, 0 console errors.
+  - fly: PASS. Its poll-rate row is skipped headless, as designed.
+
+Nothing was deployed.

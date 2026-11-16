@@ -15,7 +15,7 @@ const classDiff = await readFile(new URL('configs/65mm-air65-ryfly-1219s.diff', 
 
 function accounted(report, inputText) {
   const n = String(inputText).split('\n').length;
-  assert.equal(report.applied + report.rejected + report.errors + report.comments, n, 'every input line has a verdict');
+  assert.equal(report.applied + report.rejected + report.errors + report.comments + report.overridden, n, 'every input line has a verdict');
 }
 
 const ms = (core, t) => core.step(Math.round(t * core.loopHz / 1000));
@@ -241,24 +241,65 @@ ${extra}`);
 }
 
 // 12. The sim's own settings (cli-policy.js POLICY_SETS): a diff line that
-//     sets one is rejected with the reason, the sim's value is in force after
+//     sets one is overridden, not sent to Betaflight, with the policy's note
+//     in the line and once in report.notes; the sim's value is in force after
 //     the boot with or without such a line, and the report lists it.
 //     Bidirectional DShot is left to the diff.
+const HARMONICS_NOTE = "rpm_filter_harmonics set to 0 in the sim (1 kHz loop can't track whoop motor rpm)";
 for (const text of ['set dshot_bidir = ON\nset rpm_filter_harmonics = 3', 'set dshot_bidir = ON']) {
   const core = await SimCore.load(module);
   const r = core.configure(text);
   accounted(r, text);
   const line = r.lines.find((l) => l.text.startsWith('set rpm_filter_harmonics'));
   if (line) {
-    assert.equal(line.status, 'rejected');
-    assert.match(line.msg, /RPM filter is off in the sim/);
+    assert.equal(line.status, 'overridden');
+    assert.equal(line.msg, HARMONICS_NOTE);
   }
+  assert.equal(r.overridden, line ? 1 : 0);
+  assert.deepEqual(r.notes, line ? [HARMONICS_NOTE] : []);
+  assert.equal(r.rejected, 0, 'nothing refused');
   assert.equal(r.lines[0].status, 'applied', 'dshot_bidir is the diff\'s');
   assert.deepEqual(r.policy.map((p) => `${p.key} = ${p.value}`), ['rpm_filter_harmonics = 0']);
   assert.equal(core.get('rpm_filter_harmonics'), '0');
   assert.equal(core.get('dshot_bidir'), 'ON');
   assert.equal(core.fc.rpmFilter, false);
-  console.log(`policy: ${text.replace('\n', '; ')}: ${line ? `${line.status} (${line.msg})` : 'nothing to reject'}; rpm_filter_harmonics ${core.get('rpm_filter_harmonics')}, dshot_bidir ${core.get('dshot_bidir')}`);
+  console.log(`policy: ${text.replace('\n', '; ')}: ${line ? `${line.status} (${line.msg})` : 'nothing to override'}; rpm_filter_harmonics ${core.get('rpm_filter_harmonics')}, dshot_bidir ${core.get('dshot_bidir')}`);
+}
+
+// 13. A real Betaflight 4.5 diff that sets rpm_filter_harmonics loads (owner,
+//     2026-11-16): the owner's Air65 diff all (4.5.0, configs/air65-ryfly-
+//     2026-10-23.txt) with 'set rpm_filter_harmonics = N' where Betaflight
+//     prints it (cli/settings.c order: after vcd_video_system, before
+//     craft_name). N = 3 is the owner's case; a diff prints the default 3
+//     only from a build whose default differs, a dump always does. N = 2 is
+//     what a 4.5 diff prints for a pilot who changed it. The line is
+//     overridden with the note, the RPM filter is off, and every other line
+//     gets the verdict it gets without the line; the saved config image is
+//     the one without the line, byte for byte.
+const realDiff = await readFile(new URL('configs/air65-ryfly-2026-10-23.txt', root), 'utf8');
+const plainCore = await SimCore.load(module);
+const plain = plainCore.configure(realDiff);
+for (const n of ['3', '2']) {
+  const lines = realDiff.split('\n');
+  const at = lines.findIndex((l) => /^set craft_name\b/.test(l));
+  assert.ok(at > 0 && /^set vcd_video_system\b/.test(lines[at - 1]), 'the owner\'s diff prints vcd_video_system, then craft_name');
+  const withLine = [...lines.slice(0, at), `set rpm_filter_harmonics = ${n}`, ...lines.slice(at)].join('\n');
+  const core = await SimCore.load(module);
+  const r = core.configure(withLine);
+  accounted(r, withLine);
+  const line = r.lines[at];
+  assert.equal(line.text, `set rpm_filter_harmonics = ${n}`);
+  assert.equal(line.status, 'overridden');
+  assert.equal(line.msg, HARMONICS_NOTE);
+  assert.deepEqual(r.notes, [HARMONICS_NOTE]);
+  const others = r.lines.filter((l, i) => i !== at).map((l) => `${l.text} -> ${l.status} ${l.msg}`);
+  assert.deepEqual(others, plain.lines.map((l) => `${l.text} -> ${l.status} ${l.msg}`), 'every other line as without it');
+  assert.deepEqual([r.applied, r.rejected, r.errors, r.comments], [plain.applied, plain.rejected, plain.errors, plain.comments]);
+  assert.ok(r.applied > 0, 'the owner\'s diff applies');
+  assert.equal(core.get('rpm_filter_harmonics'), '0');
+  assert.equal(core.fc.rpmFilter, false);
+  assert.deepEqual(core.eeprom, plainCore.eeprom, 'the saved config image is the one without the line');
+  console.log(`real diff + 'set rpm_filter_harmonics = ${n}': loads, ${r.applied} applied as without it (${r.rejected} refused, ${r.errors} not in the target, as without it), the line overridden: ${line.msg}; config image identical; rpm_filter_harmonics ${core.get('rpm_filter_harmonics')}`);
 }
 
 console.log('config-policy: PASS');
