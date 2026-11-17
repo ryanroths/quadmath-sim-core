@@ -8473,9 +8473,9 @@ The X3 freestyle replay, yaw lag at 50 % (log 3.7 ms, rise 19.3 ms, overshoot 1.
   - Both terms are unmeasured: `kqRatio` is quadmath's feel constant ("tuned for yaw authority"), izz a uniform box (the pendulum measurement is pending, 2026-10-24).
 - **Not changed:** the fix is an airframe value that moves the X3 yaw rows and wants a measurement (a pendulum izz, or kq from the log's rpm and yaw rate).
 
-### If it ships
+### Not released (owner, 2026-11-17)
 
-sim-core v0.9.0, quadmath `PHYS_VER` 7 → 8 (every board resets), the Coach Rig lines and Rig laps re-flown, the leaderboard Worker deployed. Nothing is tagged, vendored or deployed yet.
+No go: the owner A/B-flew it in quadmath against v0.8.0 and felt no difference. Merged to main as groundwork (PR #23): no tag, no quadmath PR, `PHYS_VER` stays 7. It rides with the next sim-core release that changes air feel, which takes the `PHYS_VER` bump and board reset for both.
 
 ### Left
 
