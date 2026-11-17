@@ -51,7 +51,7 @@ const TESTS = [
   ['P2 wall hits (owner, 2026-10-28): 2, 4, 8 m/s at 15, 30, 60, 90 deg, flown and motors off; the wall restitution head on, glances keep their speed along the wall', 'tests/node/wall-hit.test.mjs'],
   ['P2 wall hits, the owner\'s target: upright after every hit under 60 deg and 6 m/s (flown)', 'tests/node/wall-hit.test.mjs', ['--target'],
     { skip: 'known failing, issue #15 https://github.com/ryanroths/quadmath-sim-core/issues/15' }],
-  ['P2 landing at zero throttle, armed (owner, 2026-11-13, log 143354): both whoops, a drop and a 3 deg touch, at most one hop of up to 15 mm, at rest by 0.5 s', 'tests/node/landing.test.mjs'],
+  ['P2 landing at zero throttle, armed (owner, 2026-11-13, log 143354): both whoops, a drop and a 3 deg touch in acro, a drop and 22 drifting cuts in angle mode, at most one hop of up to 15 mm, at rest by 0.5 s', 'tests/node/landing.test.mjs'],
   ['P2 fly harness in headless Chrome: a TX16S arms, climbs, disarms, calibrates, keeps the link guard; console clean', 'tests/browser/fly.test.mjs'],
 ];
 

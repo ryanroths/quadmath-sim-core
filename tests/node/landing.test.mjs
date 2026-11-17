@@ -4,13 +4,38 @@
 // 1 cm (about 100 ms airborne: g t^2 / 8 = 12 mm), comes down again at
 // 57.71 s and stays down until the disarm at 57.72 s.
 //
-// Each whoop, on its owner's diff, in acro (the log's mode: only the ARM box
-// on), hovers at 0.3 m (CG) under an altitude hold until air mode latches,
-// then the throttle is cut and the sticks are centred. Two landings:
+// Each whoop, on its owner's diff, hovers at 0.3 m (CG) under an altitude hold
+// for 2.5 s, until air mode latches, then the throttle is cut and the sticks
+// are centred. In acro (the log's mode: only the ARM box on), two landings:
 //   - drop: straight down from the hover (the log's landing);
 //   - touch: 300 ms after the cut the quad is put just above the floor at 3
 //     degrees of pitch, sinking at 0.05 m/s (the scout's case, the gentlest
 //     landing a pilot makes).
+// In angle mode (owner, 2026-11-16: the angle-mode target, the same as acro's):
+//   - drop: the Air65's, as in acro;
+//   - drift, each whoop: the pitch stick held at 0.25 forward (1625) over the
+//     hover's last 0.6 s, so the quad drifts at the cut (0.18 m/s the Air65,
+//     0.16 m/s the Fractal75: what a hovering pilot has), then at the cut the
+//     throttle is cut and the sticks centred, and angle mode levels the quad
+//     on the way down. The cut comes after 2.50 s of hover and every 30 ms to
+//     2.80 s, 11 cuts a whoop: the altitude hold's small wander moves the
+//     impact, and with it whether the first contact bounces (one hop of 4 to
+//     9 mm, then at rest by 0.1 s) or holds the rims down. When it holds, the
+//     one-tick impact spike reaches Betaflight's attitude estimate (the IMU's
+//     100 Hz sample of a 200 Hz PT1 of the gyro, times 10 ms) at anywhere from
+//     0 to about 7 times its area, the estimate is left 1.4 to 2.2 degrees off
+//     the level quad, and angle mode levels toward that phantom tilt (10 to 14
+//     deg/s of setpoint) with the floor holding the quad; air mode is latched,
+//     so the I-term winds up, the motors split front against rear (up to about
+//     990 against 50) and the quad rocks until the accelerometer corrects the
+//     estimate. On version B (sim-core 0.7.0) the Air65 holds from the 2.62 s
+//     cut on and the Fractal75 at 2.53, 2.62, 2.71 and 2.80 s, at rest 0.74 to
+//     1.01 s after the first contact; one cut alone hits it or misses it.
+//     The cause was the rigid contact's rim ping-pong (the low rims struck
+//     alone, the quad turned through the high rims' gap and back, +0.35 to
+//     -2.64 to +1.92 degrees in single ticks); sim-core 0.9.0's contact
+//     answers every rim the landing meets in the same tick, with each rim's
+//     impact pulse fitted to the log (plant.c footprintContact).
 // It stays armed 3 s from the cut. From the first floor contact:
 //   hops: the lowest of the four duct rims leaving the floor by over 1 mm;
 //   highest: that rim's highest point;
@@ -25,10 +50,14 @@
 // not see: after the touch it reads -3 degrees with the quad level. Acro does
 // not use the estimate.
 //
-// Asserted, every case: at most one hop, no higher than 15 mm (the log's
-// 12 mm and a quarter); at rest within 0.5 s of the first contact (the log is
-// back down at 0.18 s); still armed at the end, so the rest is not a disarm.
-// Reported only: the Air65's drop in angle mode, which the log did not fly.
+// Asserted, every case (the 4 in acro, the angle drop and the 22 drifts): at
+// most one hop, no higher than 15 mm (the log's 12 mm and a quarter); at rest
+// within 0.5 s of the first contact (the log is back down at 0.18 s); still
+// armed at the end, so the rest is not a disarm. The angle drop was reported
+// only, as the log did not fly angle mode; the angle-mode target now covers
+// it, and it is the drift's control: falling level, it rests by 0.1 s.
+// The table gives each case's cut (the hover's length) and its horizontal
+// speed there.
 //
 //   node tests/node/landing.test.mjs
 //
@@ -53,8 +82,12 @@ const MAX_HOP_M = 0.015;
 const REST_BY_S = 0.5;
 const REST_LOW_M = 0.0005, REST_V = 0.01, REST_TURN = 0.05;
 const FRAME_TICKS = 10;         // 10 ms at the 1 kHz tick
+const HOVER_MS = 2500;          // the altitude-held hover before the cut
+const DRIFT_MS = 600;           // drift: the pitch stick over the hover's last 0.6 s
+const DRIFT_PITCH = 1625;       // drift: pitch stick 0.25 forward (1500 + 0.25 x 500)
+const DRIFT_CUTS_MS = Array.from({ length: 11 }, (_, k) => HOVER_MS + 30 * k); // 2.50 s to 2.80 s
 
-async function land(quad, kind, mode) {
+async function land(quad, kind, mode, hoverMs = HOVER_MS) {
   const q = QUADS[quad];
   const plant = JSON.parse(await readFile(new URL(q.airframe, root), 'utf8'));
   const diff = await readFile(new URL(q.diff, root), 'utf8');
@@ -72,14 +105,17 @@ async function land(quad, kind, mode) {
   assert.equal(core.fc.armed, true, `${quad}: armed (flags ${core.fc.armingDisableFlags})`);
   // Altitude hold at HOVER_Z, the throttle stick from height and climb rate.
   let ie = 0;
-  for (let i = 0; i < 2500; i++) {
+  for (let i = 0; i < hoverMs; i++) {
+    if (kind === 'drift' && i === hoverMs - DRIFT_MS) ch[1] = DRIFT_PITCH;
     const s = core.state, e = HOVER_Z - s.pos[2];
     ie += e * 0.001;
     ch[3] = Math.round(1000 + 1000 * Math.max(0, Math.min(1, 0.37 + 0.6 * e - 0.25 * s.vel[2] + 0.3 * ie)));
     tick();
   }
   assert.equal(core.fc.airmode, true, `${quad}: air mode latched in the hover`);
+  const drift = Math.hypot(core.state.vel[0], core.state.vel[1]);
   ch[3] = 1000;
+  ch[1] = 1500;
   const hb = plant.values.hullBelow.value;
   let t = 0;
   if (kind === 'touch') {
@@ -119,24 +155,25 @@ async function land(quad, kind, mode) {
     if (r.low > REST_LOW_M || r.v > REST_V || r.turn > REST_TURN) lastMoving = i;
   });
   const rest = lastMoving === after.length - 1 ? null : (lastMoving + 1) * core.tickUs / 1e6;
-  return { quad, kind, mode, hops, highest, rest, armed: core.fc.armed, motor: core.state.motorOut };
+  return { quad, kind, mode, cut: hoverMs / 1000, drift, hops, highest, rest, armed: core.fc.armed, motor: core.state.motorOut };
 }
 
 const CASES = [
   ['Air65', 'drop', 'acro'], ['Air65', 'touch', 'acro'],
   ['Fractal75', 'drop', 'acro'], ['Fractal75', 'touch', 'acro'],
-  ['Air65', 'drop', 'angle', { report: true }],
+  ['Air65', 'drop', 'angle'],
+  ...['Air65', 'Fractal75'].flatMap((quad) => DRIFT_CUTS_MS.map((cut) => [quad, 'drift', 'angle', cut])),
 ];
 const rows = [];
-for (const [quad, kind, mode, opt = {}] of CASES) rows.push({ ...(await land(quad, kind, mode)), report: !!opt.report });
+for (const [quad, kind, mode, cut] of CASES) rows.push(await land(quad, kind, mode, cut));
 
 const f = (v, d) => (v === null ? 'never' : v.toFixed(d));
-console.log('quad       landing  mode   hops  highest mm  rest s  armed  motors at the end');
+console.log('quad       landing  mode   cut s  drift m/s  hops  highest mm  rest s  armed  motors at the end');
 for (const r of rows) {
-  console.log(`${r.quad.padEnd(10)} ${r.kind.padEnd(8)} ${r.mode.padEnd(6)} ${String(r.hops).padStart(4)}  ${f(r.highest * 1000, 1).padStart(10)}  ${f(r.rest, 3).padStart(6)}  ${String(r.armed).padEnd(5)}  ${r.motor.map((m) => m.toFixed(2)).join(' ')}${r.report ? '   (reported only)' : ''}`);
+  console.log(`${r.quad.padEnd(10)} ${r.kind.padEnd(8)} ${r.mode.padEnd(6)} ${f(r.cut, 2).padStart(5)}  ${f(r.drift, 2).padStart(9)}  ${String(r.hops).padStart(4)}  ${f(r.highest * 1000, 1).padStart(10)}  ${f(r.rest, 3).padStart(6)}  ${String(r.armed).padEnd(5)}  ${r.motor.map((m) => m.toFixed(2)).join(' ')}`);
 }
-for (const r of rows.filter((x) => !x.report)) {
-  const name = `${r.quad} ${r.kind} (${r.mode})`;
+for (const r of rows) {
+  const name = `${r.quad} ${r.kind} (${r.mode}${r.kind === 'drift' ? `, cut at ${f(r.cut, 2)} s` : ''})`;
   assert.ok(r.hops <= MAX_HOPS, `${name}: ${r.hops} hops, the log takes one`);
   assert.ok(r.highest <= MAX_HOP_M, `${name}: a hop of ${f(r.highest * 1000, 1)} mm, the log's is about 12`);
   assert.ok(r.rest !== null && r.rest <= REST_BY_S, `${name}: at rest ${r.rest === null ? 'never' : `at ${f(r.rest, 3)} s`}, by ${REST_BY_S} s after the first contact`);

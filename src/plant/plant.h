@@ -111,7 +111,12 @@ enum {
     // proportion to thrust, at every speed). 2 is rpm squared, evaluated
     // exactly as before the exponent existed
     PB_THRUST_EXP = 54,         // n, 1..3
-    PB_LEN = 55,
+    // Impact pulse (physical model, v0.9.0): a duct rim landing on the floor
+    // below the crash speed takes the world's answer to its speed (the
+    // bounce, or none) as a half-sine of force this long, not in one tick;
+    // the world still holds it on the floor. 0 is the one-tick answer
+    PB_CONTACT_PULSE = 55,      // s
+    PB_LEN = 56,
 };
 
 // The lowest state of charge a physical pack reaches (the last
@@ -219,6 +224,14 @@ bool sc_world_point_in(const double pos[3]);
 bool sc_world_in_solid(const double pos[3]);
 // After the footprint points: floor touch and leave events, and triggers at the CG.
 void sc_world_after_points(const double com[3], bool floorHit);
+// The gap (m) from a module-frame point straight down to the floor or the
+// highest box top under it among the boxes sc_world_near found this tick, or
+// INFINITY when neither is within reach (m).
+double sc_world_gap_below(const double pos[3], double reach);
+// The speed out (m/s) the floor or a box top gives a footprint point arriving
+// at impactMs (m/s): its bounce, or 0 for a soft landing; *crashed says that
+// speed is a crash.
+double sc_world_support_bounce(double impactMs, double bounceScale, double crashScale, bool *crashed);
 // The CG's height above the floor when resting on it (edge state after a
 // pose or a floor move).
 void sc_world_set_rest_height(double metres);

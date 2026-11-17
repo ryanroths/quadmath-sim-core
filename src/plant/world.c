@@ -169,7 +169,8 @@
  *     vertical face answers a footprint point, or a duct's side point
  *     (plant.c: each rim's point furthest toward a face, met only by faces
  *     with that normal, among the boxes sc_world_near found near the quad),
- *     with the airframe's wall restitution along its normal and nothing
+ *     with the airframe's wall restitution along its normal (a duct's side
+ *     slower than SIDE_REST_MIN_WU into it, none: v0.9.0) and nothing
  *     taken along it here; plant.c's sweeps give it Coulomb friction. In
  *     sim.html every tick against a wall kept 0.82 of the speed along it
  *     (0.55 on a crash), which stopped a quad pressed on a wall in a few
@@ -199,6 +200,7 @@
 #define CONTACT_FACES 8
 #define CONTACT_GAP_US 50000        // a face touched again within 50 ms: the same contact
 #define SIDE_CREEP_WU (1e-3 * WS)   // 1 mm: a duct's side point's overlap from before the tick, moved out a tick
+#define SIDE_REST_MIN_WU (0.1 * WS) // 0.1 m/s: a duct's side slower into a wall does not bounce (a resting contact)
 
 #define SC_WORLD_BOX_CAP 16384
 #define SC_WORLD_TRIGGER_CAP 256
@@ -1022,7 +1024,15 @@ static uint32_t resolvePoint(double cp[3], double cv[3], const double start[3], 
             scrub = true;
             otherHit = true;
         } else if (!pad && wallRest >= 0 && bestAxis != 1) {
-            crashed = wallBounce(cv, n, into, wallRest, crashScale);
+            // A duct's side slower than SIDE_REST_MIN_WU into the wall does
+            // not bounce (v0.9.0): propped on a wall after a hit, motors off,
+            // a duct leaning on the face was thrown off it at 0.3 of a few
+            // mm/s, fell back the next tick and was thrown off again (the
+            // wall in contact every other tick), and the quad ratcheted down
+            // the wall for 4 to 7 s after the disarm. The footprint's points
+            // bounce as before.
+            const bool side = (faceMask & ALL_FACES) != ALL_FACES;
+            crashed = wallBounce(cv, n, into, side && !(into > SIDE_REST_MIN_WU) ? 0 : wallRest, crashScale);
             wallHit = true;
         } else {
             crashed = ductHit(cv, omega, n, into, top, bounceScale, crashScale, spinScale);
@@ -2007,6 +2017,41 @@ bool sc_world_in_solid(const double pos[3])
         }
     }
     return false;
+}
+
+// The speed out (m/s, along the up normal) the floor or a box top gives a
+// footprint point arriving at impactMs: ductHit's on the floor (no spin
+// kick), or nothing for a soft landing; *crashed says the speed is a crash.
+double sc_world_support_bounce(double impactMs, double bounceScale, double crashScale, bool *crashed)
+{
+    const double into = impactMs * WS;
+    *crashed = into > CRASH_SPEED_WU * crashScale;
+    if (!(into > HARD_LANDING_WU)) {
+        return 0;
+    }
+    const double rest = *crashed ? 0.10 : (0.24 + 0.11 * BOUNCE_STR * bounceScale) * 0.55;
+    return rest * impactMs;
+}
+
+// The gap (m) from a footprint point (module frame) straight down to the
+// floor plane (no pad) or the highest box top under it, among the boxes
+// sc_world_near found this tick; INFINITY when neither is within reach. A box
+// top under another box is never the highest under a point outside both, so
+// no seam test is needed.
+double sc_world_gap_below(const double pos[3], double reach)
+{
+    double w[3];
+    mod2world(pos, w);
+    const double lo = w[1] - reach * WS;
+    double top = floorZ * WS;
+    for (int at = 0; at < nearCount; at++) {
+        const scBox_t *b = &boxes[nearList[at]];
+        if (w[0] >= b->min[0] && w[0] <= b->max[0] && w[2] >= b->min[2] && w[2] <= b->max[2] && b->max[1] <= w[1]
+            && b->max[1] > top) {
+            top = b->max[1];
+        }
+    }
+    return top >= lo ? (w[1] - top) / WS : INFINITY;
 }
 
 void sc_world_after_points(const double com[3], bool floorHit)
