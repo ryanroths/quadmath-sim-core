@@ -8341,3 +8341,145 @@ Nothing was deployed.
 The 2026-11-13 entry says the IMU's task runs at 100 Hz. In angle and horizon mode Betaflight runs TASK_ATTITUDE at the acc rate ÷ imu_process_denom, which is 500 Hz here (`fc/core.c:1003-1006`). The 100 Hz applies only in acro.
 
 The angle-mode wind-up that entry describes comes from the rigid contact solve's rim-to-rim ping-pong on a landing: ±2–3° in single ticks, which those attitude samples catch. See branch `spike/angle-floor-windup` (PROGRESS, 2026-11-16).
+
+## 2026-11-17 | Phase 2 | v0.9.0 contact: every rim in the same tick, the impact pulse fitted to log 143354, the wall creep
+
+The owner's release: (1) the contact solver answers every rim a landing meets in the same tick, so a near-level landing no longer swings ±2° tick to tick, the angle-mode floor wind-up's cause (2026-11-16); (2) then the contact fitted to log 143354's impact, about 4–6 g over tens of ms, not under 2 ms, a hop of about 12 mm. No Betaflight patch and no gyro spreading: the gyro reads the attitude's own per-tick rate, as crash-flip requires. Branch `contact/same-tick-solver` off main (v0.8.0, 7ff222e); the spike's angle-mode cases are now `tests/node/landing.test.mjs`'s. No #20 sub-stepping.
+
+### 1. Every rim in the same tick (plant.c footprintContact)
+
+- **Speculative rows.** While a footprint point stands on the floor or a box top, every other footprint point within 10 mm above one (`SPEC_REACH`; world.c `sc_world_gap_below`) is one more vertical row in the sweeps: no push, no friction, no flags or events, never pulling.
+  - A point whose speed down closes its gap within the tick meets the surface in this landing: it gets the bounce the world gives that speed (world.c `sc_world_support_bounce`), as the rims that struck do.
+  - The rest may come down no faster than closes the gap in a tick (vn ≥ −gap / dt).
+  - Not in free fall: a row there takes the speed a tick before the landing with no bounce (the Air65 drop's hop went 8.6 → 3.0 mm).
+  - A first version gave the high rims only vn ≥ −gap / dt: they came on down while the struck rims bounced, and the quad rocked to −1.08° (Air65 cut 2.62 s, at rest 1.45 s).
+- **The swing.** Over the 22 angle-mode drifts, in the 50 ms after the first floor contact:
+
+  | | v0.8.0 | v0.9.0 |
+  |---|---|---|
+  | largest tick-to-tick turn, Air65 / Fractal75 | 2.99° / 2.93° | 0.00° / 0.00° |
+  | peak tilt rate | 3,065 / 3,004 °/s | 0 / 1 °/s |
+
+- Alone (rigid floor), these rows pass 27 of 27 landing cases; v0.8.0 passes 16 (11 of the 22 drifts fail).
+
+### 2. The impact pulse (airframe `contactPulse`)
+
+**The log's impact** (log 0, 57.534 s, after about 0.1 s of free fall at zero throttle):
+- accSmooth |a| peaks at 6.38 g and is above 2 g for 17.6 ms.
+- It is Betaflight's 25 Hz accelerometer PT2 (`acc_lpf_hz` 25) of an IMU that saturates at 16 g (`acc_1G` 2048).
+- A half-sine of force through that clip and filter fits it at 6.5 ms, 27 g, 1.11 m/s (rms 0.30 g). Unclipped it fits 8.5 ms, 15.6 g, 0.83 m/s. The second impact, 0.18 s later, fits 5.0 ms.
+- So the contact itself lasts about 6.5 ms. The tens of ms are the filter.
+
+**v0.8.0's contact** answers in one tick: 275 g on the test's drop (2.28 m/s).
+
+**The change.** A duct rim that lands on the floor:
+- at 0.2 m/s (`PULSE_MIN`) or faster and below the crash speed,
+- from a tick it did not stand on anything,
+- within one pulse of the footprint's first touch after standing on nothing (`sinceAir`),
+
+takes the world's answer to its speed (its bounce, or none for a soft landing) over `contactPulse`, not in the tick. Its row steers its speed along the normal from the speed it arrived at to the speed out along a half-sine of force. The world still holds it on the floor: nothing goes into it, so every "never under the floor" guard stands (plant-world 2, 19, 43). Crashes, box tops, the canopy, the ducts' sides and the hull keep the one-tick answer.
+
+**Air65 6.5 ms (medium); Fractal75 the same (low, flagged: its log has no landing from free fall).**
+
+**The fit.** The log's impact replayed (Air65, owner diff, acro, air mode latched, motors spun down, posed 0.5 mm above the floor at 1.1 m/s, the soft landing quadmath's world gives that speed):
+
+| | peak raw | through the 16 g clip + PT2: peak | > 2 g | rms vs log | sim's own accSmooth (128 g range) |
+|---|---|---|---|---|---|
+| log | (27 g fitted) | 6.38 g | 17.6 ms | | |
+| v0.8.0 (one tick) | 113 g | 1.63 g | 0 ms | 2.30 g | 9.39 g |
+| v0.9.0, 6.5 ms | 27.9 g | 6.66 g | 20 ms | 0.51 g | 9.20 g |
+
+- The test's drop (2.28 m/s) is now 16 → 45 → 62 → 66 → 55 → 32 → 5 g over 7 ticks, where it was 275 g in one.
+- **The sim's accelerometer saturates at 128 g** (`acc_1G` 256), the real IMU at 16 g. So the sim's own accSmooth reads higher than the log's on a hard impact (9.2 g against 6.4 g here). The table compares through the log's clip. The sensor is not changed here.
+- **The hop.** Replayed level at the log's speed the quad does not leave the floor: quadmath's world makes 1.1 m/s a soft landing. In the log the impact looks inelastic too (Δv about the impact speed). The quad leaves the floor about 70 ms later, while air mode drives the motors to 0.7–0.9 of the weight (thrust from the logged eRPM at the measured kt). That is after a corner-first hit, gyro to −1,160 °/s roll.
+  - Replays tilted 4° / 2° hop 7 mm, with gyro peaks of 870 / 760 °/s.
+  - The test's drop hops 9.0 mm (v0.8.0: 8.6).
+
+**Found on the way:**
+- A pinch's speed out of 1e-19 m/s (rounding, two rims landing together) took one rim of a level pair out of its pulse and pitched the quad. That pitch made plant-world 31's control slam at 2.69 m/s, a crash. Speeds out under 1 µm/s are now rounding (`PINCH_MIN`). Case 31's control then lands the far rims at 2.42–2.53 m/s for any pulse length, under the 2.65 m/s crash speed.
+- Pulses on box tops put a rim 11.5 µm into a plate (plant-world 43): floor only.
+- A pulse on every touch held a quad on the floor at 0.12 m/s down and wobbling at 2.8 rad/s for good, motors off, as rims rocked off and back: hence the landing window. The window also needs something standing, or the rear rims of a drop started a tick early in free fall.
+
+### 3. The wall creep (#15)
+
+Propped inverted on the wall after a hit, the quad crept down it long after the disarm:
+- **v0.8.0:** 4.14 s for 8 m/s head on, 5.64 s for 8 m/s at 30°, 6.74 s for 4 m/s at 30°.
+- **Two causes:**
+  - **The duct leaning on the wall chattered.** The contact was on every other tick (flags 3, 1, 3, 1): the 0.3 restitution threw it off at a few mm/s and it fell back.
+  - **The floor's answer is a drag with no static part** (0.85 of the speed along it a tick). So a steady lean slid the rims out from the wall at 6–15 mm/s.
+- **The change:**
+  - world.c `SIDE_REST_MIN_WU`: a duct's side slower than 0.1 m/s into a wall does not bounce. The footprint's points bounce as before (with them too, plant-world 36's 1 mm ledge let a rim 27 µm past). A 2 cm/s threshold instead lost plant-world 26's T-join press (41 ms on the wall, not 2.7 s).
+  - plant.c `STICK_SPEED`: a footprint point on the floor or a box top slower than 2 cm/s along it takes the walls' Coulomb friction toward no slip, at most `wallFriction` (0.2) times its push. Faster, the world's answer is as before. 5 cm/s settled the creep sooner but crash-flip then rested inverted.
+- **Time from the disarm to rest** (the test's rest: under 0.01 m/s and 0.05 rad/s), flown:
+
+  | hit | v0.8.0 | v0.9.0 |
+  |---|---|---|
+  | 8 m/s 90° (head on) | 4.14 s | 1.13 s |
+  | 8 m/s 30° | 5.64 s | 1.36 s |
+  | 4 m/s 30° | 6.74 s | 1.69 s |
+  | 8 m/s 15° | 1.01 s | 1.20 s |
+  | every other case (16 flown and motors off) | under 0.6 s | under 0.6 s |
+
+  All 24 rest within the test's 8 s.
+
+### Must-pass, on the release build (dist sha256 efdfee53…)
+
+- **landing.test.mjs: 27 of 27.**
+  - Acro: drop and touch, both whoops. Angle: the drop and the 22 drifts (11 cuts × 2 whoops).
+  - Every case at most 1 hop, at most 9.0 mm, at rest 0.038–0.118 s after the first contact, armed.
+  - v0.8.0: 16 of 27.
+- **crash-flip: ok.** Its rate to 3,014 °/s (2,929); its floor ticks 3,950 (5,031).
+- **wall-hit: ok,** both modes. The creep is in the table above.
+- **The node guards: all pass.**
+  - gate-arm-motor's B2 fails only in an uncommitted tree (`git -C vendor/betaflight status` reads the superproject's changes in a worktree with no submodule). It is rerun on the commit.
+  - Tests changed by design:
+    - abi-surface: the new slot, `contactPulse` after `thrustExponent`.
+    - fractal75: the block is 56 values.
+    - gate-plant: its parity airframe carries `contactPulse` 0.
+    - landing: the spike's angle-mode cases asserted.
+- **Headless Chrome:** node-vs-chrome 12 scenarios identical, 0 console errors; fly PASS (its poll-rate row skipped headless, as designed).
+- **X3 and step metrics: no row moves.** gate-plant's X3 section prints identically to v0.8.0 (freestyle replay: roll / pitch / yaw lag 5.3 / 6.6 / 0.4 ms against 3.8 / 5.2 / 3.7; every feel band as before).
+  - Moved, reported rows only: the X4 turtle (180° at 112.0 ms, mean 1,847 °/s; was 113.0 ms, 1,063 °/s), and the gate's floor-start checks in the last digit (−0.0 against 0.0).
+  - The open-air code is unchanged. Pure-air traces after a pose still differ in the last bits: the boot rest leaves body rates of 1e-14 rad/s (v0.8.0) or 1e-16 (v0.9.0, the static friction), and a pose keeps the body rate.
+- **CPU** (Air65 on the owner's diff, Betaflight + plant, µs a tick, wall clock, 60,000 ticks a run, median of 9 runs interleaved with v0.8.0 on the same machine; the 16.8 / 26.9 of 2026-11-16 were a coarser timer on a different load):
+
+  | | v0.8.0 | v0.9.0 | change |
+  |---|---|---|---|
+  | in the air (a hover held at 1 m) | 13.97 | 14.09 | +0.12 (+0.9 %) |
+  | on the floor (armed, zero throttle) | 22.36 | 23.70 | +1.34 (× 1.06) |
+
+  - **The floor** is inside the 2× the owner allows.
+  - **The air.** The new code does not run in a tick in the open: no contact, no pulse going, the CG more than 85 mm up.
+    - Five more row slots alone cost nothing: v0.8.0's source with them reads 14.04 against 14.10.
+    - Over four batches the air reads +0.08 to +0.18 µs, inside v0.8.0's own batch spread (13.97–14.17). That is the larger function, not work done.
+    - Reported as measured: by this timer flight cost is up 0.1–0.2 µs a tick.
+
+### Yaw step lag (measured, not changed)
+
+The X3 freestyle replay, yaw lag at 50 % (log 3.7 ms, rise 19.3 ms, overshoot 1.3 %, settle 23.3 ms). Scratch builds, nothing committed:
+
+| variant | yaw lag | rise | overshoot | settle | roll / pitch lag |
+|---|---|---|---|---|---|
+| v0.9.0 | 0.4 ms | 13.7 ms | 1.4 % | 17.2 ms | 5.3 / 6.6 |
+| rotor reaction torque (J dω/dt) off | 5.0 | 13.7 | 25.3 % | 68 | 5.3 / 6.6 |
+| izz × 2 | 2.4 | 16.7 | 2.3 % | 20.8 | 5.4 / 6.6 |
+| kqRatio 0.72 → 0.36 | 2.5 | 17.2 | 2.0 % | 21.8 | 5.3 / 6.6 |
+| izz × 2 and kqRatio 0.36 | 6.3 | 37.5 | 5.1 % | 46.7 | 5.4 / 6.6 |
+| kqRatio × 2 | 0.0 | 12.2 | 1.3 % | 15.7 | 5.3 / 6.6 |
+| tau × 2 (rotor J × 2) | 0.0 | 12.7 | 1.5 % | 16.2 | 5.9 / 7.2 |
+
+- **The lag's floor is the rotor reaction torque.** J is set from the 9.5 ms motor lag (`tau`), which makes J dω/dt at a step about the size of the drag torque the rotors settle to. So yaw torque steps at once: 0.4 ms. Without it the lag is 5 ms but the yaw overshoots 25 %. It is physics and stays.
+- **The rest is yaw authority over inertia.** The sim's yaw torque per unit izz is about 2–3 times what the log shows: a half gives 2.4–2.5 ms with rise and settle near the log's; a quarter overshoots it.
+  - Both terms are unmeasured: `kqRatio` is quadmath's feel constant ("tuned for yaw authority"), izz a uniform box (the pendulum measurement is pending, 2026-10-24).
+- **Not changed:** the fix is an airframe value that moves the X3 yaw rows and wants a measurement (a pendulum izz, or kq from the log's rpm and yaw rate).
+
+### If it ships
+
+sim-core v0.9.0, quadmath `PHYS_VER` 7 → 8 (every board resets), the Coach Rig lines and Rig laps re-flown, the leaderboard Worker deployed. Nothing is tagged, vendored or deployed yet.
+
+### Left
+
+- Box tops keep the one-tick answer (with the same-tick rows).
+- The sim's accelerometer range (128 g against the IMU's 16 g).
+- The yaw authority above.
+- #15's duct-top rims and the measured CG.
