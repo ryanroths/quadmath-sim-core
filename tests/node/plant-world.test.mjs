@@ -465,16 +465,19 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
 }
 
 // 18. Seams: sliding over two flush box tops is one surface, and a table
-// against a taller box holds the quad on the table.
+// against a taller box holds the quad on the table. The far box runs to x 5
+// (v0.9.0: was 3): under the floor's Coulomb friction a 5 m/s landing slides
+// about 1.4 m in the 300 ms, and off a box ending at 3 it tipped over the
+// far edge; under quadmath's drag of 0.85 a tick it had stopped in cm.
 {
-  const flushBoxes = [{ min: [1, -1, 0], max: [2, 1, 0.5], id: 10 }, { min: [2, -1, 0], max: [3, 1, 0.5], id: 11 }];
+  const flushBoxes = [{ min: [1, -1, 0], max: [2, 1, 0.5], id: 10 }, { min: [2, -1, 0], max: [5, 1, 0.5], id: 11 }];
   const flush = await flight({ floorZ: 0, boxes: flushBoxes });
   flush.teleport({ pos: [1.97 - REACH, 0, 0.5005 + REST], vel: [5, 0, -0.5] });
   flush.events();
   flush.step(300);
   const fs1 = flush.state;
   const fev = kinds(flush.events(), 'contact');
-  const one = await flight({ floorZ: 0, boxes: [{ min: [1, -1, 0], max: [3, 1, 0.5], id: 10 }] });
+  const one = await flight({ floorZ: 0, boxes: [{ min: [1, -1, 0], max: [5, 1, 0.5], id: 10 }] });
   one.teleport({ pos: [1.97 - REACH, 0, 0.5005 + REST], vel: [5, 0, -0.5] });
   one.step(300);
   console.log(`flush tops: x ${fs1.pos[0].toFixed(6)} z ${fs1.pos[2].toFixed(4)} after 300 ms (one box: x ${one.state.pos[0].toFixed(6)}), contacts ${JSON.stringify(fev.map((e) => [e.box, Number(e.impactMs.toFixed(3)), e.crashed]))}`);
@@ -1752,7 +1755,12 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   assert.ok(on(crash.rims[0]) && on(crash.rims[1]), 'the crash is rims 0 and 1');
   assert.ok(crash.k - first.k < 50, 'inside the same-contact gap: only the upgrade reports it');
 
-  const soft = await land(-1.6, 0);
+  // 1.35 m/s (v0.9.0: was 1.6): under the floor's Coulomb friction rims 2
+  // and 3 slide out as they land where quadmath's drag of 0.85 a tick held
+  // them, the quad rolls faster, and from 1.6 m/s rims 0 and 1 met the floor
+  // at 2.75 m/s, over the crash speed. From 1.35 they land at 2.43, the 0.22
+  // m/s under it that 1.6 gave before.
+  const soft = await land(-1.35, 0);
   console.log(`control: contacts ${soft.contacts.map(show).join(', ')}; rims 0 and 1 down at ${soft.high?.k} ms, ${soft.high?.speed.toFixed(3)} m/s, fault ${soft.fault}`);
   assert.equal(soft.fault, 0);
   assert.ok(soft.contacts.length === 1 && !soft.contacts[0].crashed && on(soft.contacts[0].rims[2]) && on(soft.contacts[0].rims[3]), 'one contact, rims 2 and 3, not a crash');
@@ -1943,9 +1951,14 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   // part from the floor-plane box's by 18 um over the 3 s (26 um at 0.5; equal
   // to the micrometre at 0.3 and below): a contact at the foot that only
   // shows once the wall's Coulomb cap binds, open (PROGRESS.md 2026-11-23).
-  // The grounding rule this checks is checked at the friction it was tuned at.
+  // The floor's Coulomb friction (floorFriction 0.2 sliding as well as
+  // static, 2026-11-23) shows it too: 60 um over the 3 s. The grounding rule
+  // this checks is checked at the friction it was tuned at (2026-10-23: the
+  // walls 0.2, the floor quadmath's drag, floorFriction 0).
+  const tuned = AS_TUNED(air65);
+  tuned.values = { ...tuned.values, floorFriction: { ...tuned.values.floorFriction, value: 0 } };
   for (const lift of [0, 6e-6, 20e-6, 50e-6, 99e-6]) {
-    const core = await flight({ floorZ: 0, boxes: [{ min: [2, -1, lift], max: [2.3, 1, 0.5], id: 5 }] }, AS_TUNED(air65));
+    const core = await flight({ floorZ: 0, boxes: [{ min: [2, -1, lift], max: [2.3, 1, 0.5], id: 5 }] }, tuned);
     core.teleport({ pos: [1.995 - sideLead(pq, [1, 0, 0])[0], 0, below], quat: pq, vel: [0.5, 0, 0] });
     core.events();
     core.motorOverride(-1, D(0.33));

@@ -10,8 +10,13 @@
 //   - with no pack a level drop rests level, as before;
 //   - with the pack (flat, centred) it sits on the pack, the ducts packDrop
 //     off the floor, no point under the floor, at rest within 2 s;
-//   - a skid landing (1 m/s down, 3 m/s forward) pitches the quad further
-//     with the pack than without (the pack under the CG trips it);
+//   - a skid landing (1 m/s down, 3 m/s forward) slides as far with the pack
+//     as without, and neither tips: the floor's friction is Coulomb
+//     (floorFriction 0.2, 2026-11-23), so it does not depend on what touches,
+//     and its moment about the CG (mu times the CG's height over the floor)
+//     is far inside the pack's half length. (Under quadmath's drag of 0.85
+//     of the speed a tick, the pack tripped the skid: 19.3 degrees, 3.2
+//     without.);
 //   - a level 2 m/s drop onto the pack takes the impact pulse (contactPulse):
 //     its peak specific force is below the one-tick answer's (contactPulse 0).
 //
@@ -94,7 +99,8 @@ const skidBare = await drop(bare, { vel: [3, 0, -1], ms: 1500 });
 const skidPack = await drop(packed, { vel: [3, 0, -1], ms: 1500 });
 const slide = (r) => r.end.pos[0] - r.trace[0].pos[0];
 console.log(`skid landing 1 m/s down, 3 m/s forward, motors off: no pack tips at most ${pitchMax(skidBare).toFixed(1)} deg, slides ${slide(skidBare).toFixed(3)} m; the example pack tips at most ${pitchMax(skidPack).toFixed(1)} deg, slides ${slide(skidPack).toFixed(3)} m, ends ${tiltDeg(skidPack.end.quat).toFixed(1)} deg tilted`);
-assert.ok(pitchMax(skidPack) > pitchMax(skidBare) + 1, 'the pack under the CG trips a skid landing');
+assert.ok(Math.abs(slide(skidPack) - slide(skidBare)) < 0.02 * slide(skidBare), 'a skid slides as far on the pack as on the ducts (Coulomb)');
+assert.ok(pitchMax(skidPack) < 1 && pitchMax(skidBare) < 1, 'neither tips on a skid: mu x the CG height is inside the base');
 
 // The pulse on the pack's corners.
 const peak = (r) => Math.max(...r.trace.slice(0, 60).map((x) => x.az)) / G;

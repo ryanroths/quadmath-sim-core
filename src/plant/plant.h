@@ -124,10 +124,11 @@ enum {
     // PB_WALL_RESTITUTION. Below 0: quadmath's ductHit restitution (0.24 +
     // 0.11 x 0.75 x bounceScale, x 0.55 on the floor and box tops), as before
     PB_CONTACT_REST = 56,       // -1, or 0..1
-    // The floor's static friction (physical model, v0.9.0): a footprint point
-    // on the floor or a box top slower than STICK_SPEED along it takes
-    // Coulomb friction at most this times its push (before v0.9.0, the wall
-    // friction)
+    // The floor's friction (physical model, v0.9.0): a footprint point on the
+    // floor or a box top takes Coulomb friction at most this times its push,
+    // toward no slip when slower than STICK_SPEED along it, else against its
+    // slip; in place of quadmath's drag of 0.85 of the speed a tick. 0: the
+    // world's answer (the parity model)
     PB_FLOOR_FRICTION = 57,     // mu, >= 0
     // The pack (physical model, v0.9.0): its underside as four more contact
     // points, the corners of a packLength x packWidth rectangle centred

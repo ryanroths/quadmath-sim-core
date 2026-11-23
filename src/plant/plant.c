@@ -61,7 +61,7 @@
 #define CONTACTS (WORLD_CONTACTS + FOOTPRINT_MAX)   // and a speculative row for each footprint point
 #define SPEC_REACH 0.01             // m: a footprint point this near the floor or a box top is a speculative contact
 #define PINCH_MIN 1e-6              // m/s: a pinch's speed out below this is rounding
-#define STICK_SPEED 0.02            // m/s: slower along the floor or a box top, Coulomb friction (PB_WALL_FRICTION)
+#define STICK_SPEED 0.02            // m/s: slower along the floor or a box top, static friction (PB_FLOOR_FRICTION)
 #define PULSE_MIN 0.2               // m/s: a rim touching slower is answered in the tick (settling, rocking at rest)
 #define CONTACT_SWEEPS 32
 #define PINCH_BIAS_MAX 0.1          // m/s: a contact's push left undone is moved out no faster
@@ -958,6 +958,8 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     bool spec[CONTACTS];                // a speculative contact: the normal row only, no push, no friction
     bool pulse[CONTACTS];               // a rim's impact pulse sets its normal target (may be into the surface)
     int rowRim[CONTACTS];               // the footprint point a row answers (its rw), or -1
+    bool hullTop[CONTACTS];             // a hull row resting on a box top's edge (the floor's answer)
+    memset(hullTop, 0, sizeof(hullTop));
     double pushHi[3] = { 0, 0, 0 }, pushLo[3] = { 0, 0, 0 };
     double pushAt[CONTACTS][3];             // a contact's push out (a point's), or zero
     double fromAt[CONTACTS][3];             // the CG's move it was pushed from
@@ -1425,6 +1427,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             flags |= sc_world_hull_hit(&hull[j], vt, blk[PB_BOUNCE_SCALE], blk[PB_CRASH_SCALE],
                                        blk[PB_SPIN_SCALE], &scrub, normal[k]);
             anyScrub = anyScrub || scrub;
+            hullTop[k] = scrub;
             // What it went deeper this tick, from where the points' push
             // left the CG: what the CG's move leaves of it is given as speed
             // out in the sweeps. With no push allowed (wedged against a box
@@ -1728,21 +1731,28 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             }
         }
     }
-    // Coulomb friction at low speed (v0.9.0): a footprint point standing on
-    // the floor or a box top that arrives slower than STICK_SPEED along it
-    // takes the walls' friction instead of the world's answer: toward no
-    // slip, at most PB_WALL_FRICTION times its push. The world's answer takes
-    // 0.15 of the speed along the surface a tick, a drag with no static part,
-    // so a steady lean slid a point at a steady speed: propped on a wall after
-    // a hit, motors off, the rims on the floor slid out from the wall at 6 to
-    // 15 mm/s and the quad crept down it for 4 to 7 s after the disarm (#15).
-    // Faster than STICK_SPEED the world's answer is as before.
+    // The floor's Coulomb friction (v0.9.0): a footprint point standing on
+    // the floor or a box top takes friction of at most PB_FLOOR_FRICTION times
+    // its push, in place of the world's answer along the surface. Arriving
+    // slower than STICK_SPEED along it, toward no slip at all (#23: the
+    // world's answer has no static part, so a steady lean slid a point at a
+    // steady speed, and propped on a wall after a hit, motors off, the quad
+    // crept down it for 4 to 7 s after the disarm, #15); faster, against its
+    // slip. The world's answer takes 0.15 of the speed along the surface
+    // every tick, whatever the tick's length: quadmath's drag at its 240 Hz,
+    // and at sim-core's 1 kHz a 2 m/s slide, motors off, stopped in about a
+    // centimetre. The push a tick is the weight's impulse over the tick, so
+    // the friction's is too, and a slide runs the same at any tick rate:
+    // about v^2 / (2 mu g) on the level. A hull row resting on a box top's
+    // edge, which the world answers as the floor, takes it too. The parity
+    // model (floorFriction 0) keeps the world's answer.
     if (!inOpen) {
         const double mus = blk[PB_FLOOR_FRICTION];
         for (int c = 0; c < contacts && mus > 0; c++) {
-            if (!active[c] || spec[c] || rowRim[c] < 0 || !(normal[c][2] > 0.5) || mu[c] >= 0) {
+            if (!active[c] || spec[c] || (rowRim[c] < 0 && !hullTop[c]) || !(normal[c][2] > 0.5) || mu[c] >= 0) {
                 continue;
             }
+            mu[c] = mus;
             double wxr[3], vp[3];
             cross3(omW, rw[c], wxr);
             for (int a = 0; a < 3; a++) {
@@ -1754,7 +1764,6 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
                 t[a] = vp[a] - vn * normal[c][a];
             }
             if (dot3(t, t) < STICK_SPEED * STICK_SPEED) {
-                mu[c] = mus;
                 slip[c][0] = slip[c][1] = slip[c][2] = 0;
             }
         }
