@@ -29,7 +29,8 @@ const REST = air65.values.hullBelow.value;
 const BARE = { ...air65, values: { ...air65.values, ductHeight: { ...air65.values.ductHeight, value: 0 } } };
 // The contact values three geometry checks below were tuned under, before
 // v0.9.0 (wallFriction 0.2, quadmath's ductHit restitution), for the
-// airframe's wallFriction 0.8 (owner, 2026-11-23): the duct's corner climb
+// airframe's higher wallFriction (0.8 at first, 0.5 after the sweep; owner,
+// 2026-11-23), measured at 0.8: the duct's corner climb
 // needs to pass the split within 50 ms (at 0.8 the press on both walls holds
 // it 4.5 mm under the split, the split and the post in one piece still equal
 // to the micrometre); the real ledge that shows that check is not vacuous
@@ -1947,8 +1948,8 @@ for (const [footX, vz, crash] of [[1.0005, -1, false], [1.002, -3, true], [2.999
   const below = REACH * Math.sin(a) + REST * Math.cos(a);
   const pq = [Math.cos(a / 2), 0, Math.sin(a / 2), 0];
   const rows = [];
-  // At the airframe's wallFriction (0.8, v0.9.0) the lifted boxes' paths
-  // part from the floor-plane box's by 18 um over the 3 s (26 um at 0.5; equal
+  // At wallFriction 0.8 the lifted boxes' paths part from the floor-plane
+  // box's by 18 um over the 3 s (26 um at 0.5, the airframes' value; equal
   // to the micrometre at 0.3 and below): a contact at the foot that only
   // shows once the wall's Coulomb cap binds, open (PROGRESS.md 2026-11-23).
   // The floor's Coulomb friction (floorFriction 0.2 sliding as well as

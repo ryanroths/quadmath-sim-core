@@ -8723,3 +8723,14 @@ How each column is measured:
 - **35's open finding**, now from the floor's Coulomb cap as well as the wall's.
 - **Waiting on the owner:** the slide video (floorFriction), T1 and T4's numbers, the pack's size (D2), and propwash (Part 1).
 - **Staying out:** the ceiling and the duct-top rims.
+
+### The owner's decision (2026-11-23)
+
+- **wallFriction 0.5** in both airframes.
+- **T2 at 30 deg** is dropped: wall friction cannot reach it. `--target` now checks T2 at 15 deg only. At 0.5 that still misses (0.81 / 0.77 kept), so run-all keeps the entry skipped.
+- **Logged as open, no fix:**
+  - plant-world 44's wind-up above wallFriction 0.51;
+  - 35's path difference, at the wall's and now the floor's Coulomb cap.
+- **At 0.5** these pass: wall-hit, plant-world, crash-flip, landing, pack-contact, floor-slide, yaw-spin, fractal75, abi-surface.
+- **Next: Part 3.** The A/B preview in a quadmath worktree, with walls at 0.5, the floor's friction, the hop fix, patch 0004, and quadmath's wall x1.37 and bounce x2 dropped on the bf core (crash x4 kept).
+- **Unchanged until the owner's video, calipers and logs:** wallRestitution stays provisional, the pack contact stays off, and there is no propwash.

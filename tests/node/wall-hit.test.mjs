@@ -26,8 +26,9 @@
 // report the tumble: how far the body's up axis turns in the 300 ms after the
 // hit. With --target, the owner's starting targets of 2026-11-23 instead
 // (D1, to be tuned in the A/B), its own entry in run-all: T2, a glance keeps
-// at most 0.75 of its speed along the wall at 15 degrees and 0.55 at 30
-// (4 m/s, flown and off); T3, the off-centre hit flown turns the up axis at
+// at most 0.75 of its speed along the wall at 15 degrees (4 m/s, flown and
+// off; the 30 degree target, 0.55, dropped the same day: wall friction
+// cannot reach it); T3, the off-centre hit flown turns the up axis at
 // least 45 degrees in 300 ms, and the square 4 m/s hit flown at most 30.
 //
 //   node tests/node/wall-hit.test.mjs
@@ -189,7 +190,7 @@ for (const r of rows) {
 const at = (pilot, speed, angleDeg, yawOffDeg = 0) => rows.find((r) => r.pilot === pilot && r.speed === speed && r.angleDeg === angleDeg && r.yawOffDeg === yawOffDeg);
 const misses = [];
 for (const pilot of ['flown', 'off']) {
-  for (const [angleDeg, most] of [[15, 0.75], [30, 0.55]]) {
+  for (const [angleDeg, most] of [[15, 0.75]]) {
     const r = at(pilot, 4, angleDeg);
     const kept = r.after.vt / r.vIn.t;
     if (!(kept <= most)) misses.push(`T2 ${pilot} 4 m/s ${angleDeg} deg keeps ${f(kept)} of its speed along the wall (at most ${most})`);
