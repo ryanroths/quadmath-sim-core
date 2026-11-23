@@ -8734,3 +8734,32 @@ How each column is measured:
 - **At 0.5** these pass: wall-hit, plant-world, crash-flip, landing, pack-contact, floor-slide, yaw-spin, fractal75, abi-surface.
 - **Next: Part 3.** The A/B preview in a quadmath worktree, with walls at 0.5, the floor's friction, the hop fix, patch 0004, and quadmath's wall x1.37 and bounce x2 dropped on the bf core (crash x4 kept).
 - **Unchanged until the owner's video, calipers and logs:** wallRestitution stays provisional, the pack contact stays off, and there is no propwash.
+
+## 2026-11-23 | Phase 2 | v0.9.0: the A/B and the owner's go
+
+**The A/B.**
+- **Where it was built:** quadmath branch `ab/v090-contact`, local only and never merged.
+- **What it was:** `sim.html?ab=1` on this machine, with the B key swapping two Betaflight cores:
+  - **A:** quadmath's vendored v0.8.0 with the map's BOUNCE_MAPS profile;
+  - **B:** this branch at b76885d, with crash x4 only on the bf core.
+- **The banner** named the core that actually flew.
+- **The headless smoke** read back both quads and both sides from the flying core: folder, version, wasm sha256, plant and diff. It also checked a 1 m drop each, a swap in the air, a map change on cached cores, and that nothing reached the Workers or Cloudflare.
+
+**The verdict** (owner, 2026-11-23): "B is better all around. Speed-landing slide is good, the off-centre clip feels realistic. Go for Part 4, contact only."
+
+**What ships as v0.9.0:**
+- walls at 0.5;
+- the floor's Coulomb friction;
+- the hop fix (contactRestitution 0.08);
+- #23's landing work;
+- Betaflight patch 0004.
+
+Quadmath drops wall x1.37 and bounce x2 on the bf core and keeps crash x4; PHYS_VER goes to 8.
+
+**v0.10.0, after the owner's video, calipers and logs:**
+- the wall restitution, provisional at 0.3;
+- the pack contact, off;
+- propwash;
+- T1 and T4's numbers.
+
+**The tag:** v0.9.0 goes on the merge of this branch, after the owner merges.
