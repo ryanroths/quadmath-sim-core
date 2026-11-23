@@ -43,7 +43,7 @@
 #define FLOOR_PAD_M 0.01            // QP:90 FLOOR_CLEARANCE_M
 #define DIVERGED_RAD_S 200.0        // PROGRESS.md deliberate change 6
 #define GROUND_SCRUB 7.3            // H:3199, per second (as world.c TUMBLE_DECAY)
-#define FOOTPRINT_POINTS 5
+#define FOOTPRINT_MAX 9              // the rims, the canopy and the pack's four corners
 #define HULL_BOXES 4                // solids held off by the footprint's hull, a tick
 #define HULL_PASSES 4               // top-ups of the hull contacts' pushes, a tick
 #define DUCT_RIMS 2                 // a duct's side: its bottom and top rims
@@ -57,8 +57,8 @@
 // The points, the ducts' side points, the points the points' push carried
 // into the solid, up to SC_HULL_HOLD hold points for each hull contact, the
 // points again after the hull's push.
-#define WORLD_CONTACTS (FOOTPRINT_POINTS + SIDE_POINTS + FOOTPRINT_POINTS + SC_HULL_HOLD * HULL_BOXES + FOOTPRINT_POINTS)
-#define CONTACTS (WORLD_CONTACTS + FOOTPRINT_POINTS)   // and a speculative row for each footprint point
+#define WORLD_CONTACTS (FOOTPRINT_MAX + SIDE_POINTS + FOOTPRINT_MAX + SC_HULL_HOLD * HULL_BOXES + FOOTPRINT_MAX)
+#define CONTACTS (WORLD_CONTACTS + FOOTPRINT_MAX)   // and a speculative row for each footprint point
 #define SPEC_REACH 0.01             // m: a footprint point this near the floor or a box top is a speculative contact
 #define PINCH_MIN 1e-6              // m/s: a pinch's speed out below this is rounding
 #define STICK_SPEED 0.02            // m/s: slower along the floor or a box top, Coulomb friction (PB_WALL_FRICTION)
@@ -75,6 +75,7 @@ sc_plant_state_t sc_plant;
 static int model = SC_MODEL_REST;
 static double blk[PB_LEN];
 static double derived[PD_LEN];
+static int footprintCount = 5;              // the footprint's points: 5, or 9 with the pack
 static bool mode3d;
 static bool propsOut;
 
@@ -106,10 +107,10 @@ static double override[SC_MOTOR_COUNT];     // NAN = Betaflight drives the motor
 // lands on the floor below the crash speed, its speed along the normal is
 // steered from the speed it arrived at to the bounce the world gives that
 // speed along a half-sine of force PB_CONTACT_PULSE long (footprintContact).
-static int pulseTick[SC_MOTOR_COUNT];       // ticks into the rim's pulse, or -1
-static double pulseIn[SC_MOTOR_COUNT];      // m/s into the surface at the touch
-static double pulseOut[SC_MOTOR_COUNT];     // m/s out at the end (the world's bounce)
-static bool rimStood[SC_MOTOR_COUNT];       // the rim stood on the floor or a box top last tick
+static int pulseTick[FOOTPRINT_MAX];        // ticks into the point's pulse, or -1 (the rims and the pack's corners)
+static double pulseIn[FOOTPRINT_MAX];       // m/s into the surface at the touch
+static double pulseOut[FOOTPRINT_MAX];      // m/s out at the end (the world's bounce)
+static bool rimStood[FOOTPRINT_MAX];        // the point stood on the floor or a box top last tick
 static int sinceAir;                        // ticks the footprint has stood on something since it last stood on nothing
 static bool posePending;
 static double poseNext[10];
@@ -204,6 +205,7 @@ static double propLaw(double k, double w)
 
 static void derive(void)
 {
+    footprintCount = model == SC_MODEL_PHYSICAL && blk[PB_PACK_LENGTH] > 0 && blk[PB_PACK_WIDTH] > 0 ? FOOTPRINT_MAX : 5;
     const double m = blk[PB_MASS], wb = blk[PB_WHEELBASE], h = wb * blk[PB_BOX_HEIGHT_RATIO];
     // Flat-box inertia (QP:434-440) and the quad-X arm (QP:425).
     derived[PD_IXX] = (m / 12) * (wb * wb + h * h);
@@ -264,6 +266,13 @@ static void publishSensors(const double rate[3])
 
 static double restHeightAt(const double q[4]);
 
+// A footprint point that lands with the impact pulse: a duct rim, or a corner
+// of the pack (not the canopy).
+static bool pulsable(int k)
+{
+    return k < SC_MOTOR_COUNT || (k >= 5 && k < footprintCount);
+}
+
 // At rest on the floor, level, motors stopped, full pack.
 // A rim's target speed along the normal in its pulse this tick.
 static double pulseTarget(int k, double dt)
@@ -274,7 +283,7 @@ static double pulseTarget(int k, double dt)
 
 static void pulsesReset(bool standing)
 {
-    for (int i = 0; i < SC_MOTOR_COUNT; i++) {
+    for (int i = 0; i < FOOTPRINT_MAX; i++) {
         pulseTick[i] = -1;
         pulseIn[i] = pulseOut[i] = 0;
         rimStood[i] = standing;
@@ -384,7 +393,10 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_WALL_RESTITUTION] >= 0 && block[PB_WALL_RESTITUTION] <= 1
                                         && block[PB_THRUST_EXP] >= 1 && block[PB_THRUST_EXP] <= 3
                                         && block[PB_CONTACT_PULSE] >= 0 && block[PB_CONTACT_PULSE] <= 0.1
-                                        && block[PB_CONTACT_REST] <= 1 && block[PB_FLOOR_FRICTION] >= 0)) {
+                                        && block[PB_CONTACT_REST] <= 1 && block[PB_FLOOR_FRICTION] >= 0
+                                        && block[PB_PACK_LENGTH] >= 0 && block[PB_PACK_LENGTH] <= block[PB_WHEELBASE]
+                                        && block[PB_PACK_WIDTH] >= 0 && block[PB_PACK_WIDTH] <= block[PB_WHEELBASE]
+                                        && fabs(block[PB_PACK_DROP]) <= 0.05 && fabs(block[PB_PACK_X]) <= block[PB_WHEELBASE])) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -694,7 +706,7 @@ static void contactImpulse(const double q[4], const double r[3], const double e[
 
 // The footprint in the body frame: the duct rims on the arm diagonals at the
 // duct bottom, and the canopy top.
-static void footprintBody(double body[FOOTPRINT_POINTS][3])
+static void footprintBody(double body[FOOTPRINT_MAX][3])
 {
     const double reach = (blk[PB_WHEELBASE] * 0.5 + blk[PB_DUCT_RADIUS]) * sqrt(0.5);
     for (int i = 0; i < SC_MOTOR_COUNT; i++) {
@@ -705,6 +717,14 @@ static void footprintBody(double body[FOOTPRINT_POINTS][3])
     body[4][0] = 0;
     body[4][1] = 0;
     body[4][2] = blk[PB_HULL_ABOVE];
+    // The pack's underside (v0.9.0), when it has a size: its four corners.
+    if (footprintCount == FOOTPRINT_MAX) {
+        for (int c = 0; c < 4; c++) {
+            body[5 + c][0] = blk[PB_PACK_X] + (c & 1 ? 0.5 : -0.5) * blk[PB_PACK_LENGTH];
+            body[5 + c][1] = (c & 2 ? 0.5 : -0.5) * blk[PB_PACK_WIDTH];
+            body[5 + c][2] = -blk[PB_HULL_BELOW] - blk[PB_PACK_DROP];
+        }
+    }
 }
 
 // The CG's height above the floor when the lowest footprint point at attitude
@@ -716,10 +736,10 @@ static double restHeightAt(const double q[4])
     if (model != SC_MODEL_PHYSICAL) {
         return FLOOR_PAD_M;
     }
-    double body[FOOTPRINT_POINTS][3];
+    double body[FOOTPRINT_MAX][3];
     footprintBody(body);
     double drop = -INFINITY;
-    for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+    for (int k = 0; k < footprintCount; k++) {
         double r[3];
         qRotate(q, body[k], r);
         drop = fmax(drop, -r[2]);
@@ -924,7 +944,7 @@ static uint32_t sideContact(const double body[3], int faceMask, const double p[3
 static uint32_t footprintContact(double p[3], double v[3], const double q[4], double om[3], const double p0[3],
                                  const double q0[4], double dt)
 {
-    double body[FOOTPRINT_POINTS][3];
+    double body[FOOTPRINT_MAX][3];
     footprintBody(body);
 
     double omW[3];
@@ -933,7 +953,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     double rw[CONTACTS][3], target[CONTACTS][3], normal[CONTACTS][3];
     double slip[CONTACTS][3];           // unit tangential slip at contact, or zero
     double mu[CONTACTS];                // a wall's Coulomb friction, or -1: the world's tangential target
-    double r0[FOOTPRINT_POINTS][3];
+    double r0[FOOTPRINT_MAX][3];
     bool active[CONTACTS];
     bool spec[CONTACTS];                // a speculative contact: the normal row only, no push, no friction
     bool pulse[CONTACTS];               // a rim's impact pulse sets its normal target (may be into the surface)
@@ -949,8 +969,8 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     memset(bias, 0, WORLD_CONTACTS * sizeof(bias[0]));
     uint32_t flags = 0;
     bool anyFloor = false, anyScrub = false;
-    bool floorOnly[FOOTPRINT_POINTS];   // the point met the floor plane and no box this tick
-    for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+    bool floorOnly[FOOTPRINT_MAX];   // the point met the floor plane and no box this tick
+    for (int k = 0; k < footprintCount; k++) {
         active[k] = false;
         spec[k] = pulse[k] = false;
         rowRim[k] = k;
@@ -1031,7 +1051,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     // quad on its side against it) the rim lies flat on it and has no
     // furthest point: the other normals' points on that rim are there. A
     // duct of no height (PB_DUCT_HEIGHT 0) has no side: the footprint alone.
-    int contacts = FOOTPRINT_POINTS;
+    int contacts = footprintCount;
     double nearLo[3], nearHi[3];
     const double span = blk[PB_WHEELBASE] * 0.5 + blk[PB_DUCT_RADIUS] + blk[PB_HULL_BELOW] + blk[PB_DUCT_HEIGHT];
     for (int a = 0; a < 3; a++) {
@@ -1302,7 +1322,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         net[a] = pushHi[a] + pushLo[a];
     }
     int inSolid = -1;                   // the CG in or on a box, found when first needed
-    for (int k = 0; k < FOOTPRINT_POINTS && (flags & 2) && (net[0] != 0 || net[1] != 0 || net[2] != 0); k++) {
+    for (int k = 0; k < footprintCount && (flags & 2) && (net[0] != 0 || net[1] != 0 || net[2] != 0); k++) {
         double pt[3], st[3], vt[3], wxr[3], carry[3];
         for (int a = 0; a < 3; a++) {
             carry[a] = net[a] - pushAt[k][a];
@@ -1474,7 +1494,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     // the solid and pushed it out through the bottom of the desk (29 mm).
     if (hullMoved) {
         double reHi[3] = { 0, 0, 0 }, reLo[3] = { 0, 0, 0 };
-        for (int k = 0; k < FOOTPRINT_POINTS; k++) {
+        for (int k = 0; k < footprintCount; k++) {
             double wxr[3], pt[3], vt[3], st[3];
             cross3(omW, rw[k], wxr);
             for (int a = 0; a < 3; a++) {
@@ -1586,16 +1606,16 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     // surface, and ends when it is done or the rim is further off.
     const double pulseLen = blk[PB_CONTACT_PULSE];
     const bool pulses = pulseLen > 0;
-    bool rimRow[SC_MOTOR_COUNT] = { false, false, false, false };
+    bool rimRow[FOOTPRINT_MAX] = { false };
     // In the open (no contact this tick, no pulse going, nothing near): none
     // of this, so a tick in the air costs what it did.
-    bool inOpen = contacts == FOOTPRINT_POINTS && nearBoxes <= 0 && p[2] - sc_world_floor_z() >= span + SPEC_REACH;
-    for (int k = 0; k < FOOTPRINT_POINTS && inOpen; k++) {
-        inOpen = !active[k] && (k >= SC_MOTOR_COUNT || pulseTick[k] < 0);
+    bool inOpen = contacts == footprintCount && nearBoxes <= 0 && p[2] - sc_world_floor_z() >= span + SPEC_REACH;
+    for (int k = 0; k < footprintCount && inOpen; k++) {
+        inOpen = !active[k] && (!pulsable(k) || pulseTick[k] < 0);
     }
     if (inOpen) {
         sinceAir = 0;
-        for (int k = 0; k < SC_MOTOR_COUNT; k++) {
+        for (int k = 0; k < footprintCount; k++) {
             rimStood[k] = false;
         }
     } else {
@@ -1603,7 +1623,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
         for (int c = 0; c < contacts && !standing; c++) {
             standing = active[c] && normal[c][2] > 0.5;
         }
-        bool support[FOOTPRINT_POINTS] = { false, false, false, false, false };
+        bool support[FOOTPRINT_MAX] = { false };
         for (int c = 0; c < contacts; c++) {
             if (active[c] && rowRim[c] >= 0 && normal[c][2] > 0.5) {
                 support[rowRim[c]] = true;
@@ -1621,8 +1641,8 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             if (nearBoxes < 0) {
                 nearBoxes = sc_world_near(nearLo, nearHi);
             }
-            for (int k = 0; k < FOOTPRINT_POINTS && contacts < CONTACTS; k++) {
-                const bool rim = k < SC_MOTOR_COUNT;
+            for (int k = 0; k < footprintCount && contacts < CONTACTS; k++) {
+                const bool rim = pulsable(k);
                 double wxr[3];
                 cross3(omW, rw[k], wxr);
                 const double down = -(v[2] + wxr[2]);
@@ -1701,7 +1721,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
                 active[c] = true;
             }
         }
-        for (int k = 0; k < SC_MOTOR_COUNT; k++) {
+        for (int k = 0; k < footprintCount; k++) {
             rimStood[k] = support[k];
             if (!rimRow[k]) {
                 pulseTick[k] = -1;
@@ -1848,7 +1868,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
             }
         }
     }
-    for (int k = 0; k < SC_MOTOR_COUNT && !inOpen; k++) {
+    for (int k = 0; k < footprintCount && !inOpen; k++) {
         if (pulseTick[k] >= 0 && ++pulseTick[k] * dt >= pulseLen) {
             pulseTick[k] = -1;          // the pulse is done: the world answers as before
         }

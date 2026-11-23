@@ -52,6 +52,7 @@ const TESTS = [
   ['P2 wall hits, the owner\'s starting targets (2026-11-23, tuned in the A/B): T2 glances scrub along the wall, T3 an off-centre hit tumbles, a square one stays catchable', 'tests/node/wall-hit.test.mjs', ['--target'],
     { skip: 'starting targets, tuned in the A/B (owner, 2026-11-23); T2 at 30 deg not met' }],
   ['P2 landing at zero throttle, armed (owner, 2026-11-13, log 143354): both whoops, a drop and a 3 deg touch in acro, a drop and 22 drifting cuts in angle mode, at most one hop of up to 15 mm, at rest by 0.5 s', 'tests/node/landing.test.mjs'],
+  ['P2 the pack under the frame (owner, 2026-11-23; an example pack until the owner\'s measurements): nine points, sits on the pack, a skid landing trips over it, a pack-first landing takes the impact pulse', 'tests/node/pack-contact.test.mjs'],
   ['P2 fly harness in headless Chrome: a TX16S arms, climbs, disarms, calibrates, keeps the link guard; console clean', 'tests/browser/fly.test.mjs'],
 ];
 

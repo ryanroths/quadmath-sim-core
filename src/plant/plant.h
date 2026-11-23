@@ -129,7 +129,16 @@ enum {
     // Coulomb friction at most this times its push (before v0.9.0, the wall
     // friction)
     PB_FLOOR_FRICTION = 57,     // mu, >= 0
-    PB_LEN = 58,
+    // The pack (physical model, v0.9.0): its underside as four more contact
+    // points, the corners of a packLength x packWidth rectangle centred
+    // packX forward of the CG, packDrop below the ducts' bottom plane (so
+    // hullBelow + packDrop under the CG). The quad then sits on the pack and
+    // two ducts, as a whoop does. A length or width of 0: no pack points
+    PB_PACK_DROP = 58,          // m, + below the duct bottoms
+    PB_PACK_LENGTH = 59,        // m, along the body x axis
+    PB_PACK_WIDTH = 60,         // m, along the body y axis
+    PB_PACK_X = 61,             // m, + forward
+    PB_LEN = 62,
 };
 
 // The lowest state of charge a physical pack reaches (the last
