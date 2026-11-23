@@ -54,6 +54,7 @@ const TESTS = [
   ['P2 landing at zero throttle, armed (owner, 2026-11-13, log 143354): both whoops, a drop and a 3 deg touch in acro, a drop and 22 drifting cuts in angle mode, at most one hop of up to 15 mm, at rest by 0.5 s', 'tests/node/landing.test.mjs'],
   ['P2 the pack under the frame (owner, 2026-11-23; an example pack until the owner\'s measurements): nine points, sits on the pack, a skid slides as on the ducts, a pack-first landing takes the impact pulse', 'tests/node/pack-contact.test.mjs'],
   ['P2 the floor\'s friction (owner, 2026-11-23): Coulomb, a level 2 m/s slide with the motors off goes 0.5 to 1 m, both whoops', 'tests/node/floor-slide.test.mjs'],
+  ['P2 yaw-spin recovery (owner, 2026-11-23, patches/0004): Betaflight\'s AUTO threshold off the pilot\'s yaw rate, on and off as Betaflight times it, at two yaw rates', 'tests/node/yaw-spin.test.mjs'],
   ['P2 fly harness in headless Chrome: a TX16S arms, climbs, disarms, calibrates, keeps the link guard; console clean', 'tests/browser/fly.test.mjs'],
 ];
 
