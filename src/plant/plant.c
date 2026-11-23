@@ -383,7 +383,8 @@ int sc_plant_configure(const double *block, int count)
                                         && block[PB_DUCT_HEIGHT] >= 0 && block[PB_WALL_FRICTION] >= 0
                                         && block[PB_WALL_RESTITUTION] >= 0 && block[PB_WALL_RESTITUTION] <= 1
                                         && block[PB_THRUST_EXP] >= 1 && block[PB_THRUST_EXP] <= 3
-                                        && block[PB_CONTACT_PULSE] >= 0 && block[PB_CONTACT_PULSE] <= 0.1)) {
+                                        && block[PB_CONTACT_PULSE] >= 0 && block[PB_CONTACT_PULSE] <= 0.1
+                                        && block[PB_CONTACT_REST] <= 1 && block[PB_FLOOR_FRICTION] >= 0)) {
             return SC_ERR_BAD_ARG;
         }
     }
@@ -1717,7 +1718,7 @@ static uint32_t footprintContact(double p[3], double v[3], const double q[4], do
     // 15 mm/s and the quad crept down it for 4 to 7 s after the disarm (#15).
     // Faster than STICK_SPEED the world's answer is as before.
     if (!inOpen) {
-        const double mus = blk[PB_WALL_FRICTION];
+        const double mus = blk[PB_FLOOR_FRICTION];
         for (int c = 0; c < contacts && mus > 0; c++) {
             if (!active[c] || spec[c] || rowRim[c] < 0 || !(normal[c][2] > 0.5) || mu[c] >= 0) {
                 continue;
@@ -1875,6 +1876,9 @@ void sc_plant_step(double dt)
     if (model == SC_MODEL_REST) {
         return;
     }
+    // The floor's and box tops' restitution (world.c ductHit): the physical
+    // model's own, or quadmath's (the parity model, and PB_CONTACT_REST below 0).
+    sc_world_set_contact_restitution(model == SC_MODEL_PHYSICAL ? blk[PB_CONTACT_REST] : -1);
     if (posePending) {
         memcpy(sc_plant.pos, poseNext, 3 * sizeof(double));
         memcpy(sc_plant.quat, poseNext + 3, 4 * sizeof(double));

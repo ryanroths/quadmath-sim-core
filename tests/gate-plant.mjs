@@ -286,6 +286,7 @@ function parityModel(quadCfg, { battery }) {
       bounceScale: v(1), crashScale: v(1), spinScale: v(1),
       ductOuterRadius: v(0), hullBelow: v(0), hullAbove: v(0), rpmHover: v(0), currentExponent: v(0), iQuiescent: v(0), motorDelay: v(0), electricalTau: v(0),
       ductHeight: v(0), wallFriction: v(0), wallRestitution: v(0), thrustExponent: v(2), contactPulse: v(0),
+      contactRestitution: v(-1), floorFriction: v(0),
     },
   };
 }

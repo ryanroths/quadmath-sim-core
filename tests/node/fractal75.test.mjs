@@ -23,7 +23,7 @@ const close = (a, b, rel) => Math.abs(a / b - 1) <= rel;
 
 // ---- Sources and flags ----
 {
-  assert.equal(plantBlock(f75).length, 56, 'every plant field present and finite');
+  assert.equal(plantBlock(f75).length, 58, 'every plant field present and finite');
   for (const [k, v] of Object.entries(V)) {
     assert.ok(typeof v.source === 'string' && v.source.trim().length > 0, `${k} has a source`);
     assert.ok(['high', 'medium', 'low'].includes(v.confidence), `${k} has a confidence`);

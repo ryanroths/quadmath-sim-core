@@ -53,7 +53,7 @@ const PB_NAME = {
   crashScale: 'CRASH_SCALE', spinScale: 'SPIN_SCALE', ductOuterRadius: 'DUCT_RADIUS', hullBelow: 'HULL_BELOW',
   hullAbove: 'HULL_ABOVE', rpmHover: 'RPM_HOVER', currentExponent: 'CURRENT_EXP', iQuiescent: 'I_QUIESCENT', motorDelay: 'MOTOR_DELAY', electricalTau: 'ELEC_TAU',
   ocvOverDischarge: 'OCV_OVER', ductHeight: 'DUCT_HEIGHT', wallFriction: 'WALL_FRICTION', wallRestitution: 'WALL_RESTITUTION',
-  thrustExponent: 'THRUST_EXP', contactPulse: 'CONTACT_PULSE',
+  thrustExponent: 'THRUST_EXP', contactPulse: 'CONTACT_PULSE', contactRestitution: 'CONTACT_REST', floorFriction: 'FLOOR_FRICTION',
 };
 assert.deepEqual([...PLANT_FIELDS].sort(), Object.keys(PB_NAME).sort(), 'every airframe field has a PB_ name');
 assert.equal(Object.keys(PB).length, PLANT_FIELDS.length + 1, 'plant.h has a PB_ entry per field, plus PB_LEN');
@@ -75,7 +75,9 @@ assert.equal(PB.OCV + 7, PB.SAG_DROP, 'ocv fills seven slots');
 assert.equal(PB.OCV_OVER + 3, PB.DUCT_HEIGHT, 'ocvOverDischarge fills three slots');
 assert.equal(PB.WALL_RESTITUTION + 1, PB.THRUST_EXP, 'thrustExponent follows wallRestitution');
 assert.equal(PB.THRUST_EXP + 1, PB.CONTACT_PULSE, 'contactPulse follows thrustExponent');
-assert.equal(PB.CONTACT_PULSE + 1, PB.LEN, 'contactPulse is the last slot');
+assert.equal(PB.CONTACT_PULSE + 1, PB.CONTACT_REST, 'contactRestitution follows contactPulse');
+assert.equal(PB.CONTACT_REST + 1, PB.FLOOR_FRICTION, 'floorFriction follows contactRestitution');
+assert.equal(PB.FLOOR_FRICTION + 1, PB.LEN, 'floorFriction is the last slot');
 
 const core = await SimCore.load(module);
 core.configure('');
