@@ -116,7 +116,30 @@ enum {
     // bounce, or none) as a half-sine of force this long, not in one tick;
     // the world still holds it on the floor. 0 is the one-tick answer
     PB_CONTACT_PULSE = 55,      // s
-    PB_LEN = 56,
+    // Contact restitution (physical model, v0.9.0): the speed out over the
+    // speed in, along the normal, of a footprint point meeting the floor or a
+    // box top below the crash speed; the floor and box tops still answer a
+    // landing slower than 1.29 m/s with no bounce, and a crash as before
+    // (0.10). Box undersides and edges keep quadmath's answer, walls take
+    // PB_WALL_RESTITUTION. Below 0: quadmath's ductHit restitution (0.24 +
+    // 0.11 x 0.75 x bounceScale, x 0.55 on the floor and box tops), as before
+    PB_CONTACT_REST = 56,       // -1, or 0..1
+    // The floor's friction (physical model, v0.9.0): a footprint point on the
+    // floor or a box top takes Coulomb friction at most this times its push,
+    // toward no slip when slower than STICK_SPEED along it, else against its
+    // slip; in place of quadmath's drag of 0.85 of the speed a tick. 0: the
+    // world's answer (the parity model)
+    PB_FLOOR_FRICTION = 57,     // mu, >= 0
+    // The pack (physical model, v0.9.0): its underside as four more contact
+    // points, the corners of a packLength x packWidth rectangle centred
+    // packX forward of the CG, packDrop below the ducts' bottom plane (so
+    // hullBelow + packDrop under the CG). The quad then sits on the pack and
+    // two ducts, as a whoop does. A length or width of 0: no pack points
+    PB_PACK_DROP = 58,          // m, + below the duct bottoms
+    PB_PACK_LENGTH = 59,        // m, along the body x axis
+    PB_PACK_WIDTH = 60,         // m, along the body y axis
+    PB_PACK_X = 61,             // m, + forward
+    PB_LEN = 62,
 };
 
 // The lowest state of charge a physical pack reaches (the last
@@ -232,6 +255,10 @@ double sc_world_gap_below(const double pos[3], double reach);
 // at impactMs (m/s): its bounce, or 0 for a soft landing; *crashed says that
 // speed is a crash.
 double sc_world_support_bounce(double impactMs, double bounceScale, double crashScale, bool *crashed);
+// The restitution of the floor and box tops below the crash speed
+// (PB_CONTACT_REST), or below 0 for quadmath's ductHit restitution; the plant
+// sets it every tick.
+void sc_world_set_contact_restitution(double rest);
 // The CG's height above the floor when resting on it (edge state after a
 // pose or a floor move).
 void sc_world_set_rest_height(double metres);

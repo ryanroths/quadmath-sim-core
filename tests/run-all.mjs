@@ -48,10 +48,13 @@ const TESTS = [
   ['P2 turtle: crash flip on AUX3 (owner diff), inverted to upright within 500 ms of full roll, rests upright', 'tests/node/crash-flip.test.mjs'],
   ['P2 beeper (owner diff): Betaflight\'s beeper state as fc.beeper; arming and disarming beeps, BEEPER on AUX3, no DShot beacon', 'tests/node/beeper.test.mjs'],
   ['P2 pack to empty (owner diff): OCV at capacity is Betaflight\'s min cell, LAND NOW before 340 mAh, no hover by 380, SoC bounded', 'tests/node/pack-empty.test.mjs'],
-  ['P2 wall hits (owner, 2026-10-28): 2, 4, 8 m/s at 15, 30, 60, 90 deg, flown and motors off; the wall restitution head on, glances keep their speed along the wall', 'tests/node/wall-hit.test.mjs'],
-  ['P2 wall hits, the owner\'s target: upright after every hit under 60 deg and 6 m/s (flown)', 'tests/node/wall-hit.test.mjs', ['--target'],
-    { skip: 'known failing, issue #15 https://github.com/ryanroths/quadmath-sim-core/issues/15' }],
+  ['P2 wall hits (owner, 2026-10-28; 2026-11-23): 2, 4, 8 m/s at 15, 30, 60, 90 deg and 4 m/s off-centre, flown and motors off; every hit comes to rest, glances take the wall\'s friction', 'tests/node/wall-hit.test.mjs'],
+  ['P2 wall hits, the owner\'s starting targets (2026-11-23, tuned in the A/B): T2 glances scrub along the wall, T3 an off-centre hit tumbles, a square one stays catchable', 'tests/node/wall-hit.test.mjs', ['--target'],
+    { skip: 'starting targets, tuned in the A/B (owner, 2026-11-23); T2 at 15 deg not met at wallFriction 0.5 (0.81 / 0.77 kept)' }],
   ['P2 landing at zero throttle, armed (owner, 2026-11-13, log 143354): both whoops, a drop and a 3 deg touch in acro, a drop and 22 drifting cuts in angle mode, at most one hop of up to 15 mm, at rest by 0.5 s', 'tests/node/landing.test.mjs'],
+  ['P2 the pack under the frame (owner, 2026-11-23; an example pack until the owner\'s measurements): nine points, sits on the pack, a skid slides as on the ducts, a pack-first landing takes the impact pulse', 'tests/node/pack-contact.test.mjs'],
+  ['P2 the floor\'s friction (owner, 2026-11-23): Coulomb, a level 2 m/s slide with the motors off goes 0.5 to 1 m, both whoops', 'tests/node/floor-slide.test.mjs'],
+  ['P2 yaw-spin recovery (owner, 2026-11-23, patches/0004): Betaflight\'s AUTO threshold off the pilot\'s yaw rate, on and off as Betaflight times it, at two yaw rates', 'tests/node/yaw-spin.test.mjs'],
   ['P2 fly harness in headless Chrome: a TX16S arms, climbs, disarms, calibrates, keeps the link guard; console clean', 'tests/browser/fly.test.mjs'],
 ];
 

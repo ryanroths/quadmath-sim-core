@@ -1,0 +1,22 @@
+--- a/src/main/sensors/gyro.c
++++ b/src/main/sensors/gyro.c
+@@ -368,13 +368,17 @@
+     if (yawSpinDetected) {
+         handleYawSpin(currentTimeUs);
+     } else {
+-#ifndef SIMULATOR_BUILD
++        // quadmath-sim-core: the yaw-spin check runs in the simulator build
++        // too. Upstream leaves it out of SIMULATOR_BUILD; on the quad a yaw
++        // over the threshold (yaw_spin_recovery AUTO: the max yaw rate plus a
++        // quarter, at least 200 deg/s) zeroes roll and pitch P, D and F and
++        // every I until yaw falls 100 deg/s under it for 20 ms (pid.c), and
++        // the owner's Air65 logs show exactly that after off-centre hits.
+         // check for spin on yaw axis only
+          if (abs((int)gyro.gyroADCf[Z]) > yawSpinRecoveryThreshold) {
+             yawSpinDetected = true;
+             yawSpinTimeUs = currentTimeUs;
+         }
+-#endif // SIMULATOR_BUILD
+     }
+ }
+ #endif // USE_YAW_SPIN_RECOVERY

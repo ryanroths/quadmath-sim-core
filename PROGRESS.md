@@ -8483,3 +8483,283 @@ No go: the owner A/B-flew it in quadmath against v0.8.0 and felt no difference. 
 - The sim's accelerometer range (128 g against the IMU's 16 g).
 - The yaw authority above.
 - #15's duct-top rims and the measured CG.
+
+## 2026-11-23 | Phase 2 | v0.9.0 contact, part 2: walls scrub, off-centre hits tumble, hard landings stop, the pack under the frame
+
+The owner's release (sim-core v0.9.0, quadmath PHYS_VER 8), after a contact A/B that felt like nothing; the pilot's word for the quad was "bounces like a basketball". Part 0 measured the shipped build (v0.8.0 through quadmath's contactPlant with the Rig profile, as on all four bf maps). The owner's answers (D1):
+- T2, T3 and T4 accepted as starting targets, to be tuned in the A/B.
+- T1 (the head-on rebound) and T4's numbers will come from the owner's drop and wall video.
+- Overturned:
+  - the 2026-10-28 wall call (friction 0.2, restitution 0.3, "glance and drop, not stop");
+  - wall-hit's two asserts;
+  - #10's upright rule;
+  - quadmath's BOUNCE_MAPS scaling on the bf core (wall x1.37, bounce x2). That last is quadmath's side; its crash x4 stays, as the crash events' threshold.
+
+### Commits (branch contact/v090-walls)
+
+1. **c50f9d3: contactRestitution, floorFriction, wallFriction 0.8.**
+   - **contactRestitution:** a footprint point meeting the floor or a box top below the crash speed comes back at this fraction. A crash answers 0.10 as before. Box undersides and edges keep quadmath's restitution. Both airframes 0.08, provisional.
+   - **floorFriction 0.2:** #23's floor static friction (STICK_SPEED) gets its own value.
+   - **Bit for bit:** -1 / 0.2 / 0.2 reproduce main's bounce table.
+2. **97eef26: patches/0004, yaw-spin recovery in the simulator build.**
+   - Betaflight 4.5.1 leaves the check out of SIMULATOR_BUILD (sensors/gyro.c:371-377).
+   - On the quad, a yaw over the threshold (about 900 deg/s on the owner's rates) zeroes roll and pitch P, D and F (pid.c:1082-1091).
+   - The owner's logs show it after every hit that yaws past 900 deg/s. Oct 23 98.47 s: 162 ms, peak 2013 deg/s, roll and pitch P and D zero in 362 of 363 frames. Also Sep 30 64.13 s, Aug 17 183.7 s, Aug 18 109.3 s, Sep 29 91.0 s.
+   - An off-centre hit yaws the quad at 2000-4000 deg/s. The sim's rate loop used to catch the tilt in about 20 ms; the quad's goes limp, and it tumbles.
+3. **090af99: the pack's underside as four footprint points.**
+   - packDrop, packLength, packWidth, packX; 0 in both airframes until the owner measures (D2).
+   - The impact pulse reaches the pack's corners.
+   - tests/node/pack-contact.test.mjs flies an example pack (3 mm below, 45 x 12 mm):
+     - it sits on the pack;
+     - a skid landing tips 19.3 deg (3.2 without);
+     - a 2 m/s drop peaks at 53.5 g with the pulse, against 221 g in one tick.
+
+### Before and after (the bounce harness; scratch bounce.mjs)
+
+| Air65 | shipped (v0.8.0, Rig x1.37 / x2 / x4) | quadmath scaling off only (v0.8.0) | v0.9.0 candidate |
+|---|---|---|---|
+| head on 2 / 4 / 8 m/s, motors off: speed back | 0.40 / 0.35 / 0.26 | 0.29 / 0.25 / 0.21 | 0.29 / 0.25 / 0.30 |
+| the same: off the wall 1 s later (m) | 0.36 / 0.93 / 1.02 | 0.26 / 0.63 / 0.83 | 0.26 / 0.58 / 1.32 |
+| 4 m/s glance, speed along the wall kept: 15 / 30 deg, flown | 0.95 / 0.86 | 0.95 / 0.87 | 0.58 / 0.63 |
+| pressed on (flown), speed along at 250 ms: 4 m/s 15 / 30 deg (wall-hit, raw airframe) | 3.69 / 2.72 m/s (main) | - | 0.41 / 0.12 m/s |
+| 4 m/s off-centre (yawed 25 deg), flown: tumble in 300 ms | 26 deg (tilt 4) | - | 56 deg |
+| 4 m/s head on, flown: tumble | 23 deg | - | 21 deg |
+| floor drop 2 / 4 / 8 m/s: hop | 10 / 41 / 159 mm (2 hops at 8) | 6 / 26 / 101 mm | 1.4 / 5.3 / 20.9 mm, 1 hop |
+| ceiling 2 / 4 m/s: back | 0.50 / 0.45 | 0.42 / 0.37 | 0.42 / 0.37 |
+
+**The Fractal75:**
+- Floor hops: 34 / 135 mm become 5.3 / 21.0 mm.
+- 4 m/s glance, flown: 0.97 / 0.86 along the wall become 0.57 / 0.62.
+- Off-centre flown tumble: 35 deg becomes 68 deg. Head on flown: 9 deg becomes 8 deg.
+
+**Targets.**
+- T2 is met at 15 deg, not at 30 (0.63-0.68 against at most 0.55). Above wallFriction 0.8 the duct sticks, and the quad keeps its speed by turning.
+- T3 is met on both quads.
+- T4 is met on the floor and box tops, not on undersides (see below).
+- T1 is held at wallRestitution 0.3 until the video.
+- Friction 0.8 flings some hits back off the wall as the quad pivots. 8 m/s head on comes back at 0.30, against 0.21 with friction 0.2. A 4 m/s glance at 15 deg leaves at 0.94 of its speed into the wall. T1's restitution is the lever there.
+
+### Tests changed by design
+
+- abi-surface, fractal75, gate-plant: the new slots.
+- wall-hit:
+  - the two overturned asserts are gone;
+  - off-centre rows and the tumble are reported;
+  - `--target` is now the owner's starting targets (skipped in run-all: T2 at 30 deg is not met).
+- crash-flip: unchanged.
+- plant-world: three geometry checks run at the contact values they were tuned at (AS_TUNED in the test):
+  - the duct's corner climb past a split (at friction 0.8 it stays 4.5 mm under the split; split and whole still equal to the micrometre);
+  - the ledge that shows that check is not vacuous;
+  - 35's lifted boxes.
+
+### Found on the way
+
+- **Undersides and edges.** Restitution there too broke two guards. Slot entries at 6 m/s put a point 27.8 um into a plate. A gym seam pose at 8 m/s, with friction 0.8 as well, took an 8 mm one-tick push (plant-world 42's guard is 5 mm). Keeping crash hits as they were fixed the first; restitution on undersides and edges as well, only with the second. So T4's ceiling waits.
+- **35 (open).** At wallFriction 0.5 and over, the paths of boxes lifted 6-99 um part from the floor-plane box's by 18-26 um over a 3 s press. A contact at the foot shows only when the Coulomb cap binds.
+- **The floor at 1 kHz.** A soft landing (under 1.29 m/s) sliding along the floor keeps 0.85 of its speed a tick: quadmath's drag, mild at its 240 Hz, glue at 1 kHz. A 3 m/s skid at 1 m/s down stops in 2 cm. It is left as is: a decision for the owner, and a measurement (the video).
+- **The ducts' top rims (#15 item 2).** Built and measured, not shipped (diff kept in the session scratch).
+  - The inverted rest goes from up Z -0.788 to -0.936 on the Air65, and to -0.998 on the Fractal75.
+  - But crash-flip then rests inverted. Held for its 500 ms, the turtle throws the quad into a free spin at about 2300 deg/s (reverseScale 0.85, unmeasured), and it lands where the spin's phase puts it; on main it happens to be upright.
+  - It needs the owner's turtle log to set reverseScale first.
+
+### Left
+
+- T1 and T4's numbers (the video), the pack's size (D2), the measured CG (what-if rows only), and T4's ceiling.
+- The floor's 1 kHz drag, the duct-top rims after reverseScale, and 35.
+- Propwash (Part 1), waiting on the owner's new logs.
+
+## 2026-11-23 | Phase 2 | v0.9.0 contact, part 2b: patch 0004's conditions, the floor's friction, the wall friction sweep
+
+The owner's answers to part 2:
+- **Patch 0004:** approved, on two conditions. The threshold is Betaflight's own AUTO rule off the pilot's yaw rate, with a test at two yaw rates. The patch is listed with the others. Normal flight below the threshold must be bit-identical with and without it.
+- **The carom at wallFriction 0.8:** not accepted. Sweep 0.3 to 0.6 under the rule that, with the motors off, the quad never leaves the wall faster than it hit it. Recommend one value.
+- **The floor's grip:** fix before the A/B. The scrub must not depend on the tick rate. The provisional target, until the owner's video: a level 2 m/s slide with the motors off travels 0.5 to 1 m. #23's turtle and creep must still pass.
+- **Unchanged:** the ceiling and the duct-top rims stay out; crash x4 stays.
+- **Commit messages:** the two were reworded (below).
+
+### Commits (branch contact/v090-walls)
+
+**The reword.** Part 2's four commits were rebuilt on the same trees, so all four hashes changed:
+- c50f9d3 is now 3efe0ab. Its glance figures are now said to be measured with patch 0004 applied.
+- 97eef26 is now 8db6959.
+- 090af99 is now 06cb760. Its pack-off table is now said to match the previous commit's, not main's.
+- e6efeef is now 16abd9d.
+
+The part 2 entry above keeps the old hashes.
+
+New commits:
+1. **bff5ee5: the floor's friction is Coulomb at every speed.**
+   - **The change.** A footprint point on the floor or a box top takes friction of at most floorFriction times its push, at any speed and on any landing:
+     - under 2 cm/s along the surface, toward no slip (#23's static part);
+     - above that, against the slip.
+   - A hull row resting on a box top's edge takes the same friction.
+   - **What it replaces:**
+     - quadmath's 0.85 of the speed a tick, which is quadmath's drag at 240 Hz. At 1 kHz it stopped a 2 m/s slide in 2 cm;
+     - on a hard landing or a crash, the world's 0.82 or 0.55 of the speed along the floor, once per hit. That is now floorFriction times the landing's push.
+   - **The parity model** (floorFriction 0) keeps the world's answer.
+   - floorFriction stays 0.2.
+2. **dab34f3: patch 0004 in NOTICE; tests/node/yaw-spin.test.mjs.**
+
+### Patch 0004
+
+- **The threshold.** fc/rc.c initRcProcessing already calls initYawSpinRecovery(max yaw rate) in the simulator build. The patch removes only the `#ifndef SIMULATOR_BUILD` around the detection. Betaflight 4.5.1's release uses the same threshold: it lets go once the yaw has been more than 100 deg/s under it for 20 ms.
+- **The test** (Air65 diff, the off-centre 4 m/s wall hit, flown):
+
+  | yaw_srate | full-stick yaw | AUTO threshold | recovery on | recovery off |
+  |---|---|---|---|---|
+  | 70 (the diff) | 700 deg/s | 900 | tick 3, the first over 900 (gyro 1517) | tick 65, 21 after the last within 100 of 900 |
+  | 130 | 1300 deg/s | 1625 | tick 4, the first over 1625 (gyro 1883) | tick 50, 21 after the last within 100 of 1625 |
+
+  - With yaw_spin_recovery OFF, roll and pitch are never zeroed.
+  - Full yaw stick in a hover peaks at 778 deg/s, under 900.
+- **Bit for bit.** The same source was built without the patch (sha 12a660a3) and compared every tick (blockBytes):
+  - 36 runs stay under 900 deg/s, and all are identical every tick:
+    - scripted stick sequences on both whoops: take-off from the floor, punch and chop, full-stick roll and pitch flips, full yaw both ways, angle mode, disarm. The Air65 spends about half of its sequence on the floor; the Fractal75 climbs to 43 m and stays up;
+    - armed drops;
+    - 32 of the 80 wall hits: every 1 m/s hit but one, the square hits at 2, 4 and 8 m/s, and one 2 m/s hit at 60 deg.
+  - 48 runs pass 900. Each is identical up to that tick and parts exactly there.
+- **NOTICE** lists 0004 with 0001-0003.
+
+### The floor's friction
+
+- **A level 2 m/s slide, motors off:**
+
+  | | Air65 | Fractal75 |
+  |---|---|---|
+  | before, 1 kHz | 0.024 m | 0.021 m |
+  | before, 2 kHz build | 0.021 m | 0.018 m |
+  | now, 1 kHz | 0.660 m | 0.640 m |
+  | now, 2 kHz build (SC_LOOP_HZ 2000) | 0.661 m | 0.641 m |
+
+  - The air's drag is part of it. Friction alone would give v^2/(2 mu g) = 1.02 m.
+  - **Coulomb check:** halving floorFriction slows the quad by 0.980 m/s^2 less at 1 m/s. Half of mu times g is 0.981 m/s^2.
+  - tests/node/floor-slide.test.mjs asserts the target and the Coulomb check.
+- **Drops** (the bounce harness, the A/B configuration, both whoops):
+  - The hops are unchanged. T4 holds: 1.4 / 5.3 / 20.9 mm at 2 / 4 / 8 m/s down.
+  - A landing with 4 m/s along the floor now slides 0.88-1.53 m. It used to slide 0.06-0.19 m.
+  - The ceiling is unchanged: 0.42 / 0.37 back.
+- **#23 still passes:**
+  - crash-flip ok, landing ok.
+  - The wall creep: the longest time from the disarm to rest in wall-hit's flown rows is 0.47 s. The old floor's was 1.39 s, propped on the wall at 8 m/s 30 deg. Across the sweep below, the longest is 0.70 s.
+- **Tests changed by design.** The old drag held the quad like glue:
+  - **pack-contact.** A 3 m/s skid no longer tips, with or without the pack. The moment from mu x the CG height is inside the base. It now asserts that both skids slide alike and neither tips.
+  - **plant-world 18.** The far flush box now runs to x 5. A 5 m/s slide went off the end of the old 3 m box and tipped over its edge.
+  - **plant-world 31's control** lands at 1.35 m/s, down from 1.6. Rims 2 and 3 now slide as they land, so the quad rolls faster. From 1.6 m/s, rims 0 and 1 hit at 2.75 m/s, over the 2.65 crash speed; from 1.35 they hit at 2.43, the same margin as before.
+  - **plant-world 35** checks its paths at floorFriction 0, as tuned on 2026-10-23. At 0.2 the lifted boxes' paths part by 60 um over the 3 s press: 35's open finding, now from the floor's cap as well as the wall's. The grounding guard holds.
+
+### The wall friction sweep
+
+The A/B configuration: profile none, crash x4, the floor fix. Both whoops; 2, 4 and 8 m/s at 15, 30, 60 and 90 deg, off-centre and corner; flown and motors off.
+
+How each column is measured:
+- **Glance kept:** the speed along the wall 50 ms after the hit, over the speed along it before.
+- **Pressed glance:** flown at 4 m/s and 15 deg with the throttle held; the speed along the wall at 250 ms.
+- **Exit / hit:** the largest horizontal speed between the hit and the first floor touch, over the hit speed.
+- **Wall-normal:** the largest speed away from the wall in the same window, over the speed into it.
+- **Worst:** the worst of the 18 motors-off rows.
+
+| wallFriction | quad | 15° glance kept, flown / off | 30° glance kept, flown / off | pressed glance, along the wall at 250 ms | exit / hit speed, motors off, worst | wall-normal back / in, motors off, worst | off the wall 1 s later: 2 m/s 15° flown / worst row |
+|---|---|---|---|---|---|---|---|
+| 0.2 | Air65 | 0.95 / 0.90 | 0.87 / 0.83 | 3.69 m/s | 0.92 (off 8 m/s 15°) | 0.32 (off 2 m/s 30°) | 0.04 / 1.12 m (flown 8 m/s off-centre) |
+| 0.2 | Fractal75 | 0.97 / 0.90 | 0.87 / 0.81 | 4.04 m/s | 0.91 (off 8 m/s 15°) | 0.33 (off 2 m/s 30°) | 0.12 / 1.71 m (flown 4 m/s off-centre) |
+| 0.3 | Air65 | 0.92 / 0.87 | 0.76 / 0.75 | 3.57 m/s | 0.89 (off 8 m/s 15°) | 0.41 (off 2 m/s 30°) | 0.08 / 1.54 m (flown 8 m/s off-centre) |
+| 0.3 | Fractal75 | 0.92 / 0.86 | 0.75 / 0.73 | 3.90 m/s | 0.89 (off 8 m/s 15°) | 0.42 (off 4 m/s 30°) | 0.15 / 1.71 m (flown 4 m/s off-centre) |
+| 0.4 | Air65 | 0.87 / 0.82 | 0.63 / 0.68 | 3.36 m/s | 0.87 (off 8 m/s 15°) | 0.49 (off 2 m/s 30°) | 0.14 / 1.27 m (flown 8 m/s 60°) |
+| 0.4 | Fractal75 | 0.87 / 0.82 | 0.62 / 0.66 | 3.75 m/s | 0.86 (off 8 m/s 15°) | 0.50 (off 4 m/s 30°) | 0.22 / 1.71 m (flown 4 m/s off-centre) |
+| 0.5 | Air65 | 0.81 / 0.77 | 0.63 / 0.68 | 3.07 m/s | 0.85 (off 8 m/s 15°) | 0.50 (off 4 m/s 15°) | 0.20 / 1.31 m (flown 8 m/s 60°) |
+| 0.5 | Fractal75 | 0.82 / 0.76 | 0.62 / 0.66 | 3.53 m/s | 0.82 (off 8 m/s 15°) | 0.56 (off 4 m/s 15°) | 0.32 / 1.71 m (flown 4 m/s off-centre) |
+| 0.55 | Air65 | 0.77 / 0.74 | 0.63 / 0.68 | 2.10 m/s | 0.83 (off 8 m/s 15°) | 0.60 (off 4 m/s 15°) | 0.27 / 1.31 m (flown 8 m/s off-centre) |
+| 0.55 | Fractal75 | 0.78 / 0.72 | 0.62 / 0.66 | 3.32 m/s | 0.80 (off 8 m/s 15°) | 0.71 (off 4 m/s 15°) | 0.37 / 1.71 m (flown 4 m/s off-centre) |
+| 0.6 | Air65 | 0.73 / 0.70 | 0.63 / 0.68 | 1.48 m/s | 0.82 (off 8 m/s 15°) | 0.72 (off 4 m/s 15°) | 0.32 / 1.69 m (flown 8 m/s off-centre) |
+| 0.6 | Fractal75 | 0.70 / 0.67 | 0.62 / 0.66 | 2.34 m/s | 0.78 (off 8 m/s 15°) | 0.88 (off 4 m/s 15°) | 0.47 / 1.71 m (flown 4 m/s off-centre) |
+| 0.65 | Air65 | 0.66 / 0.66 | 0.63 / 0.68 | 0.92 m/s | 0.81 (off 8 m/s 15°) | 0.85 (off 2 m/s 15°) | 0.49 / 1.52 m (flown 8 m/s off-centre) |
+| 0.65 | Fractal75 | 0.60 / 0.61 | 0.62 / 0.66 | 1.16 m/s | 0.77 (off 8 m/s 15°) | 1.09 (off 4 m/s 15°) | 0.56 / 1.71 m (flown 4 m/s off-centre) |
+| 0.7 | Air65 | 0.58 / 0.61 | 0.63 / 0.68 | 0.44 m/s | 0.79 (off 8 m/s 15°) | 1.00 (off 2 m/s 15°) | 0.59 / 1.53 m (flown 8 m/s off-centre) |
+| 0.7 | Fractal75 | 0.57 / 0.59 | 0.62 / 0.66 | 0.79 m/s | 0.77 (off 8 m/s 15°) | 1.16 (off 4 m/s 15°) | 0.77 / 1.71 m (flown 4 m/s off-centre) |
+| 0.8 | Air65 | 0.58 / 0.61 | 0.63 / 0.68 | 0.41 m/s | 0.78 (off 8 m/s 15°) | 1.04 (off 2 m/s 15°) | 0.63 / 1.48 m (off 8 m/s 90°) |
+| 0.8 | Fractal75 | 0.57 / 0.59 | 0.62 / 0.66 | 0.79 m/s | 0.77 (off 8 m/s 15°) | 1.16 (off 4 m/s 15°) | 1.40 / 1.71 m (flown 4 m/s off-centre) |
+
+**What the sweep shows:**
+- **Total speed.** With the motors off, no row leaves the wall faster than it hit it, at any friction. The worst ratio falls from 0.92 at 0.2 to 0.77 at 0.8. The rule only bites on the wall-normal speed.
+- **The part 2 report was wrong.** It said the 0.8 carom leaves "at 1.0-1.2x the speed it hit with". That figure is the wall-normal speed, back over in; the total speed was 0.65-0.69 of the hit.
+- **Wall-normal speed, motors off:**
+  - It stays under 1 through 0.6 on both whoops: 0.72 on the Air65, 0.88 on the Fractal75.
+  - At 0.65 the Fractal75 goes over (1.09). At 0.7 the Air65 reaches 1.00 and the Fractal75 1.16. At 0.8 the Air65 is at 1.04 and the Fractal75 at 1.16.
+- **T2 at 15 deg** (at most 0.75 kept, flown and off) is met from 0.6 up.
+- **T2 at 30 deg** keeps 0.62-0.68 from 0.4 up, so friction cannot reach 0.55. The duct sticks, and the quad keeps its speed along the wall by turning.
+- **The pressed glance** falls fast between 0.5 and 0.7: 3.07, 2.10, 1.48, 0.92, 0.44 m/s on the Air65.
+- **T3** is the same at every friction: 56 / 21 deg on the Air65, 68 / 8 on the Fractal75. It is patch 0004's.
+- **The wall creep:** the longest time from the disarm to rest is at most 0.70 s at every friction.
+- **Most 8 m/s rows** reach the plant's 150 rad/s contact spin cap at every friction, as on v0.8.0.
+
+**plant-world 44 above 0.51 (found).**
+- **The case:** a thin wall (backyard 47) posed through the quad, motors below hover. 44 guards against a one-tick push over 1 mm, and against the quad winding up toward the spin cap.
+- **From 0.2 to 0.51** it is steady: 0.25-0.57 mm, at most 18 rad/s, under 0.9 m/s.
+- **From 0.52 to 0.65** it flips from value to value:
+  - fails at 0.53 (1.55 mm), 0.57 (1.63), 0.59 (1.37), 0.6 (1.55) and 0.65 (1.27);
+  - passes the 1 mm guard at 0.52, 0.54 and 0.56, but with the quad wound up to 42-57 rad/s and 1.9-2.6 m/s;
+  - is clean only at 0.55 and 0.58.
+- **0.7 and 0.8 pass.**
+- **The old floor** fails the same way at 0.6 (1.51 mm), so this comes from the wall's Coulomb cap, not the floor.
+- **Not looked into.** It is in the solver's hull-contact path that 44 guards.
+
+**Recommendation: wallFriction 0.5.** The airframes stay at 0.8 until the owner picks.
+- It is the highest value in 44's steady band. 0.55 passes the suite, but only as a point in the band where 44 flips.
+- **The owner's rule, motors off:**
+  - wall-normal back over in at most 0.50 on the Air65 and 0.56 on the Fractal75;
+  - total exit over hit at most 0.85.
+- **At 0.5:**
+  - **T2 at 15 deg:** 0.81 / 0.77 kept on the Air65, 0.82 / 0.76 on the Fractal75 (flown / off). That misses 0.75 by 0.01-0.07.
+  - **The pressed glance:** 3.07 / 3.53 m/s at 250 ms (0.2 gave 3.69 / 4.04).
+  - **The 2 m/s 15 deg flown glance** ends 0.20 / 0.32 m off the wall (0.2: 0.04 / 0.12; 0.8: 0.63 / 1.40).
+  - **Passes** (run in a copy of HEAD): plant-world, wall-hit, crash-flip, landing, pack-contact, floor-slide, yaw-spin and fractal75.
+  - **wall-hit --target** misses T2 only; T3 is met.
+- **More scrub** (T2 at 15 deg, a shorter pressed glance) needs 44's wind-up fixed first. Then 0.6 meets T2 at 15 deg and keeps the rule (0.72 / 0.88).
+
+### Left
+
+- **The owner's pick of wallFriction**, then T2 at 30 deg. Friction can't reach it; the owner's T1 restitution or the duct's shape might.
+- **plant-world 44's wind-up** above wallFriction 0.51.
+- **35's open finding**, now from the floor's Coulomb cap as well as the wall's.
+- **Waiting on the owner:** the slide video (floorFriction), T1 and T4's numbers, the pack's size (D2), and propwash (Part 1).
+- **Staying out:** the ceiling and the duct-top rims.
+
+### The owner's decision (2026-11-23)
+
+- **wallFriction 0.5** in both airframes.
+- **T2 at 30 deg** is dropped: wall friction cannot reach it. `--target` now checks T2 at 15 deg only. At 0.5 that still misses (0.81 / 0.77 kept), so run-all keeps the entry skipped.
+- **Logged as open, no fix:**
+  - plant-world 44's wind-up above wallFriction 0.51;
+  - 35's path difference, at the wall's and now the floor's Coulomb cap.
+- **At 0.5** these pass: wall-hit, plant-world, crash-flip, landing, pack-contact, floor-slide, yaw-spin, fractal75, abi-surface.
+- **Next: Part 3.** The A/B preview in a quadmath worktree, with walls at 0.5, the floor's friction, the hop fix, patch 0004, and quadmath's wall x1.37 and bounce x2 dropped on the bf core (crash x4 kept).
+- **Unchanged until the owner's video, calipers and logs:** wallRestitution stays provisional, the pack contact stays off, and there is no propwash.
+
+## 2026-11-23 | Phase 2 | v0.9.0: the A/B and the owner's go
+
+**The A/B.**
+- **Where it was built:** quadmath branch `ab/v090-contact`, local only and never merged.
+- **What it was:** `sim.html?ab=1` on this machine, with the B key swapping two Betaflight cores:
+  - **A:** quadmath's vendored v0.8.0 with the map's BOUNCE_MAPS profile;
+  - **B:** this branch at b76885d, with crash x4 only on the bf core.
+- **The banner** named the core that actually flew.
+- **The headless smoke** read back both quads and both sides from the flying core: folder, version, wasm sha256, plant and diff. It also checked a 1 m drop each, a swap in the air, a map change on cached cores, and that nothing reached the Workers or Cloudflare.
+
+**The verdict** (owner, 2026-11-23): "B is better all around. Speed-landing slide is good, the off-centre clip feels realistic. Go for Part 4, contact only."
+
+**What ships as v0.9.0:**
+- walls at 0.5;
+- the floor's Coulomb friction;
+- the hop fix (contactRestitution 0.08);
+- #23's landing work;
+- Betaflight patch 0004.
+
+Quadmath drops wall x1.37 and bounce x2 on the bf core and keeps crash x4; PHYS_VER goes to 8.
+
+**v0.10.0, after the owner's video, calipers and logs:**
+- the wall restitution, provisional at 0.3;
+- the pack contact, off;
+- propwash;
+- T1 and T4's numbers.
+
+**The tag:** v0.9.0 goes on the merge of this branch, after the owner merges.

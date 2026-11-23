@@ -213,6 +213,7 @@ typedef struct {
 static scBox_t boxes[SC_WORLD_BOX_CAP];
 static int boxCount;
 static bool solidsStale = true;     // the footprint hull's solids need building (boxes changed)
+static double contactRest = -1;     // PB_CONTACT_REST, or below 0: quadmath's ductHit restitution
 static scBox_t triggers[SC_WORLD_TRIGGER_CAP];
 static bool triggerInside[SC_WORLD_TRIGGER_CAP];
 static int triggerCount;
@@ -387,8 +388,14 @@ static bool ductHit(double vel[3], double omega[3], const double n[3], double in
     const double vn = vdot(vel, n);
     const double crashAt = CRASH_SPEED_WU * crashScale;
     const bool crashed = into > crashAt;
-    double rest = crashed ? 0.10 : 0.24 + 0.11 * BOUNCE_STR * bounceScale;
-    if (floor && !crashed) {
+    // The physical model's contact restitution (v0.9.0) answers a hit on the
+    // floor or a box top below the crash speed; a crash answers as before
+    // (0.10, and 0.55 of the speed along the surface kept), and so do box
+    // undersides and edges (with the restitution there too, a quad posed
+    // across a gym seam at 8 m/s took an 8 mm push in a tick: plant-world 42).
+    const bool own = contactRest >= 0 && floor;
+    double rest = crashed ? 0.10 : own ? contactRest : 0.24 + 0.11 * BOUNCE_STR * bounceScale;
+    if (floor && !crashed && !own) {
         rest *= 0.55;
     }
     const double leave = vn < 0 ? vn : -into;
@@ -2029,8 +2036,13 @@ double sc_world_support_bounce(double impactMs, double bounceScale, double crash
     if (!(into > HARD_LANDING_WU)) {
         return 0;
     }
-    const double rest = *crashed ? 0.10 : (0.24 + 0.11 * BOUNCE_STR * bounceScale) * 0.55;
+    const double rest = *crashed ? 0.10 : contactRest >= 0 ? contactRest : (0.24 + 0.11 * BOUNCE_STR * bounceScale) * 0.55;
     return rest * impactMs;
+}
+
+void sc_world_set_contact_restitution(double rest)
+{
+    contactRest = rest;
 }
 
 // The gap (m) from a footprint point (module frame) straight down to the

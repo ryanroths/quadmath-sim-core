@@ -15,12 +15,21 @@
 // at rest on the floor: upright (up Z above 0.9), inverted (below -0.5), or
 // wedged (anything else: on its side, or propped on the wall).
 //
-// Asserted: every case hits the wall and comes to rest; a 2 m/s head-on hit
-// (off) comes back at the wall restitution; a glancing hit (15 or 30
-// degrees) keeps three quarters of its speed along the wall, and with the
-// motors off loses at least half of one contact's Coulomb take. With --target,
-// the owner's target instead, its own entry in run-all: upright after every
-// hit under 60 degrees and 6 m/s (flown: 15 and 30 degrees at 2 and 4 m/s).
+// Asserted: every case hits the wall and comes to rest, and with the motors
+// off a glancing hit (15 or 30 degrees) loses at least half of one contact's
+// Coulomb take along the wall. Until v0.9.0 a glance also had to keep three
+// quarters of its speed along the wall and a 2 m/s head-on hit to come back
+// at the wall restitution; the owner overturned both on 2026-11-23 (D1: a
+// whoop's duct scrubs along a wall), with #10's "upright after every hit
+// under 60 degrees and 6 m/s". Two more cases, 4 m/s head on with the quad
+// yawed 25 degrees (one front duct leads, off the CG's line), flown and off,
+// report the tumble: how far the body's up axis turns in the 300 ms after the
+// hit. With --target, the owner's starting targets of 2026-11-23 instead
+// (D1, to be tuned in the A/B), its own entry in run-all: T2, a glance keeps
+// at most 0.75 of its speed along the wall at 15 degrees (4 m/s, flown and
+// off; the 30 degree target, 0.55, dropped the same day: wall friction
+// cannot reach it); T3, the off-centre hit flown turns the up axis at
+// least 45 degrees in 300 ms, and the square 4 m/s hit flown at most 30.
 //
 //   node tests/node/wall-hit.test.mjs
 //   node tests/node/wall-hit.test.mjs --target
@@ -85,7 +94,7 @@ function leadingX(q) {
 
 const AUX1 = 4;
 
-async function hit(speed, angleDeg, pilot) {
+async function hit(speed, angleDeg, pilot, yawOffDeg = 0) {
   const core = await SimCore.load(wasm, { trace: false });
   core.configure({ diff, plant: air65, world });
   // Roll, pitch, yaw, throttle, AUX1 (ARM), AUX2 (ANGLE: low, acro), AUX3, AUX4.
@@ -105,7 +114,7 @@ async function hit(speed, angleDeg, pilot) {
     assert.equal(core.fc.armed, true, `armed (flags ${core.fc.armingDisableFlags})`);
   }
   const a = angleDeg * Math.PI / 180;
-  const yaw = Math.PI / 2 - a;                  // nose along the velocity
+  const yaw = Math.PI / 2 - a + yawOffDeg * Math.PI / 180;   // nose along the velocity, or yawed off it
   const pitch = pitchFor(speed);
   const q = mul([Math.cos(yaw / 2), 0, 0, Math.sin(yaw / 2)], [Math.cos(pitch / 2), 0, Math.sin(pitch / 2), 0]);
   const vIn = { n: speed * Math.sin(a), t: speed * Math.cos(a) };
@@ -115,6 +124,7 @@ async function hit(speed, angleDeg, pilot) {
   core.events();
   let hitUs = null, floorUs = null, crashed = false, impact = null, after = null, slideAtReact = null;
   let rest = 0;
+  let up0 = null, zTurn = 0;
   step(8000, () => {
     for (const e of core.events()) {
       if (e.kind !== 'contact') continue;
@@ -131,6 +141,9 @@ async function hit(speed, angleDeg, pilot) {
     const s = core.state;
     if (hitUs !== null) {
       const since = core.simTimeUs - hitUs;
+      const upNow = rotate(s.quat, [0, 0, 1]);
+      if (up0 === null) up0 = upNow;
+      if (since <= 300_000) zTurn = Math.max(zTurn, Math.acos(Math.max(-1, Math.min(1, upNow[0] * up0[0] + upNow[1] * up0[1] + upNow[2] * up0[2]))) * 180 / Math.PI);
       if (after === null && since >= 50_000) {
         after = { vn: -s.vel[0], vt: s.vel[1], vz: s.vel[2], tilt: Math.hypot(s.omega[0], s.omega[1]) * 180 / Math.PI,
           yaw: s.omega[2] * 180 / Math.PI };
@@ -150,7 +163,7 @@ async function hit(speed, angleDeg, pilot) {
   // either.
   const wallGap = WALL_X - Math.max(s.pos[0] + leadingX(s.quat), ...core.footprint.map((p) => p[0]));
   const state = up > 0.9 ? 'upright' : up < -0.5 ? 'inverted' : 'wedged';
-  return { speed, angleDeg, pilot, pitchDeg: pitch * 180 / Math.PI, vIn, impact, crashed, after, slideAtReact, state, up,
+  return { yawOffDeg, zTurn, speed, angleDeg, pilot, pitchDeg: pitch * 180 / Math.PI, vIn, impact, crashed, after, slideAtReact, state, up,
     z: s.pos[2], onWall: wallGap < 0.002, rested: rest >= 200 };
 }
 
@@ -161,44 +174,52 @@ for (const pilot of ['flown', 'off']) {
   for (const speed of SPEEDS) {
     for (const angleDeg of ANGLES) rows.push(await hit(speed, angleDeg, pilot));
   }
+  rows.push(await hit(4, 90, pilot, 25));
 }
 
 const f = (v, d = 2) => (v === null || v === undefined ? '-' : v.toFixed(d));
 if (whatIf.length) console.log(`what-if: ${whatIf.join(', ')} (nothing asserted)`);
 console.log(`airframe: wallFriction ${val('wallFriction')}, wallRestitution ${val('wallRestitution')}, ductHeight ${val('ductHeight')} m, hullBelow ${val('hullBelow')} m`);
-console.log('pilot  m/s  deg  pitch  into   crash  vn_in  vt_in  | 50 ms: vn_out  vt_out  vz_out  tilt_dps  yaw_dps | vt@250ms | end');
+console.log('pilot  m/s  deg  yaw  pitch  into   crash  vn_in  vt_in  | 50 ms: vn_out  vt_out  vz_out  tilt_dps  yaw_dps | tumble_deg | vt@250ms | end');
 for (const r of rows) {
   const a = r.after || {};
-  console.log(`${r.pilot.padEnd(5)}  ${String(r.speed).padStart(3)}  ${String(r.angleDeg).padStart(3)}  ${f(r.pitchDeg, 1).padStart(5)}  ${f(r.impact).padStart(5)}  ${String(r.crashed).padEnd(5)}  ${f(r.vIn.n).padStart(5)}  ${f(r.vIn.t).padStart(5)}  |        ${f(a.vn).padStart(6)}  ${f(a.vt).padStart(6)}  ${f(a.vz).padStart(6)}  ${f(a.tilt, 0).padStart(8)}  ${f(a.yaw, 0).padStart(7)} | ${f(r.slideAtReact).padStart(8)} | ${r.state}${r.onWall ? ', on the wall' : ''} (up Z ${f(r.up, 3)})${r.rested ? '' : ', not at rest'}`);
+  console.log(`${r.pilot.padEnd(5)}  ${String(r.speed).padStart(3)}  ${String(r.angleDeg).padStart(3)}  ${String(r.yawOffDeg).padStart(3)}  ${f(r.pitchDeg, 1).padStart(5)}  ${f(r.impact).padStart(5)}  ${String(r.crashed).padEnd(5)}  ${f(r.vIn.n).padStart(5)}  ${f(r.vIn.t).padStart(5)}  |        ${f(a.vn).padStart(6)}  ${f(a.vt).padStart(6)}  ${f(a.vz).padStart(6)}  ${f(a.tilt, 0).padStart(8)}  ${f(a.yaw, 0).padStart(7)} | ${f(r.zTurn, 0).padStart(10)} | ${f(r.slideAtReact).padStart(8)} | ${r.state}${r.onWall ? ', on the wall' : ''} (up Z ${f(r.up, 3)})${r.rested ? '' : ', not at rest'}`);
 }
 
-const misses = rows.filter((r) => r.pilot === 'flown' && r.angleDeg < 60 && r.speed < 6 && r.state !== 'upright')
-  .map((r) => `${r.speed} m/s ${r.angleDeg} deg: ${r.state} (up Z ${f(r.up, 3)}), tilt ${f(r.after && r.after.tilt, 0)} deg/s 50 ms after the hit`);
-console.log(`the owner's target (flown, under 60 degrees and 6 m/s): ${misses.length ? `missed, ${misses.join('; ')}` : 'every hit upright'}`);
+// The owner's starting targets (2026-11-23, D1), tuned in the A/B.
+const at = (pilot, speed, angleDeg, yawOffDeg = 0) => rows.find((r) => r.pilot === pilot && r.speed === speed && r.angleDeg === angleDeg && r.yawOffDeg === yawOffDeg);
+const misses = [];
+for (const pilot of ['flown', 'off']) {
+  for (const [angleDeg, most] of [[15, 0.75]]) {
+    const r = at(pilot, 4, angleDeg);
+    const kept = r.after.vt / r.vIn.t;
+    if (!(kept <= most)) misses.push(`T2 ${pilot} 4 m/s ${angleDeg} deg keeps ${f(kept)} of its speed along the wall (at most ${most})`);
+  }
+}
+{
+  const off = at('flown', 4, 90, 25), square = at('flown', 4, 90);
+  if (!(off.zTurn >= 45)) misses.push(`T3 flown 4 m/s off-centre: the up axis turns ${f(off.zTurn, 0)} deg in 300 ms (at least 45)`);
+  if (!(square.zTurn <= 30)) misses.push(`T3 flown 4 m/s square: the up axis turns ${f(square.zTurn, 0)} deg in 300 ms (at most 30)`);
+}
+console.log(`the owner's starting targets (2026-11-23): ${misses.length ? `missed, ${misses.join('; ')}` : 'all met'}`);
 if (whatIf.length) {
   // A what-if asserts nothing.
 } else if (process.argv.includes('--target')) {
-  assert.deepEqual(misses, [], `the owner's target, upright after every hit under 60 degrees and 6 m/s (flown):\n  ${misses.join('\n  ')}`);
-  console.log('wall hits, the owner\'s target: ok');
+  assert.deepEqual(misses, [], `the owner's starting targets:\n  ${misses.join('\n  ')}`);
+  console.log("wall hits, the owner's starting targets: ok");
 } else {
   for (const r of rows) {
     assert.ok(r.after && r.rested, `${r.pilot} ${r.speed} m/s ${r.angleDeg} deg: hit the wall and came to rest`);
-    // A glance, not a stop: three quarters of the speed along the wall kept.
-    if (r.angleDeg <= 30) {
-      assert.ok(r.after.vt >= 0.75 * r.vIn.t, `${r.pilot} ${r.speed} m/s ${r.angleDeg} deg glances: ${f(r.after.vt)} m/s along the wall after, from ${f(r.vIn.t)}`);
-    }
     // And the wall's friction acts: with the motors off, a glance loses at
     // least half of what one Coulomb contact takes, wallFriction (1 +
     // wallRestitution) times the speed into the wall (with wallFriction 0 it
     // loses only drag).
-    if (r.pilot === 'off' && r.angleDeg <= 30) {
+    if (r.pilot === 'off' && r.angleDeg <= 30 && !r.yawOffDeg) {
       const take = val('wallFriction') * (1 + val('wallRestitution')) * r.vIn.n;
       assert.ok(r.vIn.t - r.after.vt >= 0.5 * take, `${r.speed} m/s ${r.angleDeg} deg (off): ${f(r.vIn.t - r.after.vt, 3)} m/s taken along the wall, the wall's friction ${f(take, 3)} at one contact`);
     }
   }
-  const headOn = rows.find((r) => r.pilot === 'off' && r.speed === 2 && r.angleDeg === 90);
-  const ratio = headOn.after.vn / headOn.vIn.n;
-  assert.ok(Math.abs(ratio - val('wallRestitution')) < 0.05, `2 m/s head on comes back at ${f(ratio, 3)} of the speed in (wallRestitution ${val('wallRestitution')})`);
-  console.log(`2 m/s head on (off): back at ${f(ratio, 3)} of the speed in`);
+  const headOn = rows.find((r) => r.pilot === 'off' && r.speed === 2 && r.angleDeg === 90 && !r.yawOffDeg);
+  console.log(`2 m/s head on (off): back at ${f(headOn.after.vn / headOn.vIn.n, 3)} of the speed in (wallRestitution ${val('wallRestitution')}, reported)`);
   console.log('wall hits: ok');
 }
